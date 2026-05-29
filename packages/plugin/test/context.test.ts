@@ -206,26 +206,20 @@ describe("ctx.parallel", () => {
     expect(ctx.errors).toHaveLength(0)
   })
 
-  it("bounds in-flight Units to meta.concurrency", async () => {
+  it("bounds in-flight Units (agent calls) to meta.concurrency via the shared limiter", async () => {
     const state = createEngineState()
+    const client = makeFakeClient({ delayMs: 5 })
     const ctx = createWorkflowContext({
-      client: makeFakeClient(),
+      client,
       parentSessionID: "p",
       args: undefined,
       state,
       concurrency: 2,
     })
-    let inFlight = 0
-    let peak = 0
-    const thunks = Array.from({ length: 6 }, () => async () => {
-      inFlight += 1
-      peak = Math.max(peak, inFlight)
-      await Bun.sleep(5)
-      inFlight -= 1
-      return 1
-    })
-    await ctx.parallel(thunks)
-    expect(peak).toBe(2)
+    // The cap lives on the Unit (every agent() draws from the one shared limiter), so a fan-out of six Units
+    // never runs more than two prompts at once — regardless of how the thunks are issued.
+    await ctx.parallel(Array.from({ length: 6 }, (_unused, i) => () => ctx.agent(`u${i}`)))
+    expect(client.meter.peak).toBe(2)
   })
 })
 

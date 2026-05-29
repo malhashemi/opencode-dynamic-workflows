@@ -14,6 +14,39 @@ export default defineWorkflow({
 })
 `
 
+const TYPED_WORKFLOW = `
+import { defineWorkflow, z } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "typed", description: "needs a numeric count", args: z.object({ count: z.number() }) },
+  async run({ agent, args }) {
+    return await agent(\`n=\${args.count}\`)
+  },
+})
+`
+
+// The capstone demo: typed args → a no-barrier pipeline of per-item Subagent chains → a deliberately-failing
+// item drops to null without aborting the rest → collect the survivors → one synthesis Unit emits the result.
+// Exercises phase()/log() observability too. The fake client echoes each prompt, so outputs are predictable.
+const DEMO_WORKFLOW = `
+import { defineWorkflow, z } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "review-each", description: "review + verify each file", args: z.object({ files: z.array(z.string()) }) },
+  async run({ agent, pipeline, collect, log, phase, args }) {
+    phase("Review")
+    const reviewed = await pipeline(
+      args.files,
+      (file) => { if (file === "bad") throw new Error("cannot review " + file); return agent("review:" + file) },
+      (review) => agent("verify:" + review),
+    )
+    const survivors = collect(reviewed)
+    if (reviewed.length !== survivors.length) log(\`dropped \${reviewed.length - survivors.length} file(s) from the pipeline\`)
+    phase("Synthesize")
+    const final = await agent("synthesize:" + survivors.join("|"))
+    return { final, survivors: survivors.length }
+  },
+})
+`
+
 describe("runWorkflow (inline source → run → result)", () => {
   it("imports inline source, runs the workflow, and returns its result", async () => {
     const client = makeFakeClient({ reply: "HELLO" })
@@ -66,6 +99,44 @@ describe("runWorkflow (inline source → run → result)", () => {
     })
     expect(out.result).toEqual({ out: null, word: "z" })
     expect(out.state.errors[0]?.error).toContain("kaboom")
+  })
+
+  it("validates args against meta.args BEFORE any Unit launches, naming the offending field (D7)", async () => {
+    const client = makeFakeClient({ reply: "ok" })
+    await expect(
+      runWorkflow({ source: TYPED_WORKFLOW, args: { count: "not-a-number" }, client, parentSessionID: "p" }),
+    ).rejects.toThrow(/count/) // the error names the offending field
+    expect(client.promptCalls).toHaveLength(0) // failed before launching any Unit
+  })
+
+  it("passes validated args through to a typed ctx.args when input satisfies the schema", async () => {
+    const client = makeFakeClient({ reply: "ok" })
+    const out = await runWorkflow({ source: TYPED_WORKFLOW, args: { count: 7 }, client, parentSessionID: "p" })
+    expect(out.result).toBe("ok")
+    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "n=7" }])
+  })
+
+  it("runs the demo end-to-end: typed args, pipeline with a dropped item, collect, and a synthesis Unit", async () => {
+    const client = makeFakeClient()
+    const out = await runWorkflow({
+      source: DEMO_WORKFLOW,
+      args: { files: ["a", "bad", "b"] },
+      client,
+      parentSessionID: "p",
+    })
+
+    // The failing item ("bad") dropped without aborting the others; survivors flowed to a single synthesis Unit.
+    expect(out.result).toEqual({ final: "synthesize:verify:review:a|verify:review:b", survivors: 2 })
+    expect(out.state.errors).toHaveLength(1)
+    expect(out.state.errors[0]?.unit).toBe("pipeline#1") // "bad" was index 1
+    // Observable progress: both phase titles recorded, and a log line naming the dropped item (exact text).
+    expect(out.state.phases).toEqual(["Review", "Synthesize"])
+    expect(out.state.logs).toContain("dropped 1 file(s) from the pipeline")
+    // "bad" never reached a Subagent (its stage threw before agent()); the rest did.
+    const prompts = client.promptCalls.map((p) => p.body?.parts?.[0]?.text)
+    expect(prompts).not.toContain("review:bad")
+    expect(prompts).toContain("review:a")
+    expect(prompts).toContain("review:b")
   })
 })
 

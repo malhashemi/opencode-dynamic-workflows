@@ -31,8 +31,8 @@ export interface RunAgentOptions {
  * distinguishes the text path (`text`) from the structured path (`value`, already parsed to the schema type).
  */
 export type AgentRunResult =
-  | { ok: true; kind: "text"; text: string; childSessionID: string }
-  | { ok: true; kind: "structured"; value: unknown; childSessionID: string }
+  | { ok: true; kind: "text"; text: string; childSessionID: string; outputTokens: number }
+  | { ok: true; kind: "structured"; value: unknown; childSessionID: string; outputTokens: number }
   | { ok: false; error: string; childSessionID?: string }
 
 /** Best-effort stringify of an arbitrary thrown/error value for the `ctx.errors` side-channel (D9). */
@@ -109,13 +109,16 @@ export async function runAgent(
       })
 
       const info = res.data?.info
+      // Best-effort output-token count for the advisory budget; missing ⇒ 0 (the exact SDK field is a pending
+      // live-check per the spec's open item).
+      const outputTokens = info?.tokens?.output ?? 0
 
       if (schema === undefined) {
         // --- text path (unchanged contract; no retry) ---
         if (info?.error) return { ok: false, error: stringifyError(info.error), childSessionID }
         const text = (res.data?.parts ?? []).filter((p) => p.type === "text").at(-1)?.text
         if (text === undefined) return { ok: false, error: "prompt returned no assistant text part", childSessionID }
-        return { ok: true, kind: "text", text, childSessionID }
+        return { ok: true, kind: "text", text, childSessionID, outputTokens }
       }
 
       // --- structured path ---
@@ -129,7 +132,7 @@ export async function runAgent(
         return { ok: false, error: "structured output missing from response", childSessionID }
       }
       const parsed = parseStructured(schema, info.structured)
-      if (parsed.ok) return { ok: true, kind: "structured", value: parsed.value, childSessionID }
+      if (parsed.ok) return { ok: true, kind: "structured", value: parsed.value, childSessionID, outputTokens }
       // JSON-Schema-valid but zod-invalid (a refinement/transform): retryable, like a StructuredOutputError.
       lastError = `structured output failed schema validation: ${parsed.error}`
       if (!isLast) continue

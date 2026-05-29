@@ -1,118 +1,62 @@
-import { describe, expect, it } from "bun:test"
-import { defaultConcurrency, runBounded } from "../src/scheduler"
+/**
+ * Scheduler tests: the shared {@link Semaphore} that backs every Unit launch. These assert the concurrency cap
+ * (via a live counter recording max simultaneous in-flight), that a throwing task releases its permit instead
+ * of stranding a slot (no deadlock), FIFO ordering of queued waiters, and the default cap — all without opencode.
+ */
+import { describe, expect, test } from "bun:test"
+import { defaultConcurrency, Semaphore } from "../src/scheduler"
 
-/** A deferred promise + a thunk that resolves it, for driving concurrency deterministically. */
-function gate<T>(value: T) {
-  let release!: () => void
-  const opened = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  const thunk = async () => {
-    await opened
-    return value
-  }
-  return { thunk, release }
-}
-
-describe("runBounded", () => {
-  it("returns results positionally aligned to the input, regardless of settle order", async () => {
-    // thunk 0 resolves LAST, thunk 2 resolves FIRST — output order must still be [0,1,2].
-    const order = [30, 10, 0]
-    const results = await runBounded(
-      order.map((ms, i) => async () => {
-        await Bun.sleep(ms)
-        return i
-      }),
-      { concurrency: 8 },
-    )
-    expect(results.map((r) => (r.status === "fulfilled" ? r.value : null))).toEqual([0, 1, 2])
+describe("Semaphore", () => {
+  test("run executes the task and returns its value", async () => {
+    const sem = new Semaphore(2)
+    expect(await sem.run(async () => 42)).toBe(42)
   })
 
-  it("never runs more than `concurrency` thunks in flight at once", async () => {
-    let inFlight = 0
-    let peak = 0
-    const thunks = Array.from({ length: 7 }, () => async () => {
-      inFlight += 1
-      peak = Math.max(peak, inFlight)
-      await Bun.sleep(5)
-      inFlight -= 1
-      return true
-    })
-    await runBounded(thunks, { concurrency: 2 })
-    expect(peak).toBeLessThanOrEqual(2)
-    expect(peak).toBe(2) // with 7 thunks and a real wait, the cap is actually reached
+  test("caps the number of tasks in flight at the permit count", async () => {
+    const sem = new Semaphore(2)
+    let active = 0
+    let maxActive = 0
+    const task = (ms: number) => () =>
+      sem.run(async () => {
+        active++
+        maxActive = Math.max(maxActive, active)
+        await new Promise((r) => setTimeout(r, ms))
+        active--
+        return ms
+      })
+    const results = await Promise.all([task(10)(), task(10)(), task(10)(), task(10)()])
+    expect(maxActive).toBeLessThanOrEqual(2)
+    expect(results).toHaveLength(4)
   })
 
-  it("starts queued thunks only as earlier ones settle (a slot frees, the next begins)", async () => {
-    const started: number[] = []
-    const gates = [gate(0), gate(1), gate(2)]
-    const thunks = gates.map((g, i) => async () => {
-      started.push(i)
-      return g.thunk()
-    })
-    const all = runBounded(thunks, { concurrency: 1 })
-    await Bun.sleep(1)
-    expect(started).toEqual([0]) // only the first slot is occupied
-    gates[0]!.release()
-    await Bun.sleep(1)
-    expect(started).toEqual([0, 1]) // freeing slot 0 lets thunk 1 begin
-    gates[1]!.release()
-    gates[2]!.release()
-    await all
-    expect(started).toEqual([0, 1, 2])
+  test("a throwing task releases its permit (no deadlock) — later tasks still run", async () => {
+    const sem = new Semaphore(1)
+    await expect(sem.run(async () => {
+      throw new Error("boom")
+    })).rejects.toThrow("boom")
+    // With permits=1, if the throw had stranded the slot this would hang; it must resolve.
+    expect(await sem.run(async () => "after")).toBe("after")
   })
 
-  it("is a barrier: resolves only after every thunk has settled", async () => {
-    let settledCount = 0
-    const thunks = Array.from({ length: 4 }, (_unused, i) => async () => {
-      await Bun.sleep(i * 3)
-      settledCount += 1
-      return i
-    })
-    await runBounded(thunks, { concurrency: 4 })
-    expect(settledCount).toBe(4)
+  test("queued waiters resume in FIFO order as permits free up", async () => {
+    const sem = new Semaphore(1)
+    const order: number[] = []
+    // First task holds the only permit; the next three queue and must resume in the order they asked.
+    const tasks = [0, 1, 2, 3].map((n) => sem.run(async () => {
+      order.push(n)
+      await new Promise((r) => setTimeout(r, 1))
+    }))
+    await Promise.all(tasks)
+    expect(order).toEqual([0, 1, 2, 3])
   })
 
-  it("captures a rejected thunk as a rejected result without throwing or aborting siblings", async () => {
-    const results = await runBounded(
-      [
-        async () => "a",
-        async () => {
-          throw new Error("boom")
-        },
-        async () => "c",
-      ],
-      { concurrency: 8 },
-    )
-    expect(results[0]).toEqual({ status: "fulfilled", value: "a" })
-    expect(results[1]?.status).toBe("rejected")
-    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(Error)
-    expect(results[2]).toEqual({ status: "fulfilled", value: "c" })
+  test("a non-finite or sub-1 permit count clamps to 1 (never zeroes the pool)", async () => {
+    expect(await new Semaphore(Number.NaN).run(async () => "ok")).toBe("ok")
+    expect(await new Semaphore(0).run(async () => "ok")).toBe("ok")
+    expect(await new Semaphore(-5).run(async () => "ok")).toBe("ok")
   })
 
-  it("handles an empty thunk list", async () => {
-    expect(await runBounded([], { concurrency: 4 })).toEqual([])
-  })
-
-  it("treats concurrency < 1 as 1 (never deadlocks or runs zero)", async () => {
-    const results = await runBounded([async () => 1, async () => 2], { concurrency: 0 })
-    expect(results.map((r) => (r.status === "fulfilled" ? r.value : null))).toEqual([1, 2])
-  })
-
-  it("runs EVERY thunk (never silently drops) when concurrency is non-finite (NaN / Infinity)", async () => {
-    // Regression: Math.max(1, Math.floor(NaN)) is NaN ⇒ zero workers ⇒ a results array full of holes that
-    // ctx.parallel would map to null slots with no ctx.errors entry (a D9 silent-drop violation).
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
-      const results = await runBounded([async () => "a", async () => "b", async () => "c"], { concurrency: bad })
-      expect(results.map((r) => (r.status === "fulfilled" ? r.value : "(HOLE)"))).toEqual(["a", "b", "c"])
-    }
-  })
-})
-
-describe("defaultConcurrency", () => {
-  it("is at least 1 and at most 16", () => {
-    const n = defaultConcurrency()
-    expect(n).toBeGreaterThanOrEqual(1)
-    expect(n).toBeLessThanOrEqual(16)
+  test("defaultConcurrency is min(16, cpus-2) and at least 1", async () => {
+    expect(defaultConcurrency()).toBe(Math.min(16, Math.max(1, (navigator.hardwareConcurrency || 4) - 2)))
   })
 })

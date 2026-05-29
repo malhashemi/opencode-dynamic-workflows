@@ -1,64 +1,78 @@
 /**
- * The bounded scheduler — the concurrency limiter behind `ctx.parallel`.
+ * The shared concurrency limiter. A {@link Semaphore} caps how many Units run at once across the WHOLE Run:
+ * the context owns one instance, and every primitive that launches a Unit (`agent`, and therefore `parallel`
+ * and `pipeline`, which only launch Units through `agent`) runs under `semaphore.run(...)`. Because the bound
+ * sits at the Unit level, total in-flight Units never exceeds the cap no matter how many `parallel`/`pipeline`
+ * calls are mid-flight at the same time (spec D5).
  *
- * opencode has no global cap on in-flight prompts (feasibility C6), so a fan-out would otherwise hammer the
- * provider's rate limits. {@link runBounded} runs a list of thunks with at most `concurrency` in flight at
- * once, returns results **positionally aligned** to the input (a barrier — like `Promise.allSettled`, but
- * bounded), and **never throws**: a rejected thunk lands as a `{ status: "rejected" }` slot so the surrounding
- * fan-out is never aborted (error model D9). It is deliberately ignorant of opencode and `ctx.errors` so it
- * can be unit-tested in complete isolation (the parallel-fan-out ticket's standalone-scheduler AC).
+ * No external deps — a hand-rolled permit pool with a FIFO waiter queue. `run` always releases its permit in a
+ * `finally`, so a throwing Unit can never strand a slot and deadlock the pool.
  */
 
-/** The ceiling on concurrent Units when a workflow declares no `meta.concurrency`. */
-const MAX_DEFAULT_CONCURRENCY = 16
+/** The plugin-wide default concurrency cap: min(16, max(1, cpus-2)). Mirrors the Workflow tool's cap. */
+export function defaultConcurrency(): number {
+  // `navigator.hardwareConcurrency` is the portable core count (Bun/Node 21+/browsers). Fall back to 4.
+  const cores = typeof navigator !== "undefined" && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 4
+  return Math.min(16, Math.max(1, cores - 2))
+}
 
-export interface RunBoundedOptions {
-  /**
-   * Max thunks in flight at once. Values < 1 are clamped to 1 (never deadlock, never run zero). A non-finite
-   * value (NaN/Infinity — e.g. a mis-computed caller value) is treated as "no limit" (run the whole batch)
-   * rather than dropping every thunk: the scheduler never silently drops (D9). Callers that want a sane
-   * bounded default for bad input should sanitize before calling (the engine uses `defaultConcurrency()`).
-   */
-  concurrency: number
+/** A clean Error for an abort, whatever the signal's `reason` is (DOMExceptions stringify poorly). */
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("workflow run aborted")
 }
 
 /**
- * Run `thunks` with bounded concurrency and return their settled outcomes positionally aligned to the input.
- *
- * Barrier semantics: resolves only once every thunk has settled. A queued thunk starts only as an in-flight
- * one settles, so at most `concurrency` run at any instant. A throwing/rejecting thunk is captured as a
- * rejected result rather than propagated, leaving siblings untouched.
+ * A counting semaphore with `permits` slots and a FIFO queue of waiters. `run(fn, signal?)` acquires a permit
+ * (awaiting one if none are free), runs `fn`, and releases the permit — handing it directly to the next waiter
+ * so the count is conserved. A non-finite or < 1 `permits` clamps to 1, so a mis-computed cap never zeroes the
+ * pool. When a `signal` is supplied, an acquire that is already-aborted or aborts WHILE QUEUED rejects and is
+ * removed from the queue (D11) — a Unit already past acquire keeps running (its slot is not killed mid-flight).
  */
-export async function runBounded<T>(
-  thunks: ReadonlyArray<() => Promise<T>>,
-  opts: RunBoundedOptions,
-): Promise<Array<PromiseSettledResult<T>>> {
-  // Non-finite (NaN/Infinity) ⇒ no limit (run the whole batch). Crucially NOT `Math.max(1, Math.floor(NaN))`,
-  // which is NaN ⇒ zero workers ⇒ every result slot left a hole (a silent drop). Finite ⇒ clamp to ≥ 1.
-  const limit = Number.isFinite(opts.concurrency) ? Math.max(1, Math.floor(opts.concurrency)) : thunks.length
-  const results = new Array<PromiseSettledResult<T>>(thunks.length)
-  let next = 0
+export class Semaphore {
+  private available: number
+  private readonly waiters: Array<() => void> = []
 
-  async function worker(): Promise<void> {
-    // Each worker pulls the next unclaimed index until the queue is drained; `limit` workers ⇒ ≤ limit
-    // thunks ever in flight. Index capture (not array order) keeps results positionally aligned.
-    while (next < thunks.length) {
-      const index = next++
-      try {
-        results[index] = { status: "fulfilled", value: await thunks[index]!() }
-      } catch (reason) {
-        results[index] = { status: "rejected", reason }
-      }
-    }
+  constructor(permits: number) {
+    this.available = Number.isFinite(permits) ? Math.max(1, Math.floor(permits)) : 1
   }
 
-  const workers = Array.from({ length: Math.min(limit, thunks.length) }, () => worker())
-  await Promise.all(workers)
-  return results
-}
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(abortReason(signal))
+    if (this.available > 0) {
+      this.available -= 1
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve, reject) => {
+      const waiter = () => {
+        cleanup()
+        resolve()
+      }
+      const onAbort = () => {
+        const i = this.waiters.indexOf(waiter)
+        if (i >= 0) this.waiters.splice(i, 1) // drop from the queue so release() never hands it a permit
+        cleanup()
+        reject(abortReason(signal!))
+      }
+      const cleanup = () => signal?.removeEventListener("abort", onAbort)
+      this.waiters.push(waiter)
+      signal?.addEventListener("abort", onAbort, { once: true })
+    })
+  }
 
-/** Default concurrency cap: `min(16, max(1, cpus - 2))` — mirrors the reference Workflow tool's limiter. */
-export function defaultConcurrency(): number {
-  const cpus = navigator.hardwareConcurrency || 4
-  return Math.min(MAX_DEFAULT_CONCURRENCY, Math.max(1, cpus - 2))
+  private release(): void {
+    const next = this.waiters.shift()
+    // Hand the permit straight to the next waiter (no count bump); only return it to the pool if none waits.
+    if (next) next()
+    else this.available += 1
+  }
+
+  /** Acquire a permit, run `fn`, and release the permit even if `fn` throws. Rejects if `signal` aborts first. */
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal)
+    try {
+      return await fn()
+    } finally {
+      this.release()
+    }
+  }
 }

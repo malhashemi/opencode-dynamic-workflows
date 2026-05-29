@@ -24,6 +24,10 @@ export interface RunWorkflowInput {
   parentSessionID: string
   tmpDir?: string
   events?: EngineEvents
+  /** Advisory output-token ceiling override; falls back to `meta.budget`, then null (uncapped). */
+  budget?: number
+  /** The Run's abort signal (the adapter forwards opencode's tool-abort signal). */
+  signal?: AbortSignal
   /** Unique id for the temp module filename (avoids Bun's import-by-URL cache colliding across Runs). */
   runId?: string
 }
@@ -61,14 +65,32 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       throw new Error("workflow source must `export default defineWorkflow({ meta, run })`")
     }
 
+    // D7: validate the caller's args against the declared `meta.args` schema BEFORE building the context or
+    // launching any Unit. Invalid input fails the Run immediately, naming the offending field(s) — never a
+    // half-run. With no schema, args pass through untouched (typed `unknown` to the author).
+    let args = input.args
+    const argsSchema = config.meta.args
+    if (argsSchema) {
+      const parsed = argsSchema.safeParse(input.args)
+      if (!parsed.success) {
+        const detail = parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+          .join("; ")
+        throw new Error(`invalid args: ${detail}`)
+      }
+      args = parsed.data
+    }
+
     const state = createEngineState()
     const ctx = createWorkflowContext({
       client: input.client,
       parentSessionID: input.parentSessionID,
-      args: input.args,
+      args,
       state,
       events: input.events,
       concurrency: config.meta.concurrency,
+      budget: input.budget ?? config.meta.budget ?? null,
+      signal: input.signal,
     })
 
     const result = await config.run(ctx)

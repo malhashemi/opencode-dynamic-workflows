@@ -24,13 +24,23 @@ Pass \`source\`: a TypeScript module that default-exports defineWorkflow({ meta,
     retried up to \`retries\` (default 2); a failed Unit resolves to null and is recorded in ctx.errors (never
     silently dropped).
   - parallel(thunks) → Promise<Array<T | null>>
-    Fan a list of Units out CONCURRENTLY and wait for all to settle (a barrier). Bounded by
-    meta.concurrency (default ~CPU-based). Results are positionally aligned to the input; a Unit that
-    fails/throws becomes a null slot (the fan-out is NOT aborted) and is appended to ctx.errors.
-  - collect(xs) → T[]   // drop the null slots from a parallel result AND type-narrow to T[]
+    Fan a list of Units out CONCURRENTLY and wait for all to settle (a barrier). Results are positionally
+    aligned to the input; a Unit that fails/throws becomes a null slot (the fan-out is NOT aborted) and is
+    appended to ctx.errors.
+  - pipeline(items, ...stages) → Promise<Array<lastResult | null>>
+    Run each item down the stage chain INDEPENDENTLY — NO barrier between items (item A can be in stage 3
+    while item B is still in stage 1). Each stage gets (runningValue, originalItem, index). A stage that
+    THROWS drops that item to null (skipping its remaining stages) and records it in ctx.errors; others keep
+    flowing. The default for staged per-item work; pair with collect() to feed survivors to a synthesis Unit.
+  - collect(xs) → T[]   // drop the null slots from a parallel/pipeline result AND type-narrow to T[]
   - errors   // ReadonlyArray<{ unit, prompt, subagent, error }> of every dropped Unit so far
-  - args     // the JSON value you pass as the tool's \`args\`
+  - args     // the value you pass as the tool's \`args\`; if meta.args is a zod schema it is VALIDATED +
+             // typed before the run starts (invalid input fails immediately, naming the offending field)
   - log(message), phase(title)  // progress
+
+CONCURRENCY: one shared limiter caps how many Units run at once across the WHOLE run (default ~CPU-based,
+or meta.concurrency). agent() is the only thing that launches a Unit, so parallel and pipeline both draw
+from that one cap — total in-flight Units never exceeds it, however many fan-outs are mid-flight.
 
 Example (fan-out + collect):
   import { defineWorkflow } from "@opencode-ai/workflow"
@@ -55,12 +65,26 @@ Example (structured output — the result is typed, compute on its fields with n
     },
   })
 
+Example (typed args + pipeline + collect → synthesis):
+  import { defineWorkflow, z } from "@opencode-ai/workflow"
+  export default defineWorkflow({
+    meta: { name: "review-each", description: "review then verify each file", args: z.object({ files: z.array(z.string()) }) },
+    async run({ agent, pipeline, collect, args }) {
+      const reviewed = await pipeline(
+        args.files,                                         // args is typed { files: string[] }, already validated
+        (file) => agent(\`Review \${file} for bugs.\`),       // stage 1: one Unit per file
+        (review) => agent(\`Verify: \${review}\`),            // stage 2: starts per-file as soon as stage 1 lands
+      )
+      return collect(reviewed)   // survivors only; dropped files stay visible in ctx.errors
+    },
+  })
+
 VISIBILITY: each Unit runs in its own child session — open any of them from the native session list to watch
 its transcript live (the output below also lists them). There is no inline live widget for this tool yet
 (rich in-run rendering is a tracked follow-up; see the orchestration spec).
 
-NOTE: pipeline, worktrees, checkpoints, and resume are not wired yet — this slice adds parallel/collect/errors
-and native structured output (agent({ schema })) on top of the sequential agent() path.`
+NOTE: worktrees, checkpoints, nested workflow(), and resume are not wired yet. This slice adds an advisory token
+budget (ctx.budget) and run cancellation (ctx.signal) on top of pipeline/typed-args/parallel/collect/errors.`
 
 /** Cap the per-Unit session listing in the output text; the full list is always in metadata.childSessions. */
 const MAX_LISTED_SESSIONS = 20
@@ -109,6 +133,7 @@ export const WorkflowPlugin: Plugin = async ({ client }) => {
               args: input.args,
               client: wfClient,
               parentSessionID: ctx.sessionID,
+              signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
               events: {
                 onLog: (m) => ctx.metadata({ title: `workflow: ${m}` }),
                 onPhase: (t) => ctx.metadata({ title: `workflow phase: ${t}` }),

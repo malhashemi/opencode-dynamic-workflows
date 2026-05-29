@@ -16,8 +16,12 @@ import { z } from "zod/v4"
 
 export { z }
 
-/** Declares a Workflow: its identity plus optional UX/typing metadata. */
-export interface WorkflowMeta {
+/**
+ * Declares a Workflow: its identity plus optional UX/typing metadata. Generic over the optional `args` zod
+ * schema `S`: when supplied, the Run's `args` are validated against it before any Unit launches and `ctx.args`
+ * is typed as `z.infer<S>` (see {@link DefineWorkflowConfig}).
+ */
+export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
   /** Unique name — the registry key and the `/workflow` dispatcher argument. */
   name: string
   /** One line; shown in the permission dialog / workflow list. */
@@ -28,6 +32,17 @@ export interface WorkflowMeta {
   phases?: { title: string; detail?: string }[]
   /** Per-workflow concurrency override (default: plugin config). */
   concurrency?: number
+  /**
+   * Advisory output-token ceiling, surfaced to `run` as `ctx.budget.total`. There is NO engine hard-stop — it
+   * informs author decisions (e.g. loop until `ctx.budget.remaining()` is low); over-budget Units still run.
+   */
+  budget?: number
+  /**
+   * Zod schema for the Run's `args`. When present, the caller's `args` are validated against it before any Unit
+   * launches — invalid input fails the Run immediately, naming the offending field — and `ctx.args` is typed
+   * as the schema's inferred type. Omit it for an untyped/unchecked `args` (`ctx.args` is then `unknown`).
+   */
+  args?: S
 }
 
 /**
@@ -99,8 +114,48 @@ export type ParallelFn = <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T
 export type CollectFn = <T>(xs: Array<T | null>) => T[]
 
 /**
- * The context handed to a Workflow's `run`. This slice implements `agent`, `parallel`, `collect`, `errors`,
- * `args`, `log`, `phase`; the remaining primitives (`pipeline`, `ask`, `workflow`, `budget`, `signal`,
+ * One {@link PipelineFn} stage. Receives the running value (`prev` — the previous stage's result, or the
+ * original item for stage 1), the original `item`, and its `index`. Returns the next running value (sync or
+ * async). A stage that **throws** collapses that item to `null` and skips its remaining stages (D9); other
+ * items keep flowing. (A Unit that *fails* via `agent()` returns `null` without throwing, so it flows on as
+ * `null` rather than dropping the item.)
+ */
+export type PipelineStage<P, R, I> = (prev: P, item: I, index: number) => R | Promise<R>
+
+/**
+ * Run each item down a chain of stages **independently — no barrier between items** (the default for staged
+ * work): item A can be in stage 3 while item B is still in stage 1. The overloads thread each stage's resolved
+ * return type into the next stage's `prev`, so a typed chain stays typed end-to-end; the result is
+ * `Array<lastStageResult | null>` (the `| null` is the per-item drop). Past four stages it falls back to the
+ * variadic form (results typed loosely). Bounding is uniform with everything else: a stage's Units go through
+ * {@link AgentFn}, which draws from the one shared limiter.
+ */
+export interface PipelineFn {
+  <I, A>(items: I[], s1: PipelineStage<I, A, I>): Promise<Array<Awaited<A> | null>>
+  <I, A, B>(
+    items: I[],
+    s1: PipelineStage<I, A, I>,
+    s2: PipelineStage<Awaited<A>, B, I>,
+  ): Promise<Array<Awaited<B> | null>>
+  <I, A, B, C>(
+    items: I[],
+    s1: PipelineStage<I, A, I>,
+    s2: PipelineStage<Awaited<A>, B, I>,
+    s3: PipelineStage<Awaited<B>, C, I>,
+  ): Promise<Array<Awaited<C> | null>>
+  <I, A, B, C, D>(
+    items: I[],
+    s1: PipelineStage<I, A, I>,
+    s2: PipelineStage<Awaited<A>, B, I>,
+    s3: PipelineStage<Awaited<B>, C, I>,
+    s4: PipelineStage<Awaited<C>, D, I>,
+  ): Promise<Array<Awaited<D> | null>>
+  <I>(items: I[], ...stages: Array<PipelineStage<any, any, I>>): Promise<Array<unknown>>
+}
+
+/**
+ * The context handed to a Workflow's `run`. This slice implements `agent`, `parallel`, `pipeline`, `collect`,
+ * `errors`, `args`, `log`, `phase`, `budget`, `signal`; the remaining primitives (`ask`, `workflow`,
  * `mergeWorktree`, …) arrive in later tickets and are intentionally omitted so the typed surface never
  * overstates what works.
  */
@@ -109,6 +164,8 @@ export interface WorkflowContext<A = unknown> {
   agent: AgentFn
   /** Fan a list of Units out concurrently (bounded barrier); failures become `null` slots + `errors`. */
   parallel: ParallelFn
+  /** Run each item down a stage chain independently — NO barrier between items (the default for staged work). */
+  pipeline: PipelineFn
   /** Drop `null` slots from a result array and type-narrow to the non-null element type. */
   collect: CollectFn
   /** The Units that have dropped so far (failed/threw), in the order they were recorded. */
@@ -119,20 +176,31 @@ export interface WorkflowContext<A = unknown> {
   log: (message: string) => void
   /** Begin a named progress phase; subsequent `agent()` calls group under it. */
   phase: (title: string) => void
+  /**
+   * Advisory token budget (D10): `total` is the caller's ceiling (or null), `spent()` the running output-token
+   * sum, `remaining()` is `max(0, total - spent())` (or Infinity when uncapped). No engine hard-stop.
+   */
+  budget: { total: number | null; spent(): number; remaining(): number }
+  /** The Run's abort signal (D11). Aborting stops launching queued Units; in-flight Units are not killed. */
+  signal: AbortSignal
 }
 
-/** A Workflow definition: declarative `meta` plus the `run` that orchestrates Units. */
-export interface DefineWorkflowConfig<A = unknown> {
-  meta: WorkflowMeta
-  run: (ctx: WorkflowContext<A>) => Promise<unknown>
+/**
+ * A Workflow definition: declarative `meta` plus the `run` that orchestrates Units. Generic over the `meta.args`
+ * schema `S` so `run`'s `ctx.args` is typed as `z.infer<S>` (or `unknown` when no schema is declared).
+ */
+export interface DefineWorkflowConfig<S extends z.ZodType = z.ZodType> {
+  meta: WorkflowMeta<S>
+  run: (ctx: WorkflowContext<z.infer<S>>) => Promise<unknown>
 }
 
 /**
  * Declares a Workflow. Validates `meta` and returns the config unchanged (identity), so the same shape works
  * for durable files (default-exported) and inline ad-hoc modules. No execution happens here — the engine
- * resolves the config and calls `run` with a live context.
+ * resolves the config and calls `run` with a live context. The `meta.args` schema (if any) drives both the
+ * compile-time type of `ctx.args` and the engine's runtime validation of the caller's input.
  */
-export function defineWorkflow<A = unknown>(config: DefineWorkflowConfig<A>): DefineWorkflowConfig<A> {
+export function defineWorkflow<S extends z.ZodType = z.ZodType>(config: DefineWorkflowConfig<S>): DefineWorkflowConfig<S> {
   if (!config || typeof config !== "object") {
     throw new TypeError("defineWorkflow: expected a { meta, run } config object")
   }

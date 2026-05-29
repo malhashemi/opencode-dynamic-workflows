@@ -8,7 +8,7 @@ describe("runAgent", () => {
     const client = makeFakeClient({ reply: "ANSWER" })
     const result = await runAgent(client, "parent-1", "do the thing", { subagent: "reviewer" })
 
-    expect(result).toEqual({ ok: true, kind: "text", text: "ANSWER", childSessionID: "child-1" })
+    expect(result).toEqual({ ok: true, kind: "text", text: "ANSWER", childSessionID: "child-1", outputTokens: 0 })
     expect(client.createCalls[0]?.body).toEqual({ parentID: "parent-1", title: "wf:reviewer" })
     expect(client.promptCalls[0]?.path).toEqual({ id: "child-1" })
     expect(client.promptCalls[0]?.body?.agent).toBe("reviewer")
@@ -29,7 +29,7 @@ describe("runAgent", () => {
       return { data: { info: null, parts: [{ type: "text", text: "first" }, { type: "text", text: "last" }] } }
     }
     const result = await runAgent(client, "p", "x")
-    expect(result).toEqual({ ok: true, kind: "text", text: "last", childSessionID: "child-1" })
+    expect(result).toEqual({ ok: true, kind: "text", text: "last", childSessionID: "child-1", outputTokens: 0 })
   })
 
   it("gives each Unit its OWN child session (serialization invariant)", async () => {
@@ -97,7 +97,7 @@ describe("runAgent — structured output", () => {
     const client = makeFakeClient({ structured: { title: "ok", score: 5 } })
     const result = await runAgent(client, "p", "rate it", { schema: Finding })
 
-    expect(result).toEqual({ ok: true, kind: "structured", value: { title: "ok", score: 5 }, childSessionID: "child-1" })
+    expect(result).toEqual({ ok: true, kind: "structured", value: { title: "ok", score: 5 }, childSessionID: "child-1", outputTokens: 0 })
     const fmt = client.promptCalls[0]?.body?.format
     expect(fmt?.type).toBe("json_schema")
     expect(fmt?.schema).toMatchObject({
