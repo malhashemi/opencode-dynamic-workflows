@@ -34,8 +34,9 @@ Pass \`source\`: a TypeScript module that default-exports defineWorkflow({ meta,
     flowing. The default for staged per-item work; pair with collect() to feed survivors to a synthesis Unit.
   - collect(xs) → T[]   // drop the null slots from a parallel/pipeline result AND type-narrow to T[]
   - errors   // ReadonlyArray<{ unit, prompt, subagent, error }> of every dropped Unit so far
-  - args     // the value you pass as the tool's \`args\`; if meta.args is a zod schema it is VALIDATED +
-             // typed before the run starts (invalid input fails immediately, naming the offending field)
+  - args     // the value you pass as the tool's \`args\` (a JSON value — object/array/etc); if meta.args is a
+             // zod schema it is VALIDATED + typed before the run starts (invalid input fails immediately,
+             // naming the offending field). A JSON string is accepted and parsed for you.
   - log(message), phase(title)  // progress
 
 CONCURRENCY: one shared limiter caps how many Units run at once across the WHOLE run (default ~CPU-based,
@@ -86,6 +87,32 @@ its transcript live (the output below also lists them). There is no inline live 
 NOTE: worktrees, checkpoints, nested workflow(), and resume are not wired yet. This slice adds an advisory token
 budget (ctx.budget) and run cancellation (ctx.signal) on top of pipeline/typed-args/parallel/collect/errors.`
 
+/**
+ * Restore the parsed-object contract for the one core caller that breaks it. The GitLab/DWS "workflow" model
+ * provider's toolExecutor runs `tool.execute(JSON.parse(argsJson), …)` (opencode `session/llm.ts:132`), which
+ * JSON-parses only the OUTER tool-args blob — so a nested `args` field the service emitted as a JSON string
+ * arrives here as a string instead of a value. Every other tool-call path (the Vercel AI SDK wrapper and the
+ * native llm runtime) parses + validates the model input against the schema first, so `args` is already an
+ * object there and this is a no-op. Our `args: z.any().optional()` is too permissive to reject the string, so
+ * we normalize at the boundary (the mirror of that seam) rather than teaching the provider-agnostic engine a
+ * transport quirk.
+ *
+ * Guarded two ways: (1) only a string is touched; (2) only a string that *looks* like a JSON object/array is
+ * parsed — so a legitimate `meta.args: z.string()` value like "hello", "123", or "true" is passed through
+ * unchanged (parsing those would be lossy: `JSON.parse("123")` is the number 123). A string that looks like
+ * JSON but fails to parse also falls through untouched; `meta.args` validation then gives the real error.
+ */
+export function normalizeArgs(args: unknown): unknown {
+  if (typeof args !== "string") return args
+  const trimmed = args.trim()
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return args
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return args
+  }
+}
+
 /** Cap the per-Unit session listing in the output text; the full list is always in metadata.childSessions. */
 const MAX_LISTED_SESSIONS = 20
 
@@ -130,7 +157,7 @@ export const WorkflowPlugin: Plugin = async ({ client }) => {
           try {
             const out = await runWorkflow({
               source: input.source,
-              args: input.args,
+              args: normalizeArgs(input.args), // un-stringify args from the workflow-provider seam (see normalizeArgs)
               client: wfClient,
               parentSessionID: ctx.sessionID,
               signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)

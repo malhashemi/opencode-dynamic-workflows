@@ -59,9 +59,24 @@ export default defineWorkflow({
 })
 `
 
+    // PROBE the token field directly (the budget open-item): a raw blocking prompt, then read info.tokens.output.
+    // Confirms the field path the budget relies on actually resolves to a positive integer on this provider.
+    const probe = await (client as any).session.create({ body: { parentID: root.id, title: "wf-token-probe" } })
+    const probeRes = await (client as any).session.prompt({
+      path: { id: probe.data.id },
+      body: { agent: "general", parts: [{ type: "text", text: "Write one sentence about the sea." }] },
+    })
+    console.log(`[live] token-probe info.tokens =`, probeRes.data?.info?.tokens)
+    const probedOutput = probeRes.data?.info?.tokens?.output
+    console.log(`[live] token-probe info.tokens.output =`, probedOutput, typeof probedOutput === "number" && probedOutput > 0 ? "✅ populated" : "⚠ zero/missing — field path may be wrong")
+
+    // Pass args as a JSON STRING to exercise the normalizeArgs coercion path end-to-end (the workflow-provider
+    // seam delivers args this way). The orchestrator itself does NOT coerce — only the plugin adapter does — so
+    // here we pre-normalize to mirror what index.ts execute() does before calling runWorkflow.
+    const { normalizeArgs } = await import("../../src/index")
     const out = await runWorkflow({
       source,
-      args: { words: ["happy", "POISON", "fast"] },
+      args: normalizeArgs('{"words":["happy","POISON","fast"]}'),
       client,
       parentSessionID: root.id,
       events: {
@@ -84,10 +99,11 @@ export default defineWorkflow({
       out.state.errors.length === 1 &&
       out.state.errors[0]?.unit === "pipeline#1"
     if (!ok) throw new Error("expected 2 survivors, 1 dropped item recorded as pipeline#1")
-    // The budget is advisory — we don't assert a token count (the exact SDK field is still a live-check open
-    // item; tokensSpent may legitimately be 0 if the field name differs). Print it so you can eyeball it.
+    // The budget is advisory — we don't fail on a token count. But cross-check it against the direct probe: if
+    // the probe showed a populated info.tokens.output yet the run's tokensSpent is 0, the budget plumbing is
+    // broken; if the probe itself was 0/missing, the field path in client.ts/runner.ts needs correcting.
     if (out.state.tokensSpent === 0) {
-      console.warn("[live] ⚠ tokensSpent is 0 — confirm the SDK reports output tokens under info.tokens.output")
+      console.warn("[live] ⚠ tokensSpent is 0 — see the token-probe line above to tell field-path-wrong from genuinely-small")
     }
     console.log("[live] PASS ✅")
   } catch (err) {

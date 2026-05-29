@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { WorkflowPlugin } from "../src/index"
+import { WorkflowPlugin, normalizeArgs } from "../src/index"
 import pluginDefault from "../src/index"
 import { makeFakeClient } from "./fake-client"
 
@@ -86,5 +86,47 @@ describe("WorkflowPlugin (adapter)", () => {
     const out = result as { title: string; output: string }
     expect(out.title).toBe("workflow failed")
     expect(out.output).toContain("Error:")
+  })
+
+  // Regression: the GitLab/DWS "workflow" provider's toolExecutor JSON.parses only the OUTER tool-args blob
+  // (opencode session/llm.ts:132), so a nested `args` field emitted as a JSON string reaches execute() as a
+  // STRING. The adapter must restore the parsed-object contract before running, or a typed meta.args schema
+  // rejects the string ("expected object, received string"). See normalizeArgs.
+  it("coerces a JSON-string `args` to an object so a typed workflow runs", async () => {
+    const client = makeFakeClient({ reply: "Hi, Sam!" })
+    const hooks = await WorkflowPlugin(fakePluginInput(client))
+    const result = await workflowTool(hooks).execute(
+      // args arrives as a STRING, exactly as the workflow-provider seam delivers it
+      { source: SIMPLE_WORKFLOW, args: '{"name":"Sam"}' as unknown as Record<string, unknown> },
+      fakeToolCtx("session-99"),
+    )
+    const out = result as { title: string; output: string }
+    expect(out.title).toBe("greet")
+    expect(out.output).toContain("Hi, Sam!") // ran — the workflow saw args.name = "Sam", not a raw string
+    // the prompt actually interpolated the parsed field, proving args.name was a string "Sam" not undefined
+    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "greet Sam" }])
+  })
+})
+
+describe("normalizeArgs", () => {
+  it("parses a JSON-string into its value (the workflow-provider seam)", () => {
+    expect(normalizeArgs('{"topics":["a","b"]}')).toEqual({ topics: ["a", "b"] })
+    expect(normalizeArgs("[1,2,3]")).toEqual([1, 2, 3])
+  })
+
+  it("passes a non-string value through untouched (every normal tool-call path)", () => {
+    const obj = { topics: ["a"] }
+    expect(normalizeArgs(obj)).toBe(obj) // same reference — no round-trip
+    expect(normalizeArgs(undefined)).toBeUndefined()
+    expect(normalizeArgs(42)).toBe(42)
+  })
+
+  it("leaves a non-JSON string AS the string (a legit z.string() meta.args)", () => {
+    // "hello" is not JSON; must not throw and must not be mangled — meta.args validation then decides.
+    expect(normalizeArgs("hello")).toBe("hello")
+    // a bare number-looking string would JSON.parse to a number, which would be WRONG for a z.string() arg;
+    // guard: only parse when it looks like a JSON object/array, so "123"/"true" stay strings.
+    expect(normalizeArgs("123")).toBe("123")
+    expect(normalizeArgs("true")).toBe("true")
   })
 })
