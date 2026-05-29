@@ -73,4 +73,23 @@ describe("runAgent", () => {
     const client = makeFakeClient()
     await expect(runAgent(client, "p", "x", { schema: { type: "object" } })).rejects.toThrow(/schema/)
   })
+
+  it("returns ok:false (never throws) when the prompt transport REJECTS", async () => {
+    const client = makeFakeClient()
+    client.session.prompt = async () => {
+      throw new Error("ECONNRESET")
+    }
+    const result = await runAgent(client, "p", "x")
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("ECONNRESET") })
+    expect((result as { childSessionID?: string }).childSessionID).toBe("child-1")
+  })
+
+  it("returns ok:false (never throws) when session.create itself REJECTS", async () => {
+    const client = makeFakeClient()
+    client.session.create = async () => {
+      throw new Error("server down")
+    }
+    const result = await runAgent(client, "p", "x")
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("server down") })
+  })
 })

@@ -64,8 +64,13 @@ describe("WorkflowPlugin (adapter)", () => {
     expect(typeof result).toBe("object")
     const out = result as { title: string; output: string; metadata?: Record<string, unknown> }
     expect(out.title).toBe("greet")
-    expect(out.output).toBe("Hi, Sam!")
+    expect(out.output).toContain("Hi, Sam!")
     expect(out.metadata?.units).toBe(1)
+
+    // out-of-band visibility: the child session is listed in the output and carried in metadata
+    expect(out.output).toContain("ran in child sessions")
+    expect(out.output).toContain("child-1")
+    expect(out.metadata?.childSessions).toHaveLength(1)
 
     // the Run was parented to the invoking session
     expect(client.createCalls[0]?.body?.parentID).toBe("session-42")

@@ -51,14 +51,49 @@ export interface AgentOpts {
  */
 export type AgentFn = (prompt: string, opts?: AgentOpts) => Promise<string | null>
 
+/** A dropped Unit, surfaced via {@link WorkflowContext.errors} (error model D9 — no silent drops). */
+export interface WorkflowError {
+  /** Human-facing identifier of the Unit that dropped: its `label`, else the resolved subagent name. */
+  unit: string
+  /** The prompt the dropped Unit was given. */
+  prompt: string
+  /** The subagent the dropped Unit ran (or would have run) as. */
+  subagent: string
+  /** The stringified failure reason. */
+  error: string
+}
+
 /**
- * The context handed to a Workflow's `run`. The walking skeleton implements `agent`, `args`, `log`, `phase`;
- * richer primitives (`parallel`, `pipeline`, `collect`, `ask`, `workflow`, `budget`, …) arrive in later
- * tickets and are intentionally omitted here so the typed surface never overstates what works.
+ * Run a list of Units concurrently and wait for all to settle (a **barrier**). Bounded by the workflow's
+ * `meta.concurrency` (or the plugin default), so a fan-out never exceeds the limiter. Results are returned
+ * **positionally aligned** to `thunks`; a Unit that fails/throws resolves to `null` in its slot (the fan-out
+ * is not aborted) and is appended to {@link WorkflowContext.errors}. Pair with {@link CollectFn} to drop the
+ * nulls with type-narrowing.
+ */
+export type ParallelFn = <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>>
+
+/**
+ * Drop the `null` slots from a {@link ParallelFn} result **and type-narrow** to the non-null element type
+ * (so the result is `T[]`, not `(T | null)[]` — unlike `.filter(Boolean)` under strict null checks). The
+ * dropped Units remain visible in {@link WorkflowContext.errors}.
+ */
+export type CollectFn = <T>(xs: Array<T | null>) => T[]
+
+/**
+ * The context handed to a Workflow's `run`. This slice implements `agent`, `parallel`, `collect`, `errors`,
+ * `args`, `log`, `phase`; the remaining primitives (`pipeline`, `ask`, `workflow`, `budget`, `signal`,
+ * `mergeWorktree`, …) arrive in later tickets and are intentionally omitted so the typed surface never
+ * overstates what works.
  */
 export interface WorkflowContext<A = unknown> {
   /** Run one Unit as a named subagent (default `"general"`). */
   agent: AgentFn
+  /** Fan a list of Units out concurrently (bounded barrier); failures become `null` slots + `errors`. */
+  parallel: ParallelFn
+  /** Drop `null` slots from a result array and type-narrow to the non-null element type. */
+  collect: CollectFn
+  /** The Units that have dropped so far (failed/threw), in the order they were recorded. */
+  errors: ReadonlyArray<WorkflowError>
   /** The validated/whole `args` value passed to the Run. */
   args: A
   /** Emit a narrator progress line. */

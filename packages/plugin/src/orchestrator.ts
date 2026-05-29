@@ -68,6 +68,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       args: input.args,
       state,
       events: input.events,
+      concurrency: config.meta.concurrency,
     })
 
     const result = await config.run(ctx)
