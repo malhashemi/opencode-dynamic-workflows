@@ -43,8 +43,8 @@ export interface SessionPromptResult {
   data?: {
     /** `error` carries a `StructuredOutputError` (named) when forced structured output fails; `structured` is
      * the validated payload when it succeeds (`prompt.ts:1458`). `tokens.output` is the assistant's output-token
-     * count for the advisory budget — the exact SDK field is pending a live check (orchestration spec open item),
-     * so the engine reads it best-effort and treats a missing value as 0. */
+     * count for the advisory budget — confirmed live (2026-05-29) to be populated synchronously on the blocking
+     * prompt response (matches the SDK `AssistantMessage.tokens.output`); read best-effort, missing ⇒ 0. */
     info?: { error?: unknown; structured?: unknown; tokens?: { output?: number } } | null
     parts?: PromptResultPart[]
   } | null

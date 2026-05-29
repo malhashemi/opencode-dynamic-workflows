@@ -109,8 +109,8 @@ export async function runAgent(
       })
 
       const info = res.data?.info
-      // Best-effort output-token count for the advisory budget; missing ⇒ 0 (the exact SDK field is a pending
-      // live-check per the spec's open item).
+      // Output-token count for the advisory budget. Confirmed live: `info.tokens.output` is populated on the
+      // blocking prompt response (a budget-burn workflow spent 2871/3000 across 4 ~300-word Units). Missing ⇒ 0.
       const outputTokens = info?.tokens?.output ?? 0
 
       if (schema === undefined) {
