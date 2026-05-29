@@ -1,0 +1,20 @@
+{
+  "name": "opencode-dynamic-workflows",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Deterministic multi-subagent Workflow orchestration for opencode, as a plugin (no core changes).",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --build",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.15.12",
+    "@opencode-ai/sdk": "1.15.12",
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}

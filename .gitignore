@@ -1,0 +1,13 @@
+# Node / Bun
+node_modules/
+bun.lockb
+
+# TS build artifacts
+*.tsbuildinfo
+packages/*/dist-types/
+
+# Local OpenCode setup for running the plugin from this checkout
+.opencode/
+
+# Built TUI plugin and web app (`bun run build`; shipped in the package, not committed)
+packages/plugin/dist/
