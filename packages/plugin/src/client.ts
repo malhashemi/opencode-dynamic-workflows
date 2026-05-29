@@ -13,10 +13,24 @@ export interface SessionCreateResult {
   data?: { id: string } | null
 }
 
-/** A text part to send into a prompt. v1.15.x has no `format`/json_schema field. */
+/** A text part to send into a prompt. */
 export interface PromptPartInput {
   type: "text"
   text: string
+}
+
+/**
+ * Native structured-output request. opencode's core reads `format` off the user message: a `json_schema`
+ * format makes it inject the validated `StructuredOutput` tool, force `toolChoice:"required"`, and persist
+ * `info.structured` (`prompt.ts:1403-1473`; shape `message-v2.ts:64-68`). The v1 SDK request types are stale
+ * and omit `format`, so the adapter hand-casts the body — the route itself accepts it (confirmed live by the
+ * structured binding-confirm). `schema` is a plain JSON Schema object (zod-derived; see schema-bridge).
+ */
+export interface PromptFormatInput {
+  type: "json_schema"
+  schema: Record<string, unknown>
+  /** Core's own retry budget — present for completeness; core does NOT consume it, so the engine retries. */
+  retryCount?: number
 }
 
 /** A returned message part. We only read `text` parts; others are ignored. */
@@ -27,7 +41,9 @@ export interface PromptResultPart {
 
 export interface SessionPromptResult {
   data?: {
-    info?: { error?: unknown } | null
+    /** `error` carries a `StructuredOutputError` (named) when forced structured output fails; `structured` is
+     * the validated payload when it succeeds (`prompt.ts:1458`). */
+    info?: { error?: unknown; structured?: unknown } | null
     parts?: PromptResultPart[]
   } | null
 }
@@ -45,6 +61,8 @@ export interface WorkflowClient {
         agent?: string
         model?: { providerID: string; modelID: string }
         parts: PromptPartInput[]
+        /** Hand-cast onto the v1 body (the v1 types omit it); core reads it to drive structured output. */
+        format?: PromptFormatInput
       }
       query?: { directory?: string }
     }): Promise<SessionPromptResult>

@@ -7,7 +7,7 @@
  * `state.errors` (error model D9) rather than throwing and aborting the Run; `ctx.parallel` fans Units out
  * across distinct child sessions under a bounded limiter and is a barrier.
  */
-import type { AgentOpts, WorkflowContext, WorkflowError } from "@opencode-ai/workflow"
+import type { AgentOpts, WorkflowContext, WorkflowError, z } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { DEFAULT_SUBAGENT, runAgent, stringifyError } from "./runner"
 import { defaultConcurrency, runBounded } from "./scheduler"
@@ -65,7 +65,10 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
   // clamps those to ≥ 1. This keeps a bad cap from silently dropping the whole fan-out (D9).
   const concurrency = Number.isFinite(input.concurrency) ? (input.concurrency as number) : defaultConcurrency()
 
-  const agent: WorkflowContext<A>["agent"] = async (prompt, opts: AgentOpts = {}) => {
+  // Implemented as a plain function cast to the generic `AgentFn`: the public type carries the conditional
+  // return (schema ⇒ inferred type, else string), which the body satisfies by returning the parsed `value` or
+  // the `text` — the cast is the standard way to reconcile a generic conditional return with its impl.
+  const agent = (async (prompt: string, opts: AgentOpts<z.ZodType> = {}) => {
     state.unitCount += 1
     const subagent = opts.subagent ?? DEFAULT_SUBAGENT
     const phase = opts.phase ?? state.currentPhase
@@ -76,6 +79,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
       subagent: opts.subagent,
       model: opts.model,
       schema: opts.schema,
+      retries: opts.retries,
     })
 
     // Record the Unit's child session (present even when the prompt failed; null only on create failure) so
@@ -84,10 +88,10 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     state.units.push(record)
     events?.onUnit?.(record)
 
-    if (result.ok) return result.text
+    if (result.ok) return result.kind === "structured" ? result.value : result.text
     state.errors.push({ unit: label ?? subagent, prompt, subagent, error: result.error })
     return null
-  }
+  }) as WorkflowContext<A>["agent"]
 
   // A barrier over distinct child sessions, bounded by the limiter. A Unit that fails via agent() has already
   // recorded its (rich) error and resolves to null — passed straight through. A thunk that *throws* (author

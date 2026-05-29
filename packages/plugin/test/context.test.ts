@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { z } from "@opencode-ai/workflow"
 import { createEngineState, createWorkflowContext } from "../src/context"
 import { makeFakeClient } from "./fake-client"
 
@@ -88,6 +89,51 @@ describe("createWorkflowContext", () => {
     ctx.phase("Review")
     await ctx.agent("y")
     expect(starts).toEqual([{ subagent: "general", phase: "Review" }])
+  })
+})
+
+describe("ctx.agent — structured output", () => {
+  const Finding = z.object({ title: z.string(), score: z.number() })
+
+  it("resolves to the typed object and a downstream stage computes on its fields without re-parsing", async () => {
+    const state = createEngineState()
+    const ctx = createWorkflowContext({
+      client: makeFakeClient({ structured: { title: "Race", score: 7 } }),
+      parentSessionID: "p",
+      args: undefined,
+      state,
+    })
+    const finding = await ctx.agent("rate it", { schema: Finding })
+    expect(finding).not.toBeNull()
+    // No re-parse: read the fields straight off the result (the typed-return AC).
+    expect(finding && finding.score * 2).toBe(14)
+    expect(finding?.title.toUpperCase()).toBe("RACE")
+    expect(state.unitCount).toBe(1)
+    expect(state.errors).toHaveLength(0)
+  })
+
+  it("drops to null + records ctx.errors when structured output never complies (after retries)", async () => {
+    const state = createEngineState()
+    const ctx = createWorkflowContext({
+      client: makeFakeClient({ structuredError: "would not call the tool" }),
+      parentSessionID: "p",
+      args: undefined,
+      state,
+    })
+    const out = await ctx.agent("rate it", { schema: Finding, label: "rater", retries: 1 })
+    expect(out).toBeNull()
+    expect(state.errors).toHaveLength(1)
+    expect(state.errors[0]).toMatchObject({ unit: "rater", prompt: "rate it" })
+    expect(state.errors[0]?.error).toContain("would not call the tool")
+    expect(state.units[0]).toMatchObject({ ok: false })
+  })
+
+  it("threads `retries` through to the engine retry loop", async () => {
+    const state = createEngineState()
+    const client = makeFakeClient({ structuredError: "nope" })
+    const ctx = createWorkflowContext({ client, parentSessionID: "p", args: undefined, state })
+    await ctx.agent("x", { schema: Finding, retries: 2 })
+    expect(client.promptCalls).toHaveLength(3) // 1 + 2 retries — proves the option reached runAgent
   })
 })
 

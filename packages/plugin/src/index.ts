@@ -16,9 +16,13 @@ const WORKFLOW_TOOL_DESCRIPTION = `Run a deterministic multi-subagent Workflow.
 
 Pass \`source\`: a TypeScript module that default-exports defineWorkflow({ meta, run }) from
 "@opencode-ai/workflow". The \`run\` function receives a context with:
-  - agent(prompt, { subagent?, label?, phase?, model? }) → Promise<string | null>
-    Runs one Unit as a named subagent (default "general") in its OWN child session; returns the subagent's
-    final text, or null if the Unit failed (the failure is recorded in ctx.errors — never silently dropped).
+  - agent(prompt, { subagent?, label?, phase?, model?, schema?, retries? }) → Promise<T | null>
+    Runs one Unit as a named subagent (default "general") in its OWN child session. Without \`schema\`, resolves
+    to the subagent's final text. With a zod \`schema\` (import { z } from "@opencode-ai/workflow"), requests
+    native structured output and resolves to the schema's INFERRED TYPE — a validated object, not text — so a
+    later step can read its fields directly. A StructuredOutputError or a payload that fails the schema is
+    retried up to \`retries\` (default 2); a failed Unit resolves to null and is recorded in ctx.errors (never
+    silently dropped).
   - parallel(thunks) → Promise<Array<T | null>>
     Fan a list of Units out CONCURRENTLY and wait for all to settle (a barrier). Bounded by
     meta.concurrency (default ~CPU-based). Results are positionally aligned to the input; a Unit that
@@ -40,12 +44,23 @@ Example (fan-out + collect):
     },
   })
 
+Example (structured output — the result is typed, compute on its fields with no re-parsing):
+  import { defineWorkflow, z } from "@opencode-ai/workflow"
+  export default defineWorkflow({
+    meta: { name: "rate", description: "structured rating of a PR" },
+    async run({ agent }) {
+      const Rating = z.object({ score: z.number(), reason: z.string() })
+      const r = await agent("Rate this PR 0-10 and give a one-line reason.", { schema: Rating })
+      return r && { doubled: r.score * 2, reason: r.reason }   // r is { score, reason }, not text
+    },
+  })
+
 VISIBILITY: each Unit runs in its own child session — open any of them from the native session list to watch
 its transcript live (the output below also lists them). There is no inline live widget for this tool yet
 (rich in-run rendering is a tracked follow-up; see the orchestration spec).
 
-NOTE: structured output (schema), pipeline, worktrees, checkpoints, and resume are not wired yet — this slice
-adds parallel/collect/errors on top of the sequential agent() path.`
+NOTE: pipeline, worktrees, checkpoints, and resume are not wired yet — this slice adds parallel/collect/errors
+and native structured output (agent({ schema })) on top of the sequential agent() path.`
 
 /** Cap the per-Unit session listing in the output text; the full list is always in metadata.childSessions. */
 const MAX_LISTED_SESSIONS = 20

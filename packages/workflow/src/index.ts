@@ -7,8 +7,12 @@
  * This package is intentionally thin and dependency-light (just `zod`): it is what BOTH durable workflow
  * files (`.opencode/workflows/*.ts`) and inline ad-hoc temp modules import, so it must resolve everywhere a
  * Workflow runs. The orchestration primitives themselves live in the plugin engine, not here.
+ *
+ * We re-export the **zod 4** API (`zod/v4`, shipped inside the same `zod` dependency) rather than the legacy
+ * v3 default, because v4 carries a built-in `z.toJSONSchema` — the engine's Schema-bridge needs it to turn an
+ * author's `schema` into the native `format:{json_schema}` request, with no extra dependency.
  */
-import { z } from "zod"
+import { z } from "zod/v4"
 
 export { z }
 
@@ -26,8 +30,11 @@ export interface WorkflowMeta {
   concurrency?: number
 }
 
-/** Options for a single {@link AgentFn} call — one Unit of a Run. */
-export interface AgentOpts {
+/**
+ * Options for a single {@link AgentFn} call — one Unit of a Run. Generic over the optional `schema`: when a
+ * zod schema is supplied, the Unit returns its inferred type instead of text (see {@link AgentFn}).
+ */
+export interface AgentOpts<S extends z.ZodType | undefined = undefined> {
   /** Registered subagent name to run this Unit as. Defaults to `"general"`. */
   subagent?: string
   /** Display label override. */
@@ -37,19 +44,31 @@ export interface AgentOpts {
   /** Model override `{ providerID, modelID }`; omit to inherit the session model. */
   model?: { providerID: string; modelID: string }
   /**
-   * Schema for structured output. NOTE: native `format`/json_schema is **not** available on the opencode
-   * v1.15.x SDK route — wiring this is a later ticket. Passing it today throws.
+   * Zod schema for structured output. The engine converts it to a native `format:{type:"json_schema"}`
+   * request; opencode forces its validated `StructuredOutput` tool and the engine parses the result back
+   * through this schema, so the Unit resolves to the schema's inferred type (not text).
    */
-  schema?: unknown
+  schema?: S
+  /**
+   * How many extra attempts to make when structured output fails (a `StructuredOutputError`, or a payload
+   * that fails this zod schema). Core itself does not retry; the engine does. Defaults to `2`. Ignored when
+   * no `schema` is supplied.
+   */
+  retries?: number
   /** Resume / continue an existing child session instead of creating a new one. */
   reuseSessionID?: string
 }
 
 /**
- * Runs one Unit: prompts a (by default freshly-created) child session under the named subagent and resolves
- * to its final assistant text, or `null` if the Unit failed/was skipped.
+ * Runs one Unit: prompts a (by default freshly-created) child session under the named subagent. With a
+ * `schema`, it resolves to that schema's inferred type (validated structured output); without one, to the
+ * Unit's final assistant text. Either way `null` on failure/skip (the drop is recorded in
+ * {@link WorkflowContext.errors}).
  */
-export type AgentFn = (prompt: string, opts?: AgentOpts) => Promise<string | null>
+export type AgentFn = <S extends z.ZodType | undefined = undefined>(
+  prompt: string,
+  opts?: AgentOpts<S>,
+) => Promise<(S extends z.ZodType ? z.infer<S> : string) | null>
 
 /** A dropped Unit, surfaced via {@link WorkflowContext.errors} (error model D9 — no silent drops). */
 export interface WorkflowError {
