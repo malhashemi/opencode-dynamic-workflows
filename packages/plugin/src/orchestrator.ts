@@ -16,6 +16,14 @@ import { createEngineState, createWorkflowContext, type EngineEvents, type Engin
 /** Temp modules live beside the engine so `@opencode-ai/workflow` resolves from our node_modules. */
 const DEFAULT_TMP_DIR = path.join(import.meta.dir, "..", ".wf-tmp")
 
+/**
+ * Default per-Unit prompt timeout (ms). Generous (a Unit may legitimately run minutes) but finite, so a hung
+ * subagent prompt — e.g. an unanswered permission ask in a headless child — fails the Unit instead of blocking
+ * the whole Run forever. Overridable per-Workflow (`meta.unitTimeout`), per-Run (`input.unitTimeout`), or
+ * per-Unit (`agent({ timeoutMs })`). The Run's abort signal also cancels in-flight Units regardless of this.
+ */
+const DEFAULT_UNIT_TIMEOUT_MS = 300_000
+
 export interface RunWorkflowInput {
   /** Inline Workflow source: a TS module that `export default defineWorkflow({ meta, run })`. */
   source: string
@@ -28,6 +36,8 @@ export interface RunWorkflowInput {
   budget?: number
   /** The Run's abort signal (the adapter forwards opencode's tool-abort signal). */
   signal?: AbortSignal
+  /** Default per-Unit prompt timeout (ms); falls back to `meta.unitTimeout`, then {@link DEFAULT_UNIT_TIMEOUT_MS}. */
+  unitTimeout?: number
   /** Unique id for the temp module filename (avoids Bun's import-by-URL cache colliding across Runs). */
   runId?: string
 }
@@ -123,6 +133,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       concurrency: config.meta.concurrency,
       budget: input.budget ?? config.meta.budget ?? null,
       signal: input.signal,
+      unitTimeout: input.unitTimeout ?? config.meta.unitTimeout ?? DEFAULT_UNIT_TIMEOUT_MS,
     })
 
     const result = await config.run(ctx)

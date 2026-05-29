@@ -11,7 +11,7 @@
  * raises `StructuredOutputError` with `retries:0`), so the retry lives HERE — each attempt a fresh child.
  */
 import type { z } from "@opencode-ai/workflow"
-import type { PromptFormatInput, WorkflowClient } from "./client"
+import type { PromptFormatInput, SessionPromptResult, WorkflowClient } from "./client"
 import { DEFAULT_RETRIES, parseStructured, toJsonSchema } from "./schema-bridge"
 
 /** Default subagent when a Unit omits `subagent` — `general` is a native opencode subagent. */
@@ -24,6 +24,53 @@ export interface RunAgentOptions {
   schema?: z.ZodType
   /** Extra attempts on a structured-output failure (default {@link DEFAULT_RETRIES}). Ignored without `schema`. */
   retries?: number
+  /**
+   * The Run's abort signal. When it fires, an IN-FLIGHT prompt is cancelled (via `session.abort`) and the Unit
+   * fails fast — not just queued Units (which the limiter handles). Without it, abort can't reach a running Unit.
+   */
+  signal?: AbortSignal
+  /**
+   * Wall-clock ceiling (ms) on the blocking prompt. On expiry the child prompt is cancelled and the Unit fails
+   * `ok:false` (recorded in ctx.errors) rather than hanging the whole Run — the guard against an unanswered
+   * permission ask or a stalled stream blocking forever. Absent/non-finite ⇒ no timeout (legacy long-Unit behavior).
+   */
+  timeoutMs?: number
+}
+
+type SettleResult = SessionPromptResult | "aborted" | "timeout"
+
+/**
+ * Await the blocking prompt, but race it against the Run's abort signal and an optional per-Unit timeout. On
+ * either, best-effort `session.abort` the child (so the server-side fiber is interrupted and the prompt
+ * resolves instead of leaking) and report the failure — so a hung Unit can never block the whole Run.
+ */
+async function settlePrompt(
+  promptCall: Promise<SessionPromptResult>,
+  childSessionID: string,
+  client: WorkflowClient,
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): Promise<SettleResult> {
+  const hasTimeout = timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0
+  if (!signal && !hasTimeout) return promptCall // no guard ⇒ original blocking behavior (long Units never cut)
+
+  const timeoutSig = hasTimeout ? AbortSignal.timeout(timeoutMs as number) : undefined
+  const signals = [signal, timeoutSig].filter((s): s is AbortSignal => s !== undefined)
+  const combined = signals.length === 1 ? (signals[0] as AbortSignal) : AbortSignal.any(signals)
+
+  const guard = new Promise<"aborted" | "timeout">((resolve) => {
+    const decide = () => resolve(timeoutSig?.aborted ? "timeout" : "aborted")
+    if (combined.aborted) decide()
+    else combined.addEventListener("abort", decide, { once: true })
+  })
+
+  const winner = await Promise.race([promptCall.then((res) => ({ res }) as const), guard])
+  if (winner === "aborted" || winner === "timeout") {
+    void Promise.resolve(client.session.abort({ path: { id: childSessionID } })).catch(() => {})
+    void promptCall.catch(() => {}) // swallow the orphaned prompt's eventual settle
+    return winner
+  }
+  return winner.res
 }
 
 /**
@@ -98,15 +145,27 @@ export async function runAgent(
       // Long-await guard: a Unit can run for many minutes. We impose NO client-side timeout on this blocking
       // prompt, so a slow Unit is not cut short by us; a dropped connection surfaces as a rejection (caught
       // below) or `info.error`, recorded in `ctx.errors` — never a silent drop. (Recorded per the long-await AC.)
-      const res = await client.session.prompt({
-        path: { id: childSessionID },
-        body: {
-          agent: subagent,
-          ...(opts.model ? { model: opts.model } : {}),
-          parts: [{ type: "text", text: prompt }],
-          ...(format ? { format } : {}),
-        },
-      })
+      const settled = await settlePrompt(
+        client.session.prompt({
+          path: { id: childSessionID },
+          body: {
+            agent: subagent,
+            ...(opts.model ? { model: opts.model } : {}),
+            parts: [{ type: "text", text: prompt }],
+            ...(format ? { format } : {}),
+          },
+        }),
+        childSessionID,
+        client,
+        opts.signal,
+        opts.timeoutMs,
+      )
+      // Abort/timeout are NOT structured failures — fail fast, no retry (retrying a hang would re-hang).
+      if (settled === "aborted") return { ok: false, error: "unit aborted before completion", childSessionID }
+      if (settled === "timeout") {
+        return { ok: false, error: `unit timed out after ${opts.timeoutMs}ms with no response — a subagent prompt hung (commonly an unanswered permission ask in the child session)`, childSessionID }
+      }
+      const res = settled
 
       const info = res.data?.info
       // Output-token count for the advisory budget. Confirmed live: `info.tokens.output` is populated on the

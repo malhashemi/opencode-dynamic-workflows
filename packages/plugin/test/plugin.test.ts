@@ -222,11 +222,23 @@ describe("workflow tool: durable registry (list + run-by-name)", () => {
     expect(res.title).toContain("workflows")
     expect(res.output).toContain("greet")
     expect(res.output).toContain("research:deep")
+    // the args schema must be in the model-visible OUTPUT (not just metadata) so run-by-name fills args right
+    expect(res.output).toContain("args:")
+    expect(res.output).toContain('"q"') // research:deep's args schema property, rendered into the output text
     const wfs = res.metadata?.workflows ?? []
     expect(wfs.map((w) => w.key).sort()).toEqual(["greet", "research:deep"])
-    // the nested workflow's args zod schema is surfaced as JSON Schema for the model to fill
+    // also surfaced structurally in metadata for the UI
     const deep = wfs.find((w) => w.key === "research:deep")
     expect((deep?.args as { properties?: Record<string, unknown> })?.properties).toHaveProperty("q")
+  })
+
+  it("echoes the expected args JSON Schema when run-by-name args fail validation", async () => {
+    await writeWorkflow("research/deep.ts", DEEP_DURABLE) // requires { q: string }
+    const hooks = await WorkflowPlugin(fakePluginInput(makeFakeClient(), { directory: project, worktree: project }))
+    const res = (await workflowTool(hooks).execute({ name: "research:deep", args: { wrong: 1 } }, fakeToolCtx("s"))) as { title: string; output: string }
+    expect(res.title).toContain("invalid args")
+    expect(res.output).toContain("q") // names the offending/expected field
+    expect(res.output).toContain("JSON Schema") // and echoes the full schema so the model corrects first-try
   })
 
   it("runs a durable workflow by its registry key", async () => {
@@ -275,9 +287,10 @@ describe("workflow tool: durable registry (list + run-by-name)", () => {
     expect(cmds.greet!.template).toContain('name: "greet"')
     expect(cmds["research/deep"]!.template).toContain('name: "research:deep"')
     expect(cmds["research/deep"]!.template).toContain("$ARGUMENTS")
-    // the typed workflow's args JSON Schema is baked into its command template
-    expect(cmds["research/deep"]!.template).toContain("JSON Schema")
-    expect(cmds.greet!.template).not.toContain("JSON Schema") // greet has no args schema
+    // a compact, readable arg summary (NOT the raw JSON Schema dump)
+    expect(cmds["research/deep"]!.template).toContain("q:") // the arg field, summarized
+    expect(cmds["research/deep"]!.template).not.toContain("JSON Schema")
+    expect(cmds.greet!.template).toContain("Args — none") // greet declares no args schema
   })
 
   it("does not clobber a user command that shares a workflow's name (??= → user wins)", async () => {

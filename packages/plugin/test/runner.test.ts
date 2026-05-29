@@ -169,3 +169,37 @@ describe("runAgent — structured output", () => {
     expect(client.createCalls).toHaveLength(0)
   })
 })
+
+describe("runAgent — timeout + abort (a hung prompt never blocks forever)", () => {
+  it("times out a hung prompt, cancels the child session, and fails the Unit", async () => {
+    const client = makeFakeClient({ hang: true })
+    const result = await runAgent(client, "p", "will hang", { timeoutMs: 30 })
+    expect(result.ok).toBe(false)
+    expect((result as { error: string }).error).toMatch(/timed out/)
+    expect(client.abortCalls).toEqual([{ id: "child-1" }]) // the child prompt was cancelled, not leaked
+  })
+
+  it("cancels an in-flight hung prompt when the Run signal aborts, and fails the Unit", async () => {
+    const client = makeFakeClient({ hang: true })
+    const ctrl = new AbortController()
+    ctrl.abort()
+    const result = await runAgent(client, "p", "will hang", { signal: ctrl.signal })
+    expect(result.ok).toBe(false)
+    expect((result as { error: string }).error).toMatch(/aborted/)
+    expect(client.abortCalls).toEqual([{ id: "child-1" }])
+  })
+
+  it("does NOT cancel a prompt that completes within the timeout window", async () => {
+    const client = makeFakeClient({ reply: "fast", delayMs: 5 })
+    const result = await runAgent(client, "p", "x", { timeoutMs: 5000 })
+    expect(result).toMatchObject({ ok: true, text: "fast" })
+    expect(client.abortCalls).toHaveLength(0)
+  })
+
+  it("with neither signal nor timeout, keeps the original blocking behavior", async () => {
+    const client = makeFakeClient({ reply: "ok" })
+    const result = await runAgent(client, "p", "x")
+    expect(result).toMatchObject({ ok: true, text: "ok" })
+    expect(client.abortCalls).toHaveLength(0)
+  })
+})

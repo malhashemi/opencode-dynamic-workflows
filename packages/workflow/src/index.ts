@@ -33,6 +33,12 @@ export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
   /** Per-workflow concurrency override (default: plugin config). */
   concurrency?: number
   /**
+   * Default per-Unit prompt timeout (ms) for this Workflow's Units (a Unit's own `agent({ timeoutMs })`
+   * overrides it). On expiry the Unit fails `null` instead of hanging the Run. Omit to inherit the engine
+   * default. Raise it for legitimately long Units, or set a small value to fail fast.
+   */
+  unitTimeout?: number
+  /**
    * Advisory output-token ceiling, surfaced to `run` as `ctx.budget.total`. There is NO engine hard-stop — it
    * informs author decisions (e.g. loop until `ctx.budget.remaining()` is low); over-budget Units still run.
    */
@@ -70,6 +76,12 @@ export interface AgentOpts<S extends z.ZodType | undefined = undefined> {
    * no `schema` is supplied.
    */
   retries?: number
+  /**
+   * Wall-clock ceiling (ms) for THIS Unit's prompt. On expiry the child prompt is cancelled and the Unit
+   * resolves to `null` (recorded in {@link WorkflowContext.errors}) — so a hung subagent never blocks the Run.
+   * Overrides the Run default ({@link WorkflowMeta.unitTimeout}). Omit to inherit it.
+   */
+  timeoutMs?: number
   /** Resume / continue an existing child session instead of creating a new one. */
   reuseSessionID?: string
 }
@@ -181,7 +193,7 @@ export interface WorkflowContext<A = unknown> {
    * sum, `remaining()` is `max(0, total - spent())` (or Infinity when uncapped). No engine hard-stop.
    */
   budget: { total: number | null; spent(): number; remaining(): number }
-  /** The Run's abort signal (D11). Aborting stops launching queued Units; in-flight Units are not killed. */
+  /** The Run's abort signal (D11). Aborting stops launching queued Units AND cancels in-flight Units (their child prompt is `session.abort`-ed); each dropped Unit is recorded in {@link errors}. */
   signal: AbortSignal
 }
 

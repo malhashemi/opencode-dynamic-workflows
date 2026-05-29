@@ -63,6 +63,8 @@ export interface CreateContextInput<A> {
   budget?: number | null
   /** The Run's abort signal (the adapter forwards opencode's tool-abort signal); defaults to never-aborted. */
   signal?: AbortSignal
+  /** Default per-Unit prompt timeout (ms) — a Unit's `agent({ timeoutMs })` overrides it; absent ⇒ no default. */
+  unitTimeout?: number
 }
 
 export function createWorkflowContext<A>(input: CreateContextInput<A>): WorkflowContext<A> {
@@ -77,8 +79,9 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
   // same cap — total in-flight Units never exceeds it, however many primitives are mid-flight at once (D5).
   const limiter = new Semaphore(concurrency)
 
-  // The Run's abort signal — threaded into the limiter so a cancelled Run stops launching queued Units (D11).
-  // Default to a fresh, never-aborted signal so `ctx.signal` is always a real AbortSignal.
+  // The Run's abort signal — threaded into the limiter (stops launching QUEUED Units) AND into each Unit's
+  // prompt (cancels an IN-FLIGHT Unit via session.abort, so a hung subagent is freed) (D11). Default to a
+  // fresh, never-aborted signal so `ctx.signal` is always a real AbortSignal.
   const signal = input.signal ?? new AbortController().signal
 
   // Advisory budget (D10) — NO engine hard-stop. `total` is the caller's ceiling (null ⇒ none); `spent()` reads
@@ -110,6 +113,11 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           model: opts.model,
           schema: opts.schema,
           retries: opts.retries,
+          // Forward the Run signal (so abort cancels this in-flight Unit, not just queued ones) + the per-Unit
+          // timeout (a Unit's own `timeoutMs` overrides the Run default), so a hung prompt fails instead of
+          // blocking the whole Run.
+          signal,
+          timeoutMs: opts.timeoutMs ?? input.unitTimeout,
         })
 
         // Record the Unit's child session (present even when the prompt failed; null only on create failure) so

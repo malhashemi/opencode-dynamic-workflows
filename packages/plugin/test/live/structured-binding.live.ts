@@ -79,6 +79,7 @@ async function main() {
         sentModels.push(input.body?.model)
         return real.session.prompt(input)
       },
+      abort: (input) => real.session.abort(input),
     },
   }
 

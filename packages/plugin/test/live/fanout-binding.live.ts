@@ -63,6 +63,7 @@ async function main() {
           promptWindows.push({ start, end: Date.now() })
         }
       },
+      abort: (input) => real.session.abort(input),
     },
   }
 

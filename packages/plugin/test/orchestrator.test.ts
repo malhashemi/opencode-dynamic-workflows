@@ -198,6 +198,40 @@ describe("durable file loading (runWorkflowFromFile / loadWorkflowConfig)", () =
   })
 })
 
+describe("runWorkflow — hung Unit recovery (timeout + abort, no infinite hang)", () => {
+  it("times out a hung Unit (meta.unitTimeout) → null + recorded error; the Run still completes", async () => {
+    const client = makeFakeClient({ hang: true })
+    const out = await runWorkflow({
+      source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({ meta: { name: "hang", description: "x", unitTimeout: 30 }, async run({ agent }) { return { r: await agent("this will hang") } } })`,
+      client,
+      parentSessionID: "p",
+    })
+    expect(out.result).toEqual({ r: null }) // the hung Unit resolved to null instead of blocking
+    expect(out.state.errors[0]?.error).toMatch(/timed out/)
+    expect(client.abortCalls.length).toBeGreaterThan(0) // the child prompt was cancelled, not leaked
+  })
+
+  it("aborting the Run cancels an IN-FLIGHT hung Unit (not just queued ones)", async () => {
+    const client = makeFakeClient({ hang: true })
+    const ctrl = new AbortController()
+    const p = runWorkflow({
+      // no short unitTimeout — only the abort can end this hang within the test
+      source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({ meta: { name: "hang2", description: "x" }, async run({ agent }) { return { r: await agent("hang") } } })`,
+      client,
+      parentSessionID: "p",
+      signal: ctrl.signal,
+    })
+    await new Promise((r) => setTimeout(r, 25)) // let the Unit launch + begin its (hanging) prompt
+    ctrl.abort()
+    const out = await p
+    expect(out.result).toEqual({ r: null })
+    expect(out.state.errors[0]?.error).toMatch(/aborted/)
+    expect(client.abortCalls.length).toBeGreaterThan(0)
+  })
+})
+
 import { readdir } from "node:fs/promises"
 import path from "node:path"
 

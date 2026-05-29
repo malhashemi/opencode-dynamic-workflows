@@ -68,5 +68,11 @@ export interface WorkflowClient {
       }
       query?: { directory?: string }
     }): Promise<SessionPromptResult>
+    /**
+     * Cancel an in-flight prompt on a child session (`POST /session/{id}/abort`). Used to recover a Unit whose
+     * blocking prompt has hung (e.g. on an unanswered permission ask) or whose Run was aborted — interrupting
+     * the server-side fiber resolves the otherwise-unbounded prompt instead of leaking it.
+     */
+    abort(input: { path: { id: string } }): Promise<unknown>
   }
 }

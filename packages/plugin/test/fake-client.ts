@@ -49,11 +49,15 @@ export interface FakeClientOptions {
   delayMs?: number
   /** Output-token count reported on each prompt's `info.tokens.output` — drives the budget path. */
   outputTokens?: number
+  /** Make every prompt HANG (never resolve) until `session.abort` is called for it — drives the timeout/abort path. */
+  hang?: boolean
 }
 
 export interface FakeClient extends WorkflowClient {
   createCalls: CreateCall[]
   promptCalls: PromptCall[]
+  /** Child-session ids passed to `session.abort` (the timeout/abort recovery path). */
+  abortCalls: { id: string }[]
   /** Live concurrency meter for the prompt path; `peak` is the max simultaneous in-flight prompts observed. */
   meter: { active: number; peak: number }
 }
@@ -79,14 +83,19 @@ function build(spec: FakeResponse, outputTokens?: number) {
 export function makeFakeClient(opts: FakeClientOptions = {}): FakeClient {
   const createCalls: CreateCall[] = []
   const promptCalls: PromptCall[] = []
+  const abortCalls: { id: string }[] = []
   const meter = { active: 0, peak: 0 }
   let counter = 0
   let promptIndex = 0
   const idPrefix = opts.idPrefix ?? "child"
+  // Resolvers for hung prompts, keyed by child session id; `abort` resolves them (mirrors opencode's
+  // abort → onInterrupt resolving the prompt) so the test leaves no dangling promise.
+  const pendingHangs = new Map<string, () => void>()
 
   return {
     createCalls,
     promptCalls,
+    abortCalls,
     meter,
     session: {
       async create(input) {
@@ -95,8 +104,23 @@ export function makeFakeClient(opts: FakeClientOptions = {}): FakeClient {
         if (opts.noSessionId) return { data: null }
         return { data: { id: `${idPrefix}-${counter}` } }
       },
+      async abort(input) {
+        abortCalls.push({ id: input.path.id })
+        const resolve = pendingHangs.get(input.path.id)
+        if (resolve) {
+          pendingHangs.delete(input.path.id)
+          resolve()
+        }
+        return { data: true }
+      },
       async prompt(input) {
         promptCalls.push(input)
+        // Hang mode: never settle until aborted (the runner's timeout/abort race handles it).
+        if (opts.hang) {
+          return new Promise<ReturnType<typeof build>>((resolve) => {
+            pendingHangs.set(input.path.id, () => resolve(build({ error: "aborted" }, opts.outputTokens)))
+          })
+        }
         meter.active += 1
         meter.peak = Math.max(meter.peak, meter.active)
         try {

@@ -121,15 +121,13 @@ here is unfiltered). Worktrees, checkpoints, nested workflow(), and resume are n
  * Note: opencode expands `$ARGUMENTS` (and runs its `` !`…` `` shell substitution) on the template before
  * sending — same behavior as every other command; a `<key>` containing that pattern is the user's own shell.
  */
-const WORKFLOW_COMMAND_TEMPLATE = `The user invoked: /workflow $ARGUMENTS
+const WORKFLOW_COMMAND_TEMPLATE = `Run a durable Workflow. The first word of the request is the workflow key; the rest is the request to run it on.
 
-Run the requested durable Workflow by calling the \`workflow\` tool:
-- The FIRST whitespace-separated token of "$ARGUMENTS" is the Workflow's registry key (e.g. "deep-research" or
-  "research:deep"). Call \`workflow\` with { name: "<that key>" }.
-- Pass any REMAINING text as the workflow's \`args\`, shaped to match that workflow's args schema.
-- If "$ARGUMENTS" is empty, or you are unsure of the key or its args, FIRST call \`workflow\` with { list: true }
-  to see the available keys + each workflow's args JSON Schema, then run the best match.
-Run it by name — do not paste workflow source.`
+Call \`workflow({ name: "<first word>", args })\`, building \`args\` from the rest of the request. If the key or
+its args are unclear (or the request is empty), call \`workflow({ list: true })\` first to see the keys + arg
+schemas, then run the best match. Run by name — do not paste source.
+
+**Request:** $ARGUMENTS`
 
 /**
  * Restore the parsed-object contract for the one core caller that breaks it. The GitLab/DWS "workflow" model
@@ -216,26 +214,38 @@ function commandNameForKey(key: string): string {
   return key.replaceAll(":", "/")
 }
 
-/** A compact "how to fill args" hint baked into a per-workflow command template (the schema is known at init). */
-function argsHint(argsSchema: unknown): string {
+/** A compact, human-readable one-line arg summary from a workflow's schema, e.g. `phrase: string (required)`. */
+function argsSummary(argsSchema: unknown): string {
   const js = argsSchemaOf(argsSchema)
-  if (!js) return "This Workflow declares no args schema — pass args:{} or infer them from the request."
-  return `Shape \`args\` to satisfy this JSON Schema: ${JSON.stringify(js)}`
+  const props = js?.properties as Record<string, Record<string, unknown>> | undefined
+  if (!props || Object.keys(props).length === 0) return "none"
+  const required = new Set(Array.isArray(js?.required) ? (js?.required as string[]) : [])
+  return Object.entries(props)
+    .map(([name, p]) => {
+      let type = typeof p.type === "string" ? p.type : "any"
+      if (Array.isArray(p.enum)) type = p.enum.map((e) => JSON.stringify(e)).join("|")
+      if (type === "array") type = `${(p.items as { type?: string } | undefined)?.type ?? "any"}[]`
+      const def = p.default !== undefined ? ` = ${JSON.stringify(p.default)}` : ""
+      const req = required.has(name) && p.default === undefined ? " (required)" : ""
+      return `${name}: ${type}${def}${req}`
+    })
+    .join(", ")
 }
 
 /**
- * Template for a single workflow's own `/<name>` command. Bakes the workflow's `:`-key (the tool's `name`
- * arg) + its args-schema hint, and feeds the user's `$ARGUMENTS` as the request the model turns into `args`.
+ * Template for a single workflow's own `/<name>` command. Bakes the workflow's `:`-key (the tool's `name` arg)
+ * + a clean arg summary, and feeds the user's `$ARGUMENTS` as the request the model turns into `args`. (The
+ * precise full JSON Schema is available via `list` and echoed on a validation miss, for complex/edge args.)
  */
 function perWorkflowTemplate(entry: RegistryEntry): string {
-  const lines = [`Run the "${entry.key}" durable Workflow (${entry.meta.description}).`]
-  if (entry.meta.whenToUse) lines.push(`When to use: ${entry.meta.whenToUse}`)
+  const lines = [`**${entry.key}** — ${entry.meta.description}`]
+  if (entry.meta.whenToUse) lines.push(`_${entry.meta.whenToUse}_`)
   lines.push(
-    `Call the \`workflow\` tool: workflow({ name: ${JSON.stringify(entry.key)}, args: <built from the request below> }).`,
-    argsHint(entry.meta.args),
-    "Run it by name — do not paste source.",
     "",
-    "Request / context: $ARGUMENTS",
+    `Run it by calling \`workflow({ name: ${JSON.stringify(entry.key)}, args })\`, building \`args\` from the request below — do not paste source.`,
+    `Args — ${argsSummary(entry.meta.args)}`,
+    "",
+    "**Request:** $ARGUMENTS",
   )
   return lines.join("\n")
 }
@@ -251,6 +261,10 @@ function listResult(reg: Registry) {
     for (const e of entries) {
       lines.push(`  - ${e.key} — ${e.meta.description}`)
       if (e.meta.whenToUse) lines.push(`      when: ${e.meta.whenToUse}`)
+      // The args schema MUST be in the output text (not just metadata) — the model reads `output`, not the
+      // UI-only `metadata`. Without this the model guesses arg names when running by name / via /workflow.
+      const schema = argsSchemaOf(e.meta.args)
+      lines.push(`      args: ${schema ? JSON.stringify(schema) : "(none — pass args:{} or omit)"}`)
     }
   }
   if (reg.collisions.length > 0) {
@@ -440,7 +454,18 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree }) =>
                   output: `No durable Workflow named "${input.name}".\nRegistered: ${known.length ? known.join(", ") : "(none)"}.\nCall workflow({ list: true }) for descriptions + args schemas.`,
                 }
               }
-              return runResult(await runWorkflowFromFile(entry.absPath, common))
+              try {
+                return runResult(await runWorkflowFromFile(entry.absPath, common))
+              } catch (error) {
+                // Echo the expected schema on an arg-validation miss so the model fixes `args` first-try
+                // (rather than guessing field names). Other errors fall through to the outer catch.
+                const msg = error instanceof Error ? error.message : String(error)
+                if (msg.startsWith("invalid args")) {
+                  const schema = argsSchemaOf(entry.meta.args)
+                  return { title: "workflow: invalid args", output: schema ? `${msg}\nExpected args JSON Schema: ${JSON.stringify(schema)}` : msg }
+                }
+                throw error
+              }
             }
 
             // RUN AD-HOC — inline source.
