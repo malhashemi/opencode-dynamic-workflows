@@ -6,7 +6,7 @@
  * resolves via our workspace `node_modules`, independent of the host project (verified gotcha). Bun caches
  * imports by URL, so each Run gets a unique filename.
  */
-import { mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import type { DefineWorkflowConfig } from "@opencode-ai/workflow"
@@ -48,23 +48,55 @@ function isWorkflowConfig(value: unknown): value is DefineWorkflowConfig {
 }
 
 /**
- * Load inline `source` as a Workflow module, build a live context, run it, and return the result plus the
- * captured engine state. The temp file is always cleaned up.
+ * Materialize Workflow `source` as a unique temp `.ts` and `import()` it, returning the validated config plus
+ * the temp file path (the caller owns cleanup). The unique `wf-${runId}.ts` filename is the cache-bust: Bun
+ * keys its import cache by resolved real path, so a stable path would return the STALE module after an edit —
+ * a fresh filename always loads fresh bytes (verified; see discovery-dispatcher-surface research). This is why
+ * a durable file edited mid-session is picked up: {@link runWorkflowFromFile} re-reads its bytes each call and
+ * routes them through here under a new filename.
  */
-export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowOutput> {
-  const tmpDir = input.tmpDir ?? DEFAULT_TMP_DIR
-  const runId = input.runId ?? crypto.randomUUID()
+async function materialize(source: string, tmpDir: string, runId: string): Promise<{ config: DefineWorkflowConfig; file: string }> {
   await mkdir(tmpDir, { recursive: true })
   const file = path.join(tmpDir, `wf-${runId}.ts`)
-  await writeFile(file, input.source, "utf8")
-
+  await writeFile(file, source, "utf8")
   try {
     const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>
     const config = mod.default ?? mod.workflow
     if (!isWorkflowConfig(config)) {
       throw new Error("workflow source must `export default defineWorkflow({ meta, run })`")
     }
+    return { config, file }
+  } catch (err) {
+    // Don't leak the temp file if the import itself threw (syntax error, bad export) — the caller's `finally`
+    // never runs because we never returned the path.
+    await rm(file, { force: true })
+    throw err
+  }
+}
 
+/**
+ * Load a Workflow module's config from `source` WITHOUT running it — used by the registry to read `meta`
+ * (name/description/args schema) for discovery + listing. The module is fully imported into memory before the
+ * temp file is removed, so the returned config (incl. its live `run` + zod `meta.args`) stays valid.
+ */
+export async function loadWorkflowConfig(source: string, opts: { tmpDir?: string; runId?: string } = {}): Promise<DefineWorkflowConfig> {
+  const tmpDir = opts.tmpDir ?? DEFAULT_TMP_DIR
+  const runId = opts.runId ?? crypto.randomUUID()
+  const { config, file } = await materialize(source, tmpDir, runId)
+  await rm(file, { force: true })
+  return config
+}
+
+/**
+ * Load `source` as a Workflow module, build a live context, run it, and return the result plus the captured
+ * engine state. The temp file is always cleaned up.
+ */
+export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowOutput> {
+  const tmpDir = input.tmpDir ?? DEFAULT_TMP_DIR
+  const runId = input.runId ?? crypto.randomUUID()
+  const { config, file } = await materialize(input.source, tmpDir, runId)
+
+  try {
     // D7: validate the caller's args against the declared `meta.args` schema BEFORE building the context or
     // launching any Unit. Invalid input fails the Run immediately, naming the offending field(s) — never a
     // half-run. With no schema, args pass through untouched (typed `unknown` to the author).
@@ -98,4 +130,17 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
   } finally {
     await rm(file, { force: true })
   }
+}
+
+/**
+ * Run a DURABLE Workflow from a file path: read its current bytes and route them through {@link runWorkflow}.
+ * Reading fresh each call (rather than `import()`-ing the path directly) is what makes an in-session edit take
+ * effect — the bytes go to a fresh temp filename, sidestepping Bun's path-keyed import cache.
+ */
+export async function runWorkflowFromFile(
+  absPath: string,
+  input: Omit<RunWorkflowInput, "source">,
+): Promise<RunWorkflowOutput> {
+  const source = await readFile(absPath, "utf8")
+  return runWorkflow({ ...input, source })
 }

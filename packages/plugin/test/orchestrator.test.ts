@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
-import { runWorkflow } from "../src/orchestrator"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile } from "../src/orchestrator"
 import { makeFakeClient } from "./fake-client"
 
 const ECHO_WORKFLOW = `
@@ -137,6 +139,62 @@ describe("runWorkflow (inline source → run → result)", () => {
     expect(prompts).not.toContain("review:bad")
     expect(prompts).toContain("review:a")
     expect(prompts).toContain("review:b")
+  })
+})
+
+describe("durable file loading (runWorkflowFromFile / loadWorkflowConfig)", () => {
+  async function durableDir(): Promise<string> {
+    return mkdtemp(path.join(os.tmpdir(), "wf-durable-"))
+  }
+
+  it("runs a durable workflow file by path (read bytes → run)", async () => {
+    const dir = await durableDir()
+    try {
+      const file = path.join(dir, "echo.ts")
+      await writeFile(file, ECHO_WORKFLOW, "utf8")
+      const client = makeFakeClient({ reply: "HELLO" })
+      const out = await runWorkflowFromFile(file, { args: { word: "hi" }, client, parentSessionID: "p" })
+      expect(out.meta.name).toBe("echo")
+      expect(out.result).toEqual({ out: "HELLO", word: "hi" })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The load-bearing in-session-edit behavior: a durable file edited between runs (SAME path) must run its NEW
+  // content. Bun caches imports by resolved real path, so this only works because runWorkflowFromFile re-reads
+  // the bytes and materialize() writes them to a fresh unique temp filename each call.
+  it("picks up an in-session EDIT to the same durable path (fresh bytes, not the stale module)", async () => {
+    const dir = await durableDir()
+    try {
+      const file = path.join(dir, "ver.ts")
+      const mk = (body: string) =>
+        `import { defineWorkflow } from "@opencode-ai/workflow"\n` +
+        `export default defineWorkflow({ meta: { name: "ver", description: "v" }, async run() { return ${JSON.stringify(body)} } })\n`
+      await writeFile(file, mk("V1"), "utf8")
+      const r1 = await runWorkflowFromFile(file, { client: makeFakeClient(), parentSessionID: "p" })
+      expect(r1.result).toBe("V1")
+
+      await writeFile(file, mk("V2"), "utf8") // edit the SAME path mid-session
+      const r2 = await runWorkflowFromFile(file, { client: makeFakeClient(), parentSessionID: "p" })
+      expect(r2.result).toBe("V2")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("loadWorkflowConfig returns meta + run without executing (no prompts, temp cleaned)", async () => {
+    const before = await tmpFileCount()
+    const config = await loadWorkflowConfig(ECHO_WORKFLOW)
+    expect(config.meta.name).toBe("echo")
+    expect(typeof config.run).toBe("function")
+    expect(await tmpFileCount()).toBe(before) // module imported into memory, temp removed
+  })
+
+  it("does not leak a temp file when the source import throws", async () => {
+    const before = await tmpFileCount()
+    await expect(loadWorkflowConfig(`export const nope = 1`)).rejects.toThrow(/defineWorkflow/)
+    expect(await tmpFileCount()).toBe(before)
   })
 })
 

@@ -32,6 +32,16 @@ describe("defineWorkflow", () => {
     expect(() => defineWorkflow({ meta: { description: "d" }, run: async () => {} })).toThrow(/meta\.name/)
   })
 
+  it("rejects a meta.name containing reserved chars (':', '/', '\\', whitespace)", () => {
+    for (const bad of ["a:b", "a/b", "a\\b", "a b", "has\ttab"]) {
+      expect(() => defineWorkflow({ meta: { name: bad, description: "d" }, run: async () => {} })).toThrow(/meta\.name/)
+    }
+    // a clean name (incl. hyphen/underscore/dot) is fine — these are how registry keys + commands are formed
+    for (const ok of ["deep-research", "rate_pr", "v1.2", "greet"]) {
+      expect(defineWorkflow({ meta: { name: ok, description: "d" }, run: async () => {} }).meta.name).toBe(ok)
+    }
+  })
+
   it("throws when meta.description is missing", () => {
     // @ts-expect-error — description omitted on purpose
     expect(() => defineWorkflow({ meta: { name: "demo" }, run: async () => {} })).toThrow(/description/)

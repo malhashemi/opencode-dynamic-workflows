@@ -5,16 +5,35 @@
  * parent. It is the only place we touch the real SDK client, so the single boundary cast to our narrow
  * {@link WorkflowClient} lives here. Loaded as a local file plugin via an absolute path in `opencode.json`.
  */
+import { existsSync } from "node:fs"
+import { mkdir, writeFile } from "node:fs/promises"
+import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
 import type { Plugin } from "@opencode-ai/plugin"
 import type { WorkflowClient } from "./client"
-import { runWorkflow, type RunWorkflowOutput } from "./orchestrator"
+import type { EngineEvents } from "./context"
+import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile, type RunWorkflowOutput } from "./orchestrator"
+import { buildRegistry, type Registry, type RegistryEntry } from "./registry"
+import { toJsonSchema } from "./schema-bridge"
 
 const PLUGIN_ID = "opencode-dynamic-workflows"
 
 const WORKFLOW_TOOL_DESCRIPTION = `Run a deterministic multi-subagent Workflow.
 
-Pass \`source\`: a TypeScript module that default-exports defineWorkflow({ meta, run }) from
+MODES (pick one):
+  - \`name\`: run a DURABLE Workflow registered under a "workflows" directory, by its registry key. Keys are
+    \`<subfolder>:<...>:<meta.name>\` (a nested folder is a ":"-joined namespace); a top-level file is just
+    \`<meta.name>\`. Pass its \`args\` alongside. Call with \`list: true\` first to discover keys + each
+    Workflow's args schema. An unknown name returns the list of registered keys.
+  - \`source\`: run INLINE ad-hoc Workflow source (below). To keep one, promote it with \`save\` (next bullet).
+  - \`list: true\`: list available durable Workflows (key, description, whenToUse, args JSON Schema) and return,
+    without running anything.
+  - \`save: "<name>"\` (with \`source\`): PROMOTE the inline \`source\` to durable — a verbatim save to
+    \`<project>/.opencode/workflows/<save>.ts\` (a \`/\` in \`save\` becomes a namespace). Validates the source
+    first, won't overwrite an existing file, and returns the resolved registry key (which may differ from the
+    filename — the key is the path namespace + \`meta.name\`). Runnable by name immediately, no restart.
+
+\`source\` is a TypeScript module that default-exports defineWorkflow({ meta, run }) from
 "@opencode-ai/workflow". The \`run\` function receives a context with:
   - agent(prompt, { subagent?, label?, phase?, model?, schema?, retries? }) → Promise<T | null>
     Runs one Unit as a named subagent (default "general") in its OWN child session. Without \`schema\`, resolves
@@ -84,8 +103,33 @@ VISIBILITY: each Unit runs in its own child session — open any of them from th
 its transcript live (the output below also lists them). There is no inline live widget for this tool yet
 (rich in-run rendering is a tracked follow-up; see the orchestration spec).
 
-NOTE: worktrees, checkpoints, nested workflow(), and resume are not wired yet. This slice adds an advisory token
-budget (ctx.budget) and run cancellation (ctx.signal) on top of pipeline/typed-args/parallel/collect/errors.`
+COMMANDS: each durable Workflow is exposed at init as its own \`/<key>\` slash command (key \`a:b\` → \`/a/b\`,
+mirroring opencode's nested convention); a live \`/workflow\` command is the catch-all (and reaches workflows
+added mid-session, which don't get their own command until a reload). Every command just drives THIS tool.
+
+NOTE: durable-Workflow discovery + run-by-name + per-workflow commands + ad-hoc→durable promotion are wired.
+Per-agent permission filtering of \`list\` and ask/deny/allow gating of runs are a tracked follow-up (the list
+here is unfiltered). Worktrees, checkpoints, nested workflow(), and resume are not wired yet.`
+
+/**
+ * Template for the single static `/workflow` slash command. The command layer CANNOT force a tool call
+ * (`toolChoice` can't name a tool; a command's parts can't carry a synthetic tool call — verified), so this
+ * is an INSTRUCTION the model follows: route `/workflow <key> <args…>` to the `workflow` tool by name. The
+ * one workflow NAME is the command's `$ARGUMENTS`, resolved at execute-time against the live registry — there
+ * is exactly one command, not one per workflow (opencode freezes the command name set per process).
+ *
+ * Note: opencode expands `$ARGUMENTS` (and runs its `` !`…` `` shell substitution) on the template before
+ * sending — same behavior as every other command; a `<key>` containing that pattern is the user's own shell.
+ */
+const WORKFLOW_COMMAND_TEMPLATE = `The user invoked: /workflow $ARGUMENTS
+
+Run the requested durable Workflow by calling the \`workflow\` tool:
+- The FIRST whitespace-separated token of "$ARGUMENTS" is the Workflow's registry key (e.g. "deep-research" or
+  "research:deep"). Call \`workflow\` with { name: "<that key>" }.
+- Pass any REMAINING text as the workflow's \`args\`, shaped to match that workflow's args schema.
+- If "$ARGUMENTS" is empty, or you are unsure of the key or its args, FIRST call \`workflow\` with { list: true }
+  to see the available keys + each workflow's args JSON Schema, then run the best match.
+Run it by name — do not paste workflow source.`
 
 /**
  * Restore the parsed-object contract for the one core caller that breaks it. The GitLab/DWS "workflow" model
@@ -137,55 +181,279 @@ function formatOutput(out: RunWorkflowOutput): string {
   return lines.join("\n")
 }
 
-export const WorkflowPlugin: Plugin = async ({ client }) => {
+/** Build the tool result for a completed Run — shared by the run-by-name and run-ad-hoc paths. */
+function runResult(out: RunWorkflowOutput) {
+  return {
+    title: out.meta.name,
+    output: formatOutput(out),
+    metadata: {
+      workflow: out.meta.name,
+      units: out.state.unitCount,
+      phases: out.state.phases,
+      logs: out.state.logs,
+      errors: out.state.errors,
+      childSessions: out.state.units,
+    },
+  }
+}
+
+/** Best-effort JSON Schema for a Workflow's `args` (so the model can build valid args); undefined if none/non-zod. */
+function argsSchemaOf(argsSchema: unknown): Record<string, unknown> | undefined {
+  if (!argsSchema) return undefined
+  try {
+    return toJsonSchema(argsSchema as Parameters<typeof toJsonSchema>[0])
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Map a registry key to its slash-command name. Our keys are `:`-joined (`research:deep`); opencode's own
+ * nested-command convention is `/`-joined (`git/commit`), so a namespaced workflow gets `/research/deep`. The
+ * command's template still calls the tool with the original `:`-key, so the registry key is unchanged.
+ */
+function commandNameForKey(key: string): string {
+  return key.replaceAll(":", "/")
+}
+
+/** A compact "how to fill args" hint baked into a per-workflow command template (the schema is known at init). */
+function argsHint(argsSchema: unknown): string {
+  const js = argsSchemaOf(argsSchema)
+  if (!js) return "This Workflow declares no args schema — pass args:{} or infer them from the request."
+  return `Shape \`args\` to satisfy this JSON Schema: ${JSON.stringify(js)}`
+}
+
+/**
+ * Template for a single workflow's own `/<name>` command. Bakes the workflow's `:`-key (the tool's `name`
+ * arg) + its args-schema hint, and feeds the user's `$ARGUMENTS` as the request the model turns into `args`.
+ */
+function perWorkflowTemplate(entry: RegistryEntry): string {
+  const lines = [`Run the "${entry.key}" durable Workflow (${entry.meta.description}).`]
+  if (entry.meta.whenToUse) lines.push(`When to use: ${entry.meta.whenToUse}`)
+  lines.push(
+    `Call the \`workflow\` tool: workflow({ name: ${JSON.stringify(entry.key)}, args: <built from the request below> }).`,
+    argsHint(entry.meta.args),
+    "Run it by name — do not paste source.",
+    "",
+    "Request / context: $ARGUMENTS",
+  )
+  return lines.join("\n")
+}
+
+/** Render the `list: true` mode — the (unfiltered) registry of durable Workflows, plus any collisions/failures. */
+function listResult(reg: Registry) {
+  const entries = [...reg.entries.values()].sort((a, b) => a.key.localeCompare(b.key))
+  const lines: string[] = []
+  if (entries.length === 0) {
+    lines.push("No durable Workflows found. Add a `defineWorkflow` module under `<scope>/.opencode/workflows/`, or promote an ad-hoc one.")
+  } else {
+    lines.push(`${entries.length} durable Workflow(s) available — run one with workflow({ name: "<key>", args }):`)
+    for (const e of entries) {
+      lines.push(`  - ${e.key} — ${e.meta.description}`)
+      if (e.meta.whenToUse) lines.push(`      when: ${e.meta.whenToUse}`)
+    }
+  }
+  if (reg.collisions.length > 0) {
+    lines.push("", `⚠ ${reg.collisions.length} key collision(s):`)
+    for (const c of reg.collisions) {
+      const why = c.sameScope
+        ? "two files in the SAME scope declare this key — rename one"
+        : "a higher-priority scope shadowed another"
+      lines.push(`  - ${c.key}: kept ${c.kept} (shadowed ${c.shadowed}) — ${why}`)
+    }
+  }
+  if (reg.failures.length > 0) {
+    lines.push("", `⚠ ${reg.failures.length} Workflow file(s) failed to load:`)
+    for (const f of reg.failures) lines.push(`  - ${f.absPath}: ${f.error}`)
+  }
+  return {
+    title: `workflows (${entries.length})`,
+    output: lines.join("\n"),
+    metadata: {
+      workflows: entries.map((e) => ({ key: e.key, description: e.meta.description, whenToUse: e.meta.whenToUse, args: argsSchemaOf(e.meta.args) })),
+      collisions: reg.collisions,
+      failures: reg.failures,
+    },
+  }
+}
+
+function failResult(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return { title: "workflow failed", output: `Error: ${message}` }
+}
+
+/**
+ * Promote inline ad-hoc `source` to a DURABLE Workflow: a verbatim save into `<project>/.opencode/workflows/`.
+ * `save` is the target name/path under that dir (may contain `/` for a namespace). The source is validated
+ * (so we never persist a non-Workflow) but written byte-for-byte. Won't overwrite an existing file. Re-scans
+ * to report the resolved registry key (key = path namespace + meta.name, not the filename). The file is
+ * immediately runnable by name via the tool; its own `/command` appears after the next opencode reload.
+ */
+async function promote(input: { source: string; save: string; directory?: string; worktree?: string }) {
+  const root = input.worktree || input.directory
+  if (!root) return failResult(new Error("cannot resolve a project directory to save into"))
+
+  // Validate the source is a real Workflow BEFORE persisting (don't write garbage into the workflows dir).
+  let meta: RegistryEntry["meta"]
+  try {
+    meta = (await loadWorkflowConfig(input.source)).meta
+  } catch (error) {
+    return failResult(error)
+  }
+
+  const rel = input.save.replace(/\.ts$/, "") // tolerate a trailing .ts in the requested name
+  const workflowsRoot = path.join(root, ".opencode", "workflows")
+  const target = path.join(workflowsRoot, `${rel}.ts`)
+  // Containment: `save` is model-supplied — reject any name that escapes the workflows dir (e.g. "../../x").
+  const rootResolved = path.resolve(workflowsRoot)
+  if (path.resolve(target) !== rootResolved && !path.resolve(target).startsWith(rootResolved + path.sep)) {
+    return { title: "workflow: invalid save name", output: `\`save\` must stay within .opencode/workflows (got ${JSON.stringify(input.save)}).` }
+  }
+  if (existsSync(target)) {
+    return { title: "workflow: save conflict", output: `A workflow file already exists at ${target}. Choose another \`save\` name or remove it first.` }
+  }
+  await mkdir(path.dirname(target), { recursive: true })
+  await writeFile(target, input.source, "utf8") // verbatim — byte-for-byte the same defineWorkflow module
+
+  // Re-scan so we report the ACTUAL registry key (derived from the path namespace + meta.name).
+  let key = meta.name
+  if (input.directory) {
+    try {
+      const reg = await buildRegistry({ directory: input.directory, worktree: input.worktree })
+      const entry = [...reg.entries.values()].find((e) => path.resolve(e.absPath) === path.resolve(target))
+      if (entry) key = entry.key
+    } catch {
+      // fall back to meta.name for the reported key
+    }
+  }
+  return {
+    title: "workflow: promoted",
+    output: `Promoted to durable Workflow "${key}" at ${target}.\nRun it now with workflow({ name: "${key}", args }). Its /${commandNameForKey(key)} command appears after the next opencode reload.`,
+    metadata: { key, path: target },
+  }
+}
+
+export const WorkflowPlugin: Plugin = async ({ client, directory, worktree }) => {
   const wfClient = client as unknown as WorkflowClient
   return {
+    // Inject slash commands by mutating `cfg.command` in the `config` hook — the only channel (no
+    // command-registration hook exists), and it fires BEFORE opencode lazily builds the Command registry off
+    // this same cached config object (verified live by the injection probe). Two layers, both `??=` so a
+    // user-defined command of the same name always wins:
+    //   1. ONE live `/workflow` fallback — resolves the workflow name from $ARGUMENTS at execute-time, so a
+    //      workflow added MID-SESSION is reachable via a command without a reload.
+    //   2. ONE `/<name>` command per workflow discovered at init (named with opencode's nested convention:
+    //      key `a:b` → `/a/b`). These are FROZEN for the instance lifetime (the command registry is built
+    //      once per process), so a workflow added later won't get its own command until a reload — it stays
+    //      reachable via `/workflow` and the tool meanwhile.
+    config: async (cfg) => {
+      const c = cfg as { command?: Record<string, { template: string; description?: string }> }
+      c.command ??= {}
+      c.command.workflow ??= {
+        template: WORKFLOW_COMMAND_TEMPLATE,
+        description: "Run a durable Workflow by name (live; also discoverable as per-workflow /<name> commands).",
+      }
+      // Discover workflows and inject one command each. Guarded: opencode logs-then-swallows a throwing config
+      // hook (→ zero commands), and discovery imports every module on the startup critical path, so a bad scan
+      // must still leave the live `/workflow` fallback in place rather than wiping all command injection.
+      if (!directory) return
+      try {
+        const reg = await buildRegistry({ directory, worktree })
+        for (const entry of reg.entries.values()) {
+          c.command[commandNameForKey(entry.key)] ??= {
+            template: perWorkflowTemplate(entry),
+            description: `Workflow: ${entry.meta.description}`,
+          }
+        }
+      } catch {
+        // keep the /workflow fallback; per-workflow commands are best-effort at init
+      }
+    },
     tool: {
       workflow: tool({
         description: WORKFLOW_TOOL_DESCRIPTION,
         args: {
-          source: tool.schema.string().describe("Inline Workflow source: export default defineWorkflow({...})."),
-          args: tool.schema.any().optional().describe("JSON value exposed to the Workflow as `args`."),
+          name: tool.schema.string().optional().describe("Run a registered DURABLE Workflow by its registry key (see `list`)."),
+          source: tool.schema.string().optional().describe("Run INLINE ad-hoc Workflow source: export default defineWorkflow({...})."),
+          args: tool.schema.any().optional().describe("JSON value exposed to the Workflow as `args` (validated against meta.args)."),
+          list: tool.schema.boolean().optional().describe("List available durable Workflows (keys + descriptions + args schema) and return without running."),
+          save: tool.schema.string().optional().describe("Promote: save the inline `source` verbatim to <project>/.opencode/workflows/<save>.ts (may include `/` for a namespace) and return its registry key."),
         },
         async execute(input, ctx) {
           ctx.metadata({ title: "workflow: starting" })
-          // Accumulate child-session refs as Units settle and re-emit them on the running tool part. No
-          // current renderer consumes this for a tool named "workflow" (both the web UI and the TUI name-gate
-          // the rich card to "task"), but it persists on the part for out-of-band navigation and a future
-          // widget / upstream change. See the orchestration spec's rendering note.
+
+          // LIST mode — discover durable Workflows across scopes; no Run. Rebuilt per call so a just-written
+          // or edited file is reflected immediately (the plugin owns discovery; opencode's own registries are
+          // frozen per process).
+          if (input.list) {
+            try {
+              return listResult(await buildRegistry({ directory, worktree }))
+            } catch (error) {
+              return failResult(error)
+            }
+          }
+
+          // PROMOTE mode — persist inline `source` as a durable Workflow; no Run.
+          if (input.save) {
+            if (!input.source) {
+              return { title: "workflow: nothing to save", output: "`save` requires `source` (the inline Workflow module to persist)." }
+            }
+            try {
+              return await promote({ source: input.source, save: input.save, directory, worktree })
+            } catch (error) {
+              return failResult(error)
+            }
+          }
+
+          // Accumulate child-session refs as Units settle and re-emit them on the running tool part. No current
+          // renderer consumes this for a tool named "workflow" (both the web UI and the TUI name-gate the rich
+          // card to "task"), but it persists on the part for out-of-band navigation and a future widget /
+          // upstream change. See the orchestration spec's rendering note.
           const childSessions: { sessionID: string; label: string | null; subagent: string; ok: boolean }[] = []
+          const events: EngineEvents = {
+            onLog: (m) => ctx.metadata({ title: `workflow: ${m}` }),
+            onPhase: (t) => ctx.metadata({ title: `workflow phase: ${t}` }),
+            onUnit: (u) => {
+              if (!u.sessionID) return
+              childSessions.push({ sessionID: u.sessionID, label: u.label, subagent: u.subagent, ok: u.ok })
+              ctx.metadata({ title: `workflow: ${childSessions.length} unit(s) started`, metadata: { childSessions } })
+            },
+          }
+          const common = {
+            args: normalizeArgs(input.args), // un-stringify args from the workflow-provider seam (see normalizeArgs)
+            client: wfClient,
+            parentSessionID: ctx.sessionID,
+            signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
+            events,
+          }
+
           try {
-            const out = await runWorkflow({
-              source: input.source,
-              args: normalizeArgs(input.args), // un-stringify args from the workflow-provider seam (see normalizeArgs)
-              client: wfClient,
-              parentSessionID: ctx.sessionID,
-              signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
-              events: {
-                onLog: (m) => ctx.metadata({ title: `workflow: ${m}` }),
-                onPhase: (t) => ctx.metadata({ title: `workflow phase: ${t}` }),
-                onUnit: (u) => {
-                  if (!u.sessionID) return
-                  childSessions.push({ sessionID: u.sessionID, label: u.label, subagent: u.subagent, ok: u.ok })
-                  ctx.metadata({ title: `workflow: ${childSessions.length} unit(s) started`, metadata: { childSessions } })
-                },
-              },
-            })
+            // RUN BY NAME — resolve the live registry (rebuilt per call so a just-written/edited durable file is
+            // found with no restart) and run the matching file. An unknown name lists what IS registered.
+            if (input.name) {
+              const reg = await buildRegistry({ directory, worktree })
+              const entry = reg.entries.get(input.name)
+              if (!entry) {
+                const known = [...reg.entries.keys()].sort()
+                return {
+                  title: "workflow: unknown name",
+                  output: `No durable Workflow named "${input.name}".\nRegistered: ${known.length ? known.join(", ") : "(none)"}.\nCall workflow({ list: true }) for descriptions + args schemas.`,
+                }
+              }
+              return runResult(await runWorkflowFromFile(entry.absPath, common))
+            }
+
+            // RUN AD-HOC — inline source.
+            if (input.source) {
+              return runResult(await runWorkflow({ source: input.source, ...common }))
+            }
+
             return {
-              title: out.meta.name,
-              output: formatOutput(out),
-              metadata: {
-                workflow: out.meta.name,
-                units: out.state.unitCount,
-                phases: out.state.phases,
-                logs: out.state.logs,
-                errors: out.state.errors,
-                childSessions: out.state.units,
-              },
+              title: "workflow: nothing to run",
+              output: "Provide one of: `name` (run a registered Workflow), `source` (run ad-hoc), or `list: true` (discover Workflows).",
             }
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            return { title: "workflow failed", output: `Error: ${message}` }
+            return failResult(error)
           }
         },
       }),

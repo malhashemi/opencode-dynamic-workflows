@@ -211,6 +211,14 @@ export function defineWorkflow<S extends z.ZodType = z.ZodType>(config: DefineWo
   if (typeof meta.name !== "string" || meta.name.trim() === "") {
     throw new TypeError("defineWorkflow: `meta.name` must be a non-empty string")
   }
+  // `:` joins the registry-key namespace and `/`/whitespace are reserved by the slash-command mapping, so a
+  // name containing them would make the key non-injective or silently collide on a command — reject at the
+  // single chokepoint (both durable + ad-hoc workflows pass through here).
+  if (/[:/\\\s]/.test(meta.name)) {
+    throw new TypeError(
+      `defineWorkflow: \`meta.name\` must not contain ':', '/', '\\\\', or whitespace (got ${JSON.stringify(meta.name)})`,
+    )
+  }
   if (typeof meta.description !== "string" || meta.description.trim() === "") {
     throw new TypeError("defineWorkflow: `meta.description` must be a non-empty string")
   }
