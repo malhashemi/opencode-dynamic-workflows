@@ -56,4 +56,23 @@ describe("ctx.signal (abort)", () => {
     expect(ctx.errors.map((e) => e.unit).sort()).toEqual(["B", "C"]) // recorded, not silently dropped (D9)
     expect(client.promptCalls.map((p) => p.body?.parts?.[0]?.text)).toEqual(["A"]) // only A ever reached the client
   })
+
+  test("an unexpected throw from an events callback PROPAGATES — not mislabeled as an aborted drop", async () => {
+    const state = createEngineState()
+    const ctx = createWorkflowContext({
+      client: makeFakeClient({ reply: "x" }),
+      parentSessionID: "p",
+      args: undefined,
+      state,
+      events: {
+        onUnitStart: () => {
+          throw new Error("callback bug")
+        },
+      },
+    })
+    // The Unit launched (acquire succeeded); a buggy callback throwing must surface honestly, not vanish into a
+    // null slot or get recorded as an aborted Unit. Distinguishes the AbortError path from a real engine bug.
+    await expect(ctx.agent("go")).rejects.toThrow("callback bug")
+    expect(ctx.errors).toHaveLength(0) // not misrecorded as a dropped Unit
+  })
 })

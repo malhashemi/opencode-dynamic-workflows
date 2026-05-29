@@ -11,7 +11,7 @@
 import type { AgentOpts, WorkflowContext, WorkflowError, z } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { DEFAULT_SUBAGENT, runAgent, stringifyError } from "./runner"
-import { defaultConcurrency, Semaphore } from "./scheduler"
+import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
 
 /**
  * One completed Unit's child-session record. Surfaced so the human can navigate to a Unit's transcript from
@@ -126,13 +126,19 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
         return null
       }, signal)
     } catch (err) {
-      // The only throw path is the limiter rejecting on abort while this Unit was still QUEUED (it never
-      // launched — the inner fn itself never throws). Record + null (D9): an aborted Unit is not silently dropped.
-      const record: UnitRecord = { sessionID: null, label, subagent, phase, ok: false }
-      state.units.push(record)
-      events?.onUnit?.(record)
-      state.errors.push({ unit: label ?? subagent, prompt, subagent, error: stringifyError(err) })
-      return null
+      // An AbortError means the limiter rejected this Unit's acquire because the Run was aborted while it was
+      // still QUEUED — it never launched. Record + null (D9): an aborted Unit is not silently dropped.
+      if (err instanceof AbortError) {
+        const record: UnitRecord = { sessionID: null, label, subagent, phase, ok: false }
+        state.units.push(record)
+        events?.onUnit?.(record)
+        state.errors.push({ unit: label ?? subagent, prompt, subagent, error: stringifyError(err) })
+        return null
+      }
+      // Anything else is unexpected: runAgent never throws (it returns ok:false), so the only other source is a
+      // bug in an injected events callback. Don't mislabel it as an aborted Unit or double-record — let it
+      // propagate so it surfaces honestly via the orchestrator/adapter rather than vanishing into a null slot.
+      throw err
     }
   }) as WorkflowContext<A>["agent"]
 

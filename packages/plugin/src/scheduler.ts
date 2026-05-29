@@ -16,9 +16,21 @@ export function defaultConcurrency(): number {
   return Math.min(16, Math.max(1, cores - 2))
 }
 
-/** A clean Error for an abort, whatever the signal's `reason` is (DOMExceptions stringify poorly). */
-function abortReason(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error("workflow run aborted")
+/**
+ * The rejection the limiter raises when an acquire is abandoned because the run was aborted. A distinct class so
+ * callers can tell "this Unit never launched (run aborted)" apart from an unexpected throw inside the task body.
+ */
+export class AbortError extends Error {
+  constructor(message = "workflow run aborted") {
+    super(message)
+    this.name = "AbortError"
+  }
+}
+
+/** Wrap the signal's `reason` in an {@link AbortError} (preserving its message; DOMExceptions stringify poorly). */
+function abortReason(signal: AbortSignal): AbortError {
+  const reason = signal.reason
+  return new AbortError(reason instanceof Error ? reason.message : undefined)
 }
 
 /**
