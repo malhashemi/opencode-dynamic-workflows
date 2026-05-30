@@ -184,7 +184,17 @@ export async function runAgent(
       if (info?.error) {
         lastError = stringifyError(info.error)
         if (isStructuredOutputError(info.error) && !isLast) continue // retry only the structured failure
-        return { ok: false, error: lastError, childSessionID }
+        // A restricted/research-oriented subagent (e.g. "explore") commonly fails structured output — but NOT
+        // because of permissions. The StructuredOutput tool is injected AFTER tool-resolution (prompt.ts:1404)
+        // and its execute never calls ctx.ask (prompt.ts:1757), so it is never permission-gated; explore's
+        // "*":deny does not touch it. Verified live: explore+schema → StructuredOutputError "model did not
+        // produce structured output", the tool never called, ZERO permission events. The cause is behavioural —
+        // that subagent's prompt/toolset just doesn't emit the forced call. Surface the remedy, not a false cause.
+        const hint =
+          subagent !== DEFAULT_SUBAGENT && isStructuredOutputError(info.error)
+            ? ` — the "${subagent}" subagent did not emit the StructuredOutput call (behavioural, NOT a permission denial; that tool is never permission-gated). Use a general-purpose subagent (e.g. "general") for \`schema\`, or drop \`schema\` and return text`
+            : ""
+        return { ok: false, error: lastError + hint, childSessionID }
       }
       if (info?.structured === undefined) {
         // No error AND no structured payload — unexpected (core forces the tool); not a retryable case.
