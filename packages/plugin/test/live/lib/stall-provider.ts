@@ -46,6 +46,28 @@ export interface StallProvider {
   requestCount(): number
   /** The path of the most recent request, for the probe's verdict trace (e.g. `/v1/messages`). */
   lastPath(): string | undefined
+  /**
+   * ── Socket-lifecycle instrumentation (slice 1.6 — kill-verification) ─────────────────────────────────────
+   * Is at least one request socket that received the headers-then-stall treatment STILL OPEN? This is the
+   * load-bearing observable for the kill experiment: after firing `session.abort` at the stalled session, we
+   * watch THIS to decide REAL KILL (the held-open connection actually dies) vs FAKE KILL (the session is
+   * marked idle while the frozen socket leaks open in the background — CF4). A socket is "stalled" once this
+   * server has flushed its 200/SSE headers and is withholding the body on it.
+   */
+  stalledSocketStillOpen(): boolean
+  /** How many stalled (headers-flushed, body-withheld) sockets are currently open. */
+  openStalledSocketCount(): number
+  /**
+   * `Date.now()` at which the FIRST stalled socket opened (its headers were flushed), or undefined if none has
+   * yet. The probe diffs this against the abort instant to report `socket_opened` relative timing.
+   */
+  firstStalledSocketOpenedAt(): number | undefined
+  /**
+   * `Date.now()` at which the most recent stalled socket fired `'close'`/`'error'` (the held-open connection
+   * actually tore down), or undefined if none has closed yet. undefined through the observation window ⇒ the
+   * stalled connection never died ⇒ FAKE KILL / LEAK. A non-undefined value shortly after abort ⇒ REAL KILL.
+   */
+  lastStalledSocketClosedAt(): number | undefined
   /** Clean shutdown: stop accepting connections and destroy any sockets still held open by the stall. */
   close(): Promise<void>
 }
@@ -76,6 +98,17 @@ export function startStallProvider(options: StallProviderOptions = {}): Promise<
   // close on its own (that is the whole point), so we must tear them down explicitly at shutdown.
   const openSockets = new Set<Socket>()
 
+  // ── Socket-lifecycle instrumentation (slice 1.6) ───────────────────────────────────────────────────────────
+  // The kill experiment turns on ONE question: after `session.abort` fires, does the held-open STALLED socket
+  // actually close, or does it leak open while the session is merely marked idle (CF4)? To answer it we track,
+  // per request socket, the instant we flushed its headers-then-stall response ("stalled-open") and the instant
+  // that same socket fired 'close'/'error' ("stalled-closed"). We key off the *response* socket (res.socket),
+  // which is the exact connection opencode's stalled fetch is awaiting a chunk on — narrower and more precise
+  // than the raw `connection` set (which also counts opencode's control-plane sockets to its own HTTP server).
+  const stalledOpen = new Set<Socket>() // stalled sockets currently open (headers flushed, body withheld)
+  let firstStalledOpenedAt: number | undefined
+  let lastStalledClosedAt: number | undefined
+
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     requests += 1
     lastPath = req.url
@@ -95,6 +128,22 @@ export function startStallProvider(options: StallProviderOptions = {}): Promise<
         Connection: "keep-alive",
       })
       res.flushHeaders()
+
+      // Mark THIS response's socket as a stalled socket and stamp the open time. We attach the close/error
+      // listeners on the response socket itself (not just the raw connection) so the close timestamp reflects
+      // the precise teardown of the connection opencode is stalled on. `'close'` covers a graceful FIN and a
+      // forced destroy; `'error'` covers an RST — either is "the stalled connection actually died".
+      const sock = res.socket
+      if (sock) {
+        stalledOpen.add(sock)
+        const now = Date.now()
+        if (firstStalledOpenedAt === undefined) firstStalledOpenedAt = now
+        const onGone = () => {
+          if (stalledOpen.delete(sock)) lastStalledClosedAt = Date.now()
+        }
+        sock.once("close", onGone)
+        sock.once("error", onGone)
+      }
       // Deliberately do NOT call res.write(...) or res.end(): headers are out, the body is withheld, the socket
       // stays open. The client now stalls awaiting the first SSE chunk forever (no idle timeout — F4).
       return
@@ -126,6 +175,10 @@ export function startStallProvider(options: StallProviderOptions = {}): Promise<
         baseURL,
         requestCount: () => requests,
         lastPath: () => lastPath,
+        stalledSocketStillOpen: () => stalledOpen.size > 0,
+        openStalledSocketCount: () => stalledOpen.size,
+        firstStalledSocketOpenedAt: () => firstStalledOpenedAt,
+        lastStalledSocketClosedAt: () => lastStalledClosedAt,
         close: () =>
           new Promise<void>((res) => {
             // Destroy any sockets the stall is holding open, then stop the server. Without the explicit destroy,
