@@ -46,6 +46,18 @@ export default defineWorkflow({ meta: { name: "p-par", description: "x", concurr
   const r = await parallel(Array.from({ length: 6 }, (_, i) => () => agent("Rate the number " + i + " from 0-10 with a one-word reason.", { schema: Rate, label: "r" + i })))
   log("parallel-struct: done"); return { ok: collect(r).length, total: r.length }
 } })`,
+  // explore subagent + TEXT (no schema) — must SUCCEED (explore can't do structured output, but text is fine).
+  exploreText: `
+import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({ meta: { name: "p-explore", description: "x" }, async run({ agent, log }) {
+  log("explore-text: prompting"); const r = await agent("In one sentence, what is a race condition?", { subagent: "explore" }); log("explore-text: done"); return { r }
+} })`,
+  // explore subagent + SCHEMA — must FAIL fast with the new hint (explore denies the StructuredOutput tool).
+  exploreStruct: `
+import { defineWorkflow, z } from "@opencode-ai/workflow"
+export default defineWorkflow({ meta: { name: "p-explore-s", description: "x" }, async run({ agent, log }) {
+  log("explore-struct: prompting"); const r = await agent("Rate concurrency difficulty 0-10.", { subagent: "explore", schema: z.object({ score: z.number() }), retries: 0 }); log("explore-struct: done"); return { r }
+} })`,
 }
 
 async function probe(client: WorkflowClient, parentSessionID: string, name: keyof typeof SRC) {
@@ -73,8 +85,9 @@ async function main() {
   try {
     const root = (await (client as any).session.create({ body: { title: "wf-hang-repro" } })).data
     console.log(`  parent session ${root.id}\n`)
-    // Warm up, then stress CONCURRENT structured fan-out (closest to the failing constrain run).
-    const sequence: (keyof typeof SRC)[] = ["text", "parallel", "parallel", "complex"]
+    // Confirm the deep-research redesign premise: explore+text succeeds, general+structured succeeds,
+    // explore+schema fails fast with the hint.
+    const sequence: (keyof typeof SRC)[] = ["text", "simple", "exploreText", "exploreStruct"]
     let n = 0
     for (const name of sequence) {
       console.log(`— probe #${++n}: ${name} —`)
