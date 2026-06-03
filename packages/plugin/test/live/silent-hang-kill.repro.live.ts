@@ -81,7 +81,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 interface AbortableClient {
   session: {
     /** POST /session/{id}/abort → `{ data: boolean }` (CF4): true the instant the interrupt is issued. */
-    abort(input: { path: { id: string } }): Promise<{ data?: boolean | null } | unknown>
+    abort(input: { sessionID: string }): Promise<{ data?: boolean | null } | unknown>
     /** GET /session/status → `{ data: Record<sessionID, { type }> }`. Used to DISCOVER the busy child + sample. */
     status(): Promise<{ data?: Record<string, { type?: string } | undefined> | null } | null>
   }
@@ -238,7 +238,7 @@ async function fireKillAndObserve(
   console.log(`\n• FIRING session.abort at stuck child ${childId} (t_abort=${tAbort})…`)
   let returned: boolean | undefined
   try {
-    returned = abortReturned(await abortable.session.abort({ path: { id: childId } }))
+    returned = abortReturned(await abortable.session.abort({ sessionID: childId }))
   } catch (e) {
     console.log(`  abort threw: ${String(e)}`)
   }
@@ -304,13 +304,7 @@ async function main() {
   let childIdForCleanup: string | null = null
 
   try {
-    const parent = (
-      await (
-        booted.client as unknown as {
-          session: { create(a: unknown): Promise<{ data?: { id: string } | null }> }
-        }
-      ).session.create({ body: { title: "silent-hang-kill-repro" } })
-    ).data
+    const parent = (await (booted.client as unknown as WorkflowClient).session.create({ title: "silent-hang-kill-repro" })).data
     if (!parent?.id) throw new Error("failed to create parent session")
     parentSessionID = parent.id
     console.log(`  parent session ${parent.id}\n`)
@@ -357,8 +351,8 @@ async function main() {
     // Best-effort: free any sessions still hung on the stall so server.close() isn't fighting an in-flight
     // request, then the stub's own close() destroys whatever held-open socket remains.
     const api = booted.client as unknown as AbortableClient
-    if (childIdForCleanup) await api.session.abort({ path: { id: childIdForCleanup } }).catch(() => {})
-    if (parentSessionID) await api.session.abort({ path: { id: parentSessionID } }).catch(() => {})
+    if (childIdForCleanup) await api.session.abort({ sessionID: childIdForCleanup }).catch(() => {})
+    if (parentSessionID) await api.session.abort({ sessionID: parentSessionID }).catch(() => {})
     await booted.server.close()
     await stub.close()
     console.log("\n• server closed + stall provider stopped — probe terminated.")
@@ -394,14 +388,14 @@ async function runFollowups(
   const tParentAbort = Date.now()
   let parentAbortReturned: boolean | undefined
   try {
-    parentAbortReturned = abortReturned(await abortable.session.abort({ path: { id: parentSessionID } }))
+    parentAbortReturned = abortReturned(await abortable.session.abort({ sessionID: parentSessionID }))
   } catch (e) {
     console.log(`  parent abort threw: ${String(e)}`)
   }
   console.log(`  parent abort returned: ${parentAbortReturned === undefined ? "(unexpected shape)" : parentAbortReturned}`)
 
   // Also re-abort the child once more (belt-and-suspenders — maybe a second interrupt unwinds it).
-  await abortable.session.abort({ path: { id: childId } }).catch(() => {})
+  await abortable.session.abort({ sessionID: childId }).catch(() => {})
 
   let socketClosedAfterParentAbortMs: number | undefined
   let socketClosedInLongWindowMs: number | undefined

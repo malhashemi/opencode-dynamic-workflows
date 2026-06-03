@@ -16,7 +16,7 @@
  *
  * Exit code 0 iff the binding invariant held. The console report states everything else observed.
  */
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "../../src/client"
 import { runWorkflow } from "../../src/orchestrator"
 
@@ -64,12 +64,16 @@ async function main() {
         }
       },
       abort: (input) => real.session.abort(input),
+      get: (input) => real.session.get(input),
+      messages: (input) => real.session.messages(input),
     },
+    permission: real.permission,
+    question: real.question,
   }
 
   try {
     // The Run's parent = a fresh top-level session.
-    const parent = await real.session.create({ body: {} })
+    const parent = await real.session.create({})
     const parentSessionID = parent.data?.id
     if (!parentSessionID) throw new Error("could not create a parent session on the live server")
     console.log(`• parent session: ${parentSessionID}`)

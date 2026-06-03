@@ -8,20 +8,20 @@
  *     WF_LIVE_MODEL=anthropic/claude-haiku-4-5 bun run packages/plugin/test/live/structured-binding.live.ts
  *
  * It settles the two LIVE BINDING-CONFIRM acceptance criteria of the structured-output ticket — the things a
- * fake client cannot prove because the v1 SDK request types omit `format`/`model` and we hand-cast them:
+ * fake client cannot prove because only a live server can prove `format`/`model` reach the model loop:
  *
  *  1. SCHEMA `format` reaches the loop. The engine derives a `format:{type:"json_schema",schema}` from a zod
- *     schema and sends it on the v1 prompt body. ENGINE-WIRING (no model needed): the captured outgoing body
+ *     schema and sends it on the v2 flat prompt params. ENGINE-WIRING (no model needed): the captured outgoing input
  *     carries the json_schema format. END-TO-END (needs a resolvable model): `info.structured` comes back and
  *     parses to the typed object — only possible if the route accepted `format`, injected StructuredOutput,
- *     and forced it. That round-trip is the proof the v1 client did NOT strip the hand-cast field.
+ *     and forced it. That round-trip is the proof the v2 client transported the structured-output field.
  *  2. A per-Unit `model` override reaches the loop. ENGINE-WIRING: the captured body carries `model`.
  *     END-TO-END (needs that model resolvable): the Unit prompts and returns under the override.
  *
  * Exit code 0 iff the engine-wiring binding held for both (the deterministic, model-free invariant). The
  * console report states the end-to-end results observed (which need a model configured on the server).
  */
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import type { PromptFormatInput, WorkflowClient } from "../../src/client"
 import { runWorkflow } from "../../src/orchestrator"
 
@@ -66,8 +66,8 @@ async function main() {
   console.log(`  server up at ${server.url}`)
   console.log(overrideModel ? `• model override: ${overrideModel.providerID}/${overrideModel.modelID}` : "• no WF_LIVE_MODEL set — model-override end-to-end will be skipped (engine-wiring still checked)")
 
-  // Spy on the real client so we can observe the OUTGOING prompt bodies (did `format` / `model` survive onto
-  // the hand-cast v1 body?) without changing behavior.
+  // Spy on the real client so we can observe the OUTGOING v2 prompt params (did `format` / `model` survive?)
+  // without changing behavior.
   const real = client as unknown as WorkflowClient
   const sentFormats: Array<PromptFormatInput | undefined> = []
   const sentModels: Array<{ providerID: string; modelID: string } | undefined> = []
@@ -75,16 +75,20 @@ async function main() {
     session: {
       create: (input) => real.session.create(input),
       async prompt(input) {
-        sentFormats.push(input.body?.format)
-        sentModels.push(input.body?.model)
+        sentFormats.push(input.format)
+        sentModels.push(input.model)
         return real.session.prompt(input)
       },
       abort: (input) => real.session.abort(input),
+      get: (input) => real.session.get(input),
+      messages: (input) => real.session.messages(input),
     },
+    permission: real.permission,
+    question: real.question,
   }
 
   try {
-    const parent = await real.session.create({ body: {} })
+    const parent = await real.session.create({})
     const parentSessionID = parent.data?.id
     if (!parentSessionID) throw new Error("could not create a parent session on the live server")
     console.log(`• parent session: ${parentSessionID}`)
@@ -132,8 +136,8 @@ async function main() {
     }
 
     console.log("\n=== VERDICT ===")
-    console.log(formatWired ? "✓ AC#1 engine wiring: json_schema format derived from zod + sent on the v1 body." : "✗ AC#1 FAILED: no json_schema format reached the outgoing prompt body.")
-    console.log(modelWired ? "✓ AC#2 engine wiring: per-Unit model override sent on the v1 body." : "✗ AC#2 FAILED: model override did not reach the outgoing body.")
+    console.log(formatWired ? "✓ AC#1 engine wiring: json_schema format derived from zod + sent on the v2 flat prompt params." : "✗ AC#1 FAILED: no json_schema format reached the outgoing prompt params.")
+    console.log(modelWired ? "✓ AC#2 engine wiring: per-Unit model override sent on the v2 flat prompt params." : "✗ AC#2 FAILED: model override did not reach the outgoing prompt params.")
     if (result.structured) console.log("✓ END-TO-END: format:{json_schema} reached the loop — structured payload came back and parsed.")
     else console.log("… END-TO-END pending: re-run with WF_LIVE_MODEL set to a resolvable model to confirm the round-trip.")
 

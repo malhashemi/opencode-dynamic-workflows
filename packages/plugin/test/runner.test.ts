@@ -4,28 +4,52 @@ import { DEFAULT_SUBAGENT, runAgent } from "../src/runner"
 import { makeFakeClient } from "./fake-client"
 
 describe("runAgent", () => {
-  it("creates a child session under the parent and prompts it as the named subagent", async () => {
+  it("runAgent issues v2-shaped session.prompt (sessionID key)", async () => {
     const client = makeFakeClient({ reply: "ANSWER" })
+    let rawPromptInput: Parameters<typeof client.session.prompt>[0] | undefined
+    const prompt = client.session.prompt.bind(client.session)
+    client.session.prompt = async (input) => {
+      rawPromptInput = input
+      return prompt(input)
+    }
+
     const result = await runAgent(client, "parent-1", "do the thing", { subagent: "reviewer" })
 
     expect(result).toEqual({ ok: true, kind: "text", text: "ANSWER", childSessionID: "child-1", outputTokens: 0 })
-    expect(client.createCalls[0]?.body).toEqual({ parentID: "parent-1", title: "wf:reviewer" })
-    expect(client.promptCalls[0]?.path).toEqual({ id: "child-1" })
-    expect(client.promptCalls[0]?.body?.agent).toBe("reviewer")
-    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "do the thing" }])
+    expect(rawPromptInput).toMatchObject({
+      sessionID: "child-1",
+      agent: "reviewer",
+      parts: [{ type: "text", text: "do the thing" }],
+    })
+    expect(rawPromptInput).not.toHaveProperty("path")
+    expect(client.createCalls[0]).toEqual({ parentID: "parent-1", title: "wf:reviewer" })
+    expect(client.createCalls[0]).not.toHaveProperty("body")
+    expect(client.promptCalls[0]?.sessionID).toBe("child-1")
+    expect(client.promptCalls[0]).not.toHaveProperty("path")
+    expect(client.promptCalls[0]).not.toHaveProperty("body")
+    expect(client.promptCalls[0]?.agent).toBe("reviewer")
+    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "do the thing" }])
   })
 
   it("defaults the subagent to `general` when omitted", async () => {
     const client = makeFakeClient({ reply: "ok" })
     await runAgent(client, "parent-1", "hi")
-    expect(client.promptCalls[0]?.body?.agent).toBe(DEFAULT_SUBAGENT)
+    expect(client.promptCalls[0]?.agent).toBe(DEFAULT_SUBAGENT)
     expect(DEFAULT_SUBAGENT).toBe("general")
   })
 
   it("returns the LAST text part when several are present", async () => {
     const client = makeFakeClient()
     client.session.prompt = async (input) => {
-      client.promptCalls.push(input)
+      if (!("sessionID" in input)) throw new Error("expected v2 prompt input")
+      const call = {
+        sessionID: input.sessionID,
+        agent: input.agent,
+        model: input.model,
+        parts: input.parts,
+        format: input.format,
+      }
+      client.promptCalls.push(call)
       return { data: { info: null, parts: [{ type: "text", text: "first" }, { type: "text", text: "last" }] } }
     }
     const result = await runAgent(client, "p", "x")
@@ -44,11 +68,11 @@ describe("runAgent", () => {
   it("forwards a model override only when provided", async () => {
     const client = makeFakeClient()
     await runAgent(client, "p", "x", { model: { providerID: "anthropic", modelID: "claude" } })
-    expect(client.promptCalls[0]?.body?.model).toEqual({ providerID: "anthropic", modelID: "claude" })
+    expect(client.promptCalls[0]?.model).toEqual({ providerID: "anthropic", modelID: "claude" })
 
     const client2 = makeFakeClient()
     await runAgent(client2, "p", "x")
-    expect(client2.promptCalls[0]?.body?.model).toBeUndefined()
+    expect(client2.promptCalls[0]?.model).toBeUndefined()
   })
 
   it("returns ok:false when create yields no session id", async () => {
@@ -98,7 +122,7 @@ describe("runAgent — structured output", () => {
     const result = await runAgent(client, "p", "rate it", { schema: Finding })
 
     expect(result).toEqual({ ok: true, kind: "structured", value: { title: "ok", score: 5 }, childSessionID: "child-1", outputTokens: 0 })
-    const fmt = client.promptCalls[0]?.body?.format
+    const fmt = client.promptCalls[0]?.format
     expect(fmt?.type).toBe("json_schema")
     expect(fmt?.schema).toMatchObject({
       type: "object",
@@ -109,7 +133,7 @@ describe("runAgent — structured output", () => {
   it("sends NO format when no schema is given (text path untouched)", async () => {
     const client = makeFakeClient({ reply: "hi" })
     await runAgent(client, "p", "x")
-    expect(client.promptCalls[0]?.body?.format).toBeUndefined()
+    expect(client.promptCalls[0]?.format).toBeUndefined()
   })
 
   it("retries a StructuredOutputError then succeeds — a fresh child per attempt (serialization invariant)", async () => {
@@ -176,7 +200,7 @@ describe("runAgent — timeout + abort (a hung prompt never blocks forever)", ()
     const result = await runAgent(client, "p", "will hang", { timeoutMs: 30 })
     expect(result.ok).toBe(false)
     expect((result as { error: string }).error).toMatch(/timed out/)
-    expect(client.abortCalls).toEqual([{ id: "child-1" }]) // the child prompt was cancelled, not leaked
+    expect(client.abortCalls).toEqual([{ sessionID: "child-1" }]) // the child prompt was cancelled, not leaked
   })
 
   it("cancels an in-flight hung prompt when the Run signal aborts, and fails the Unit", async () => {
@@ -186,7 +210,7 @@ describe("runAgent — timeout + abort (a hung prompt never blocks forever)", ()
     const result = await runAgent(client, "p", "will hang", { signal: ctrl.signal })
     expect(result.ok).toBe(false)
     expect((result as { error: string }).error).toMatch(/aborted/)
-    expect(client.abortCalls).toEqual([{ id: "child-1" }])
+    expect(client.abortCalls).toEqual([{ sessionID: "child-1" }])
   })
 
   it("does NOT cancel a prompt that completes within the timeout window", async () => {

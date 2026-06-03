@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
+import type { SessionMessage } from "../src/client"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile } from "../src/orchestrator"
 import { makeFakeClient } from "./fake-client"
 
@@ -65,9 +66,9 @@ describe("runWorkflow (inline source → run → result)", () => {
     expect(out.state.unitCount).toBe(1)
 
     // the Unit ran as a child of the invoking session, under `general`
-    expect(client.createCalls[0]?.body).toEqual({ parentID: "parent-xyz", title: "wf:general" })
-    expect(client.promptCalls[0]?.body?.agent).toBe("general")
-    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "say: hi" }])
+    expect(client.createCalls[0]).toEqual({ parentID: "parent-xyz", title: "wf:general" })
+    expect(client.promptCalls[0]?.agent).toBe("general")
+    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "say: hi" }])
   })
 
   it("cleans up the temp module after running", async () => {
@@ -115,7 +116,7 @@ describe("runWorkflow (inline source → run → result)", () => {
     const client = makeFakeClient({ reply: "ok" })
     const out = await runWorkflow({ source: TYPED_WORKFLOW, args: { count: 7 }, client, parentSessionID: "p" })
     expect(out.result).toBe("ok")
-    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "n=7" }])
+    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "n=7" }])
   })
 
   it("runs the demo end-to-end: typed args, pipeline with a dropped item, collect, and a synthesis Unit", async () => {
@@ -135,10 +136,166 @@ describe("runWorkflow (inline source → run → result)", () => {
     expect(out.state.phases).toEqual(["Review", "Synthesize"])
     expect(out.state.logs).toContain("dropped 1 file(s) from the pipeline")
     // "bad" never reached a Subagent (its stage threw before agent()); the rest did.
-    const prompts = client.promptCalls.map((p) => p.body?.parts?.[0]?.text)
+    const prompts = client.promptCalls.map((p) => p.parts[0]?.text)
     expect(prompts).not.toContain("review:bad")
     expect(prompts).toContain("review:a")
     expect(prompts).toContain("review:b")
+  })
+
+  it("orchestrator starts watcher on run, stops on teardown", async () => {
+    const client = makeFakeClient({
+      sessions: [{ id: "nested-question-session", parentID: "p", title: "Nested question" }],
+      pendingQuestions: [
+        {
+          id: "question-run-owned-depth-2",
+          sessionID: "nested-question-session",
+          questions: [
+            {
+              question: "Should the nested question be rejected?",
+              header: "Nested question",
+              options: [{ label: "Reject", description: "Phase-1 watcher floor" }],
+            },
+          ],
+        },
+      ],
+    })
+    const originalPermissionList = client.permission.list.bind(client.permission)
+    const originalQuestionList = client.question.list.bind(client.question)
+    let permissionListCalls = 0
+    let questionListCalls = 0
+    client.permission.list = async () => {
+      permissionListCalls += 1
+      return originalPermissionList()
+    }
+    client.question.list = async () => {
+      questionListCalls += 1
+      return originalQuestionList()
+    }
+
+    const run = runWorkflow({
+      source: `import { defineWorkflow } from "@opencode-ai/workflow"
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+export default defineWorkflow({ meta: { name: "watcher-lifecycle", description: "waits for watcher poll" }, async run() { await sleep(650); return "done" } })`,
+      client,
+      parentSessionID: "p",
+    })
+
+    await waitFor(
+      () => permissionListCalls > 0 && questionListCalls > 0 && client.questionRejects.length === 1,
+      "watcher did not poll and reject the Run-owned nested question during the Run",
+      800,
+    )
+
+    await expect(run).resolves.toMatchObject({ result: "done" })
+    const callsAfterTeardown = { permissionListCalls, questionListCalls }
+    await new Promise((resolve) => setTimeout(resolve, 350))
+
+    expect(client.questionRejects).toEqual([{ requestID: "question-run-owned-depth-2" }])
+    expect(permissionListCalls).toBe(callsAfterTeardown.permissionListCalls)
+    expect(questionListCalls).toBe(callsAfterTeardown.questionListCalls)
+  })
+
+  it("production runWorkflow proxy-answers a Run-owned depth>=2 question through the tiered watcher", async () => {
+    const client = makeFakeClient({
+      reply: (call) => (call.agent === "explore" ? "EU" : "UNANSWERABLE"),
+      sessions: [
+        { id: "p", title: "Privacy launch Workflow Run" },
+        { id: "launch-unit", parentID: "p", title: "Prepare deployment Unit" },
+        { id: "nested-question-session", parentID: "launch-unit", title: "Nested deploy chooser" },
+      ],
+      sessionMessages: {
+        p: firstUserMessage("Run the Workflow for the privacy-sensitive EU launch."),
+        "launch-unit": firstUserMessage("Prepare launch using EU data residency because customers are in Germany."),
+        "nested-question-session": firstUserMessage("The nested Subagent needs deployment region; the launch context says EU."),
+      },
+      pendingQuestions: [
+        {
+          id: "question-production-tiered-proxy",
+          sessionID: "nested-question-session",
+          questions: [
+            {
+              question: "Which deployment region should this launch use?",
+              header: "Deployment region",
+              options: [
+                { label: "US", description: "Deploy in the United States" },
+                { label: "EU", description: "Deploy in Europe" },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    const run = runWorkflow({
+      source: `import { defineWorkflow } from "@opencode-ai/workflow"
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+export default defineWorkflow({ meta: { name: "watcher-tiered-production", description: "waits for watcher poll" }, async run() { await sleep(650); return "done" } })`,
+      client,
+      parentSessionID: "p",
+    })
+
+    await waitFor(
+      () => client.questionReplies.length + client.questionRejects.length >= 1,
+      "production watcher did not resolve the Run-owned nested question during the Run",
+      1_000,
+    )
+
+    await expect(run).resolves.toMatchObject({ result: "done" })
+    expect(client.promptCalls.some((call) => call.agent === "explore")).toBe(true)
+    expect(client.questionReplies).toEqual([{ requestID: "question-production-tiered-proxy", answers: [["EU"]] }])
+    expect(client.questionRejects).not.toContainEqual({ requestID: "question-production-tiered-proxy" })
+  })
+
+  it("production runWorkflow defaults nested-question escalation to headless-safe reject on proxy abstain", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "UNANSWERABLE" }, { text: "EU" }],
+      sessions: [
+        { id: "p", title: "Headless Workflow Run" },
+        { id: "launch-unit", parentID: "p", title: "Prepare deployment Unit" },
+        { id: "nested-question-session", parentID: "launch-unit", title: "Nested deploy chooser" },
+      ],
+      sessionMessages: {
+        p: firstUserMessage("Run the Workflow without an attached operator."),
+        "launch-unit": firstUserMessage("Prepare launch but no deployment region is known."),
+        "nested-question-session": firstUserMessage("The nested Subagent needs deployment region and no context answers it."),
+      },
+      pendingQuestions: [
+        {
+          id: "question-production-headless-default",
+          sessionID: "nested-question-session",
+          questions: [
+            {
+              question: "Which deployment region should this launch use?",
+              header: "Deployment region",
+              options: [
+                { label: "US", description: "Deploy in the United States" },
+                { label: "EU", description: "Deploy in Europe" },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    const run = runWorkflow({
+      source: `import { defineWorkflow } from "@opencode-ai/workflow"
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+export default defineWorkflow({ meta: { name: "watcher-tiered-headless-default", description: "waits for watcher poll" }, async run() { await sleep(650); return "done" } })`,
+      client,
+      parentSessionID: "p",
+    })
+
+    await waitFor(
+      () => client.questionReplies.length + client.questionRejects.length >= 1,
+      "production watcher did not resolve the headless Run-owned nested question during the Run",
+      1_000,
+    )
+
+    await expect(run).resolves.toMatchObject({ result: "done" })
+    expect(client.promptCalls.map((call) => call.agent)).toEqual(["explore"])
+    expect(client.createCalls.map((call) => call.title)).toEqual(["wf:explore"])
+    expect(client.questionReplies).toEqual([])
+    expect(client.questionRejects).toEqual([{ requestID: "question-production-headless-default" }])
   })
 })
 
@@ -242,4 +399,17 @@ async function tmpFileCount(): Promise<number> {
   } catch {
     return 0
   }
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, message: string, timeoutMs = 200): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(message)
+}
+
+function firstUserMessage(text: string): SessionMessage[] {
+  return [{ info: { role: "user" }, parts: [{ type: "text", text }] }]
 }

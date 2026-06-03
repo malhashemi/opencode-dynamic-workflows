@@ -11,7 +11,8 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import type { DefineWorkflowConfig } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
-import { createEngineState, createWorkflowContext, type EngineEvents, type EngineState } from "./context"
+import { createEngineState, createWorkflowContext, runOwnedRoots, type EngineEvents, type EngineState } from "./context"
+import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type Watcher } from "./watcher"
 
 /** Temp modules live beside the engine so `@opencode-ai/workflow` resolves from our node_modules. */
 const DEFAULT_TMP_DIR = path.join(import.meta.dir, "..", ".wf-tmp")
@@ -38,6 +39,12 @@ export interface RunWorkflowInput {
   signal?: AbortSignal
   /** Default per-Unit prompt timeout (ms); falls back to `meta.unitTimeout`, then {@link DEFAULT_UNIT_TIMEOUT_MS}. */
   unitTimeout?: number
+  /**
+   * Whether a human is reachable to answer an escalated depth-1 nested Question. Defaults false
+   * (headless-safe) per DR-005: when false, an unanswerable nested question is proxy-answered or rejected
+   * without a human-escalation dispatch.
+   */
+  humanReachable?: boolean
   /** Unique id for the temp module filename (avoids Bun's import-by-URL cache colliding across Runs). */
   runId?: string
 }
@@ -105,6 +112,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
   const tmpDir = input.tmpDir ?? DEFAULT_TMP_DIR
   const runId = input.runId ?? crypto.randomUUID()
   const { config, file } = await materialize(input.source, tmpDir, runId)
+  let watcher: Watcher | null = null
 
   try {
     // D7: validate the caller's args against the declared `meta.args` schema BEFORE building the context or
@@ -124,6 +132,19 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     }
 
     const state = createEngineState()
+    const signal = input.signal ?? new AbortController().signal
+    watcher = startWatcher({
+      client: input.client,
+      parentSessionID: input.parentSessionID,
+      runOwnedRoots: () => runOwnedRoots(state, input.parentSessionID),
+      signal,
+      resolutionPolicy: {
+        kind: "tiered",
+        standInSubagent: "explore",
+        maxEscalationHops: DEFAULT_MAX_ESCALATION_HOPS,
+        humanReachable: input.humanReachable ?? false,
+      },
+    })
     const ctx = createWorkflowContext({
       client: input.client,
       parentSessionID: input.parentSessionID,
@@ -132,13 +153,14 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       events: input.events,
       concurrency: config.meta.concurrency,
       budget: input.budget ?? config.meta.budget ?? null,
-      signal: input.signal,
+      signal,
       unitTimeout: input.unitTimeout ?? config.meta.unitTimeout ?? DEFAULT_UNIT_TIMEOUT_MS,
     })
 
     const result = await config.run(ctx)
     return { result, meta: config.meta, state }
   } finally {
+    watcher?.stop()
     await rm(file, { force: true })
   }
 }

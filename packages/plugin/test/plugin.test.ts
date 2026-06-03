@@ -80,8 +80,8 @@ describe("WorkflowPlugin (adapter)", () => {
     expect(out.metadata?.childSessions).toHaveLength(1)
 
     // the Run was parented to the invoking session
-    expect(client.createCalls[0]?.body?.parentID).toBe("session-42")
-    expect(client.promptCalls[0]?.body?.agent).toBe("general")
+    expect(client.createCalls[0]?.parentID).toBe("session-42")
+    expect(client.promptCalls[0]?.agent).toBe("general")
   })
 
   it("returns a failure result (does not throw) on bad source", async () => {
@@ -111,7 +111,7 @@ describe("WorkflowPlugin (adapter)", () => {
     expect(out.title).toBe("greet")
     expect(out.output).toContain("Hi, Sam!") // ran — the workflow saw args.name = "Sam", not a raw string
     // the prompt actually interpolated the parsed field, proving args.name was a string "Sam" not undefined
-    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "greet Sam" }])
+    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "greet Sam" }])
   })
 })
 
@@ -251,8 +251,8 @@ describe("workflow tool: durable registry (list + run-by-name)", () => {
     }
     expect(res.title).toBe("greet")
     expect(res.output).toContain("Hi, Sam!")
-    expect(client.promptCalls[0]?.body?.parts).toEqual([{ type: "text", text: "greet Sam" }])
-    expect(client.createCalls[0]?.body?.parentID).toBe("s-1") // parented to the invoking session
+    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "greet Sam" }])
+    expect(client.createCalls[0]?.parentID).toBe("s-1") // parented to the invoking session
   })
 
   it("returns a clear miss (listing registered keys) for an unknown name", async () => {

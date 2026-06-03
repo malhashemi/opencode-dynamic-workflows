@@ -51,6 +51,14 @@ export function createEngineState(): EngineState {
   return { logs: [], phases: [], currentPhase: null, errors: [], unitCount: 0, units: [], tokensSpent: 0 }
 }
 
+export function runOwnedRoots(state: EngineState, parentSessionID: string): ReadonlySet<string> {
+  const roots = new Set<string>([parentSessionID])
+  for (const unit of state.units) {
+    if (unit.sessionID) roots.add(unit.sessionID)
+  }
+  return roots
+}
+
 export interface CreateContextInput<A> {
   client: WorkflowClient
   parentSessionID: string

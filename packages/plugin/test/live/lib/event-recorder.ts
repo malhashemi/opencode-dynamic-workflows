@@ -6,7 +6,7 @@
  * module is that shared harness — the one piece of it that is pure (`sessionIdOf`) carries the unit
  * tests; the live pieces are exercised by the operator-run probes.
  *
- * Wire shapes (CF2) are verified against `@opencode-ai/sdk` v1.15.12 `types.gen.d.ts`. We keep our own
+ * Wire shapes (CF2) are verified against `@opencode-ai/sdk/v2` v1.15.12 `types.gen.d.ts`. We keep our own
  * minimal structural types rather than importing the SDK's full `Event` union: the stream is consumed
  * via `as any` at the boundary (the SDK's SSE iterator is loosely typed), and we only ever read a
  * handful of fields.
@@ -212,7 +212,7 @@ export interface BootedWithRecorder {
  */
 export async function bootWithRecorder(configOverride?: Record<string, unknown>): Promise<BootedWithRecorder> {
   // Imported lazily so the pure `sessionIdOf` path (and its unit test) never pulls in the live SDK.
-  const { createOpencode } = await import("@opencode-ai/sdk")
+  const { createOpencode } = await import("@opencode-ai/sdk/v2")
   const port = 40000 + Math.floor(Date.now() % 20000)
   const { client, server } = await createOpencode({
     port,

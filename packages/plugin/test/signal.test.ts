@@ -55,7 +55,7 @@ describe("ctx.signal (abort)", () => {
     expect(b).toBeNull() // queued at abort — dropped
     expect(c).toBeNull()
     expect(ctx.errors.map((e) => e.unit).sort()).toEqual(["A", "B", "C"]) // all recorded, none silently dropped (D9)
-    expect(client.promptCalls.map((p) => p.body?.parts?.[0]?.text)).toEqual(["A"]) // only A ever reached the client
+    expect(client.promptCalls.map((p) => p.parts[0]?.text)).toEqual(["A"]) // only A ever reached the client
     expect(client.abortCalls).toHaveLength(1) // and A's in-flight child prompt was cancelled
   })
 

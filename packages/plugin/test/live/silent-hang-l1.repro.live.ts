@@ -34,7 +34,7 @@
  *   WF_MODEL_PROVIDER / WF_MODEL_ID  pin the model (default anthropic / claude-haiku-4-5 — cheap, like the
  *                       sibling diagnosis probe). Pinning a cheap model bounds quota burn during the runaway.
  */
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "../../src/client"
 import { runWorkflow } from "../../src/orchestrator"
 import {
@@ -127,7 +127,7 @@ async function runProbe(
   if (outcome === "OVERALL_TIMEOUT") {
     console.log(`  ⚠ OVERALL TIMEOUT — the Run did not resolve within ${OVERALL_TIMEOUT_MS}ms (the engine's per-Unit abort did not free the prompt). This itself is signal (branch-iii-flavoured: the prompt never returned).`)
     // Best-effort: if we learned the child id from onUnit, abort it so the server fiber is asked to stop.
-    if (childId) await client.session.abort({ path: { id: childId } }).catch(() => {})
+    if (childId) await client.session.abort({ sessionID: childId }).catch(() => {})
   } else {
     await run.catch(() => {}) // surface nothing — engine never throws, but be safe
   }
@@ -189,9 +189,7 @@ async function main() {
   const recorder = await startRecorder(recorderClient)
 
   try {
-    const parent = (await (client as unknown as { session: { create(a: unknown): Promise<{ data?: { id: string } }> } }).session.create({
-      body: { title: "silent-hang-l1-repro" },
-    })).data
+    const parent = (await wf.session.create({ title: "silent-hang-l1-repro" })).data
     if (!parent?.id) throw new Error("failed to create parent session")
     console.log(`  parent session ${parent.id}\n`)
 

@@ -11,7 +11,7 @@
  * Run:  bun run packages/plugin/test/live/pipeline-binding.live.ts
  *       WF_LIVE_MODEL=anthropic/claude-haiku-4-5 bun run packages/plugin/test/live/pipeline-binding.live.ts
  */
-import { createOpencodeServer } from "@opencode-ai/sdk"
+import { createOpencodeServer } from "@opencode-ai/sdk/v2"
 import { runWorkflow } from "../../src/orchestrator"
 import type { WorkflowClient } from "../../src/client"
 
@@ -27,10 +27,11 @@ async function main() {
 
   let exitCode = 0
   try {
-    const { createOpencodeClient } = await import("@opencode-ai/sdk")
+    const { createOpencodeClient } = await import("@opencode-ai/sdk/v2")
     const client = createOpencodeClient({ baseUrl: server.url }) as unknown as WorkflowClient
 
-    const root = (await (client as any).session.create({ body: { title: "wf-live-pipeline" } })).data
+    const root = (await client.session.create({ title: "wf-live-pipeline" })).data
+    if (!root?.id) throw new Error("failed to create root session")
     console.log(`[live] root session = ${root.id}`)
 
     // Typed args (meta.args zod) → no-barrier pipeline of two per-item Subagent chains → a thrown stage drops
@@ -61,10 +62,12 @@ export default defineWorkflow({
 
     // PROBE the token field directly (the budget open-item): a raw blocking prompt, then read info.tokens.output.
     // Confirms the field path the budget relies on actually resolves to a positive integer on this provider.
-    const probe = await (client as any).session.create({ body: { parentID: root.id, title: "wf-token-probe" } })
-    const probeRes = await (client as any).session.prompt({
-      path: { id: probe.data.id },
-      body: { agent: "general", parts: [{ type: "text", text: "Write one sentence about the sea." }] },
+    const probe = await client.session.create({ parentID: root.id, title: "wf-token-probe" })
+    if (!probe.data?.id) throw new Error("failed to create token probe session")
+    const probeRes = await client.session.prompt({
+      sessionID: probe.data.id,
+      agent: "general",
+      parts: [{ type: "text", text: "Write one sentence about the sea." }],
     })
     console.log(`[live] token-probe info.tokens =`, probeRes.data?.info?.tokens)
     const probedOutput = probeRes.data?.info?.tokens?.output

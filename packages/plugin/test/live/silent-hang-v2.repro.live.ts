@@ -246,9 +246,7 @@ async function main() {
   let parentSessionID: string | null = null
 
   try {
-    const parent = (await (booted.client as unknown as {
-      session: { create(a: unknown): Promise<{ data?: { id: string } | null }> }
-    }).session.create({ body: { title: "silent-hang-v2-repro" } })).data
+    const parent = (await (booted.client as unknown as WorkflowClient).session.create({ title: "silent-hang-v2-repro" })).data
     if (!parent?.id) throw new Error("failed to create parent session")
     parentSessionID = parent.id
     console.log(`  parent session ${parent.id}\n`)
@@ -278,9 +276,9 @@ async function main() {
   } finally {
     // Best-effort: free any sessions still hung on the stall so server.close() isn't fighting an in-flight
     // request. The stall stub's own close() then destroys the held-open socket.
-    const api = booted.client as unknown as { session: { abort(i: { path: { id: string } }): Promise<unknown> } }
-    if (childIdForAbort) await api.session.abort({ path: { id: childIdForAbort } }).catch(() => {})
-    if (parentSessionID) await api.session.abort({ path: { id: parentSessionID } }).catch(() => {})
+    const api = booted.client as unknown as WorkflowClient
+    if (childIdForAbort) await api.session.abort({ sessionID: childIdForAbort }).catch(() => {})
+    if (parentSessionID) await api.session.abort({ sessionID: parentSessionID }).catch(() => {})
     await booted.server.close()
     await stub.close()
     console.log("\n• server closed + stall provider stopped — probe terminated.")

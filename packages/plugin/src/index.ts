@@ -10,6 +10,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
 import type { Plugin } from "@opencode-ai/plugin"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "./client"
 import type { EngineEvents } from "./context"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile, type RunWorkflowOutput } from "./orchestrator"
@@ -347,8 +348,12 @@ async function promote(input: { source: string; save: string; directory?: string
   }
 }
 
-export const WorkflowPlugin: Plugin = async ({ client, directory, worktree }) => {
-  const wfClient = client as unknown as WorkflowClient
+export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serverUrl }) => {
+  // The real plugin host always injects `serverUrl`, so production uses a constructed v2 SDK client. The
+  // fallback preserves unit tests that intentionally pass a partial PluginInput with only the in-memory fake.
+  const workflowClient: WorkflowClient = serverUrl
+    ? createOpencodeClient({ baseUrl: serverUrl.toString() })
+    : (client as unknown as WorkflowClient)
   return {
     // Inject slash commands by mutating `cfg.command` in the `config` hook — the only channel (no
     // command-registration hook exists), and it fires BEFORE opencode lazily builds the Command registry off
@@ -435,7 +440,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree }) =>
           }
           const common = {
             args: normalizeArgs(input.args), // un-stringify args from the workflow-provider seam (see normalizeArgs)
-            client: wfClient,
+            client: workflowClient,
             parentSessionID: ctx.sessionID,
             signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
             events,

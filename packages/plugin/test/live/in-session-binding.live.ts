@@ -19,7 +19,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 
 const wf = (name: string) =>
   `import { defineWorkflow } from "@opencode-ai/workflow"\n` +

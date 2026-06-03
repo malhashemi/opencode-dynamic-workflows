@@ -12,7 +12,7 @@
  * Exit 0 iff the injected command surfaced (claim holds). Prints the full command list either way.
  */
 import path from "node:path"
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import { PROBE_COMMAND_NAME, PROBE_NAME_STYLES, PROBE_TEMPLATE } from "./fixtures/command-injection-probe.plugin"
 
 async function main() {

@@ -6,7 +6,7 @@
  * Run:  bun run packages/plugin/test/live/deep-research.run.live.ts ["your question"]
  */
 import path from "node:path"
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "../../src/client"
 import { runWorkflowFromFile } from "../../src/orchestrator"
 
@@ -18,7 +18,8 @@ async function main() {
   const { client, server } = await createOpencode({ port, config: { logLevel: "ERROR" }, timeout: 30000 })
   const started = Date.now()
   try {
-    const root = (await (client as any).session.create({ body: { title: "deep-research-live" } })).data
+    const root = (await client.session.create({ title: "deep-research-live" })).data
+    if (!root?.id) throw new Error("failed to create root session")
     const out = await runWorkflowFromFile(file, {
       args: { question },
       client: client as unknown as WorkflowClient,

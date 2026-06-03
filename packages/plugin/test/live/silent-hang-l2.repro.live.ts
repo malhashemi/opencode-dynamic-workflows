@@ -100,17 +100,15 @@ const AGENT_PROMPT =
 /** Minimal structural view of the SDK's session surface we drive directly (the recorder client narrows the rest). */
 interface SessionApi {
   session: {
-    create(input: { body?: { parentID?: string; title?: string } }): Promise<{ data?: { id: string } | null }>
+    create(input: { parentID?: string; title?: string }): Promise<{ data?: { id: string } | null }>
     prompt(input: {
-      path: { id: string }
-      body: {
-        agent?: string
-        model?: { providerID: string; modelID: string }
-        parts: { type: "text"; text: string }[]
-        tools?: Record<string, boolean>
-      }
+      sessionID: string
+      agent?: string
+      model?: { providerID: string; modelID: string }
+      parts: { type: "text"; text: string }[]
+      tools?: Record<string, boolean>
     }): Promise<unknown>
-    abort(input: { path: { id: string } }): Promise<unknown>
+    abort(input: { sessionID: string }): Promise<unknown>
   }
 }
 
@@ -153,7 +151,7 @@ async function runProbe(booted: BootedWithRecorder): Promise<ProbeOutcome> {
 
   // TOP-LEVEL agent session — NO parentID. This is the L2 subject: the session whose own prompt/tool loop we
   // suspect wedges ABOVE the per-Unit timeout.
-  const created = (await api.session.create({ body: { title: "silent-hang-l2-repro" } })).data
+  const created = (await api.session.create({ title: "silent-hang-l2-repro" })).data
   if (!created?.id) throw new Error("failed to create top-level agent session")
   const agentSessionID = created.id
   console.log(`  top-level agent session ${agentSessionID} (no parentID)\n`)
@@ -162,13 +160,11 @@ async function runProbe(booted: BootedWithRecorder): Promise<ProbeOutcome> {
   // (`tools: { workflow: true }`) belt-and-braces — `general` already sees it, this just removes all doubt.
   console.log(`  prompting agent to call workflow({ name: "${RUNAWAY_KEY}" })…`)
   const prompt = api.session.prompt({
-    path: { id: agentSessionID },
-    body: {
-      agent: "general",
-      model: MODEL,
-      parts: [{ type: "text", text: AGENT_PROMPT }],
-      tools: { workflow: true },
-    },
+    sessionID: agentSessionID,
+    agent: "general",
+    model: MODEL,
+    parts: [{ type: "text", text: AGENT_PROMPT }],
+    tools: { workflow: true },
   })
   void (prompt as Promise<unknown>).catch(() => {}) // swallow — we observe via the recorder, not the return value
 
@@ -271,7 +267,7 @@ async function main() {
     // Best-effort: free the agent session's fiber if it is still hung, so server.close() isn't fighting an
     // in-flight prompt. (The operator's long run leaves this to the hard outer bound.)
     if (agentSessionID) {
-      await (booted.client as unknown as SessionApi).session.abort({ path: { id: agentSessionID } }).catch(() => {})
+      await (booted.client as unknown as SessionApi).session.abort({ sessionID: agentSessionID }).catch(() => {})
     }
     await booted.server.close()
     await staged.restore()

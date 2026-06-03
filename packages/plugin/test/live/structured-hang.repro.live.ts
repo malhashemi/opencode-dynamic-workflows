@@ -11,7 +11,7 @@
  * Prints, per probe: COMPLETED (ok/err + ms) or HANG (timed out at Ns). A hang on the structured probes but
  * not the text probe localizes the bug to the structured-output subagent path.
  */
-import { createOpencode } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "../../src/client"
 import { runWorkflow } from "../../src/orchestrator"
 
@@ -83,7 +83,8 @@ async function main() {
   const { client, server } = await createOpencode({ port, config: { logLevel: "ERROR" }, timeout: 30000 })
   const wf = client as unknown as WorkflowClient
   try {
-    const root = (await (client as any).session.create({ body: { title: "wf-hang-repro" } })).data
+    const root = (await wf.session.create({ title: "wf-hang-repro" })).data
+    if (!root?.id) throw new Error("failed to create parent session")
     console.log(`  parent session ${root.id}\n`)
     // Confirm the deep-research redesign premise: explore+text succeeds, general+structured succeeds,
     // explore+schema fails fast with the hint.

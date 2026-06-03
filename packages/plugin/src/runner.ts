@@ -66,7 +66,7 @@ async function settlePrompt(
 
   const winner = await Promise.race([promptCall.then((res) => ({ res }) as const), guard])
   if (winner === "aborted" || winner === "timeout") {
-    void Promise.resolve(client.session.abort({ path: { id: childSessionID } })).catch(() => {})
+    void Promise.resolve(client.session.abort({ sessionID: childSessionID })).catch(() => {})
     void promptCall.catch(() => {}) // swallow the orphaned prompt's eventual settle
     return winner
   }
@@ -137,7 +137,8 @@ export async function runAgent(
     // failed Unit is recorded in `ctx.errors` and never aborts the surrounding run or fan-out.
     try {
       const created = await client.session.create({
-        body: { parentID: parentSessionID, title: `wf:${subagent}` },
+        parentID: parentSessionID,
+        title: `wf:${subagent}`,
       })
       childSessionID = created.data?.id
       if (!childSessionID) return { ok: false, error: "session.create returned no session id" }
@@ -147,13 +148,11 @@ export async function runAgent(
       // below) or `info.error`, recorded in `ctx.errors` — never a silent drop. (Recorded per the long-await AC.)
       const settled = await settlePrompt(
         client.session.prompt({
-          path: { id: childSessionID },
-          body: {
-            agent: subagent,
-            ...(opts.model ? { model: opts.model } : {}),
-            parts: [{ type: "text", text: prompt }],
-            ...(format ? { format } : {}),
-          },
+          sessionID: childSessionID,
+          agent: subagent,
+          ...(opts.model ? { model: opts.model } : {}),
+          parts: [{ type: "text", text: prompt }],
+          ...(format ? { format } : {}),
         }),
         childSessionID,
         client,
