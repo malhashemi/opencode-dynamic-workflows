@@ -11,6 +11,7 @@
 import type { AgentOpts, WorkflowContext, WorkflowError, z } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { DEFAULT_SUBAGENT, runAgent, stringifyError } from "./runner"
+import type { UnitSnapshot } from "./runs"
 import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
 
 /**
@@ -30,9 +31,9 @@ export interface UnitRecord {
 export interface EngineEvents {
   onLog?: (message: string) => void
   onPhase?: (title: string) => void
-  onUnitStart?: (info: { prompt: string; subagent: string; phase: string | null; label: string | null }) => void
-  /** Fired once a Unit settles, carrying its child-session ref (lets the adapter emit live child links). */
-  onUnit?: (unit: UnitRecord) => void
+  onUnitQueued?: (unit: UnitSnapshot) => void
+  onUnitStart?: (unit: UnitSnapshot) => void
+  onUnitSettled?: (unit: UnitSnapshot) => void
 }
 
 export interface EngineState {
@@ -109,13 +110,32 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     // Stamp the ordinal + resolve grouping at CALL time (author intent), then queue on the shared limiter; the
     // Unit only "starts" (onUnitStart) once it actually holds a permit, so progress reflects launches not calls.
     state.unitCount += 1
+    const ordinal = state.unitCount
+    const unitId = crypto.randomUUID()
     const subagent = opts.subagent ?? DEFAULT_SUBAGENT
     const phase = opts.phase ?? state.currentPhase
     const label = opts.label ?? null
+    const base = { unitId, ordinal, label, subagent, phase, prompt }
+    const queued: UnitSnapshot = {
+      ...base,
+      status: "queued",
+      sessionID: null,
+      startedAt: null,
+      endedAt: null,
+    }
+    events?.onUnitQueued?.({ ...queued })
 
     try {
       return await limiter.run(async () => {
-        events?.onUnitStart?.({ prompt, subagent, phase, label })
+        const startedAt = Date.now()
+        const started: UnitSnapshot = {
+          ...base,
+          status: "running",
+          sessionID: null,
+          startedAt,
+          endedAt: null,
+        }
+        events?.onUnitStart?.({ ...started })
         const result = await runAgent(client, parentSessionID, prompt, {
           subagent: opts.subagent,
           model: opts.model,
@@ -132,7 +152,15 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
         // the human can open its transcript from the session list, and the adapter can surface live child links.
         const record: UnitRecord = { sessionID: result.childSessionID ?? null, label, subagent, phase, ok: result.ok }
         state.units.push(record)
-        events?.onUnit?.(record)
+        const settled: UnitSnapshot = {
+          ...base,
+          status: result.ok ? "ok" : "failed",
+          sessionID: result.childSessionID ?? null,
+          startedAt,
+          endedAt: Date.now(),
+          error: result.ok ? undefined : result.error,
+        }
+        events?.onUnitSettled?.({ ...settled })
 
         if (result.ok) {
           state.tokensSpent += result.outputTokens // feed the advisory budget (completed Units only)
@@ -145,10 +173,18 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
       // An AbortError means the limiter rejected this Unit's acquire because the Run was aborted while it was
       // still QUEUED — it never launched. Record + null (D9): an aborted Unit is not silently dropped.
       if (err instanceof AbortError) {
+        const error = stringifyError(err)
         const record: UnitRecord = { sessionID: null, label, subagent, phase, ok: false }
         state.units.push(record)
-        events?.onUnit?.(record)
-        state.errors.push({ unit: label ?? subagent, prompt, subagent, error: stringifyError(err) })
+        events?.onUnitSettled?.({
+          ...base,
+          status: "failed",
+          sessionID: null,
+          startedAt: null,
+          endedAt: Date.now(),
+          error,
+        })
+        state.errors.push({ unit: label ?? subagent, prompt, subagent, error })
         return null
       }
       // Anything else is unexpected: runAgent never throws (it returns ok:false), so the only other source is a

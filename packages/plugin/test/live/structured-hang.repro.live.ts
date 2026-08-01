@@ -62,7 +62,7 @@ export default defineWorkflow({ meta: { name: "p-explore-s", description: "x" },
 
 async function probe(client: WorkflowClient, parentSessionID: string, name: keyof typeof SRC) {
   const started = Date.now()
-  const events = { onUnitStart: () => console.log(`    [${name}] unit launched (+${Date.now() - started}ms)`), onUnit: (u: { ok: boolean }) => console.log(`    [${name}] unit settled ok=${u.ok} (+${Date.now() - started}ms)`), onLog: (m: string) => console.log(`    [${name}] log: ${m}`) }
+  const events = { onUnitStart: () => console.log(`    [${name}] unit launched (+${Date.now() - started}ms)`), onUnitSettled: (u: { status: string }) => console.log(`    [${name}] unit settled status=${u.status} (+${Date.now() - started}ms)`), onLog: (m: string) => console.log(`    [${name}] log: ${m}`) }
   const run = runWorkflow({ source: SRC[name], client, parentSessionID, events })
   const timeout = new Promise<"HANG">((resolve) => setTimeout(() => resolve("HANG"), TIMEOUT_MS))
   const outcome = await Promise.race([run.then(() => "DONE" as const), timeout])

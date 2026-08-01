@@ -84,7 +84,7 @@ export default defineWorkflow({
       parentSessionID: root.id,
       events: {
         onPhase: (t) => console.log(`[live] phase → ${t}`),
-        onUnit: (u) => console.log(`[live] unit settled → ${u.sessionID} (${u.label ?? u.subagent}) ok=${u.ok}`),
+        onUnitSettled: (u) => console.log(`[live] unit settled → ${u.sessionID} (${u.label ?? u.subagent}) status=${u.status}`),
         onLog: (m) => console.log(`[live] log → ${m}`),
       },
     })

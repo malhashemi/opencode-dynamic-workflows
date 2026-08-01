@@ -27,7 +27,7 @@ async function main() {
       events: {
         onPhase: (t) => console.log(`  [+${Math.round((Date.now() - started) / 1000)}s] phase: ${t}`),
         onLog: (m) => console.log(`  [+${Math.round((Date.now() - started) / 1000)}s] log: ${m}`),
-        onUnit: (u) => console.log(`  [+${Math.round((Date.now() - started) / 1000)}s] unit ${u.ok ? "✓" : "✗"} ${u.label ?? u.subagent}`),
+        onUnitSettled: (u) => console.log(`  [+${Math.round((Date.now() - started) / 1000)}s] unit ${u.status === "ok" ? "✓" : "✗"} ${u.label ?? u.subagent}`),
       },
     })
     console.log(`\n— completed in ${Math.round((Date.now() - started) / 1000)}s —`)

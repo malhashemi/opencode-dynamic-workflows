@@ -111,10 +111,10 @@ async function runProbe(
     events: {
       onLog: (m) => console.log(`    [wf] log: ${m}`),
       onUnitStart: () => console.log(`    [wf] runaway unit launched (+${Date.now() - runStart}ms)`),
-      onUnit: (u) => {
+      onUnitSettled: (u) => {
         childId = u.sessionID
         unitSettledAt = Date.now()
-        console.log(`    [wf] runaway unit settled ok=${u.ok} child=${u.sessionID} (+${unitSettledAt - runStart}ms)`)
+        console.log(`    [wf] runaway unit settled status=${u.status} child=${u.sessionID} (+${unitSettledAt - runStart}ms)`)
       },
     },
   })

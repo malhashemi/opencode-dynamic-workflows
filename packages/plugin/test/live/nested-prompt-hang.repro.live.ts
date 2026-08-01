@@ -197,7 +197,7 @@ async function runScenario(input: ScenarioInput, deps: { real: WorkflowClient; w
       parentSessionID,
       unitTimeout: UNIT_TIMEOUT_MS, // strictly > RUN_TIMEOUT_MS: the watcher, not Fix B, completes in-window
       events: {
-        onUnit: (u) => console.log(`  [+${Math.round((Date.now() - deps.started) / 1000)}s] ${input.name}: unit ${u.ok ? "✓" : "✗"} ${u.subagent}`),
+        onUnitSettled: (u) => console.log(`  [+${Math.round((Date.now() - deps.started) / 1000)}s] ${input.name}: unit ${u.status === "ok" ? "✓" : "✗"} ${u.subagent}`),
       },
     })
     void runPromise.catch(() => {})

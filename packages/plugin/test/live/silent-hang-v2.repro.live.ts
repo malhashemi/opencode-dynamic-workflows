@@ -140,9 +140,9 @@ async function runProbe(
       onLog: (m) => console.log(`    [wf] log: ${m}`),
       onUnitStart: () => console.log(`    [wf] v2 unit launched (+${Date.now() - start}ms) — model call → stall stub`),
       // Fires only if the Unit settles (it should NOT during the stall) — we record the child id if it ever does.
-      onUnit: (u) => {
+      onUnitSettled: (u) => {
         childId = u.sessionID
-        console.log(`    [wf] v2 unit settled ok=${u.ok} child=${u.sessionID} (+${Date.now() - start}ms) — UNEXPECTED during a stall`)
+        console.log(`    [wf] v2 unit settled status=${u.status} child=${u.sessionID} (+${Date.now() - start}ms) — UNEXPECTED during a stall`)
       },
     },
   })

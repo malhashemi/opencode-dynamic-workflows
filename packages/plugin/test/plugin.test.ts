@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { readDescriptors } from "../src/discovery"
 import { WorkflowPlugin, normalizeArgs } from "../src/index"
 import pluginDefault from "../src/index"
 import { makeFakeClient } from "./fake-client"
@@ -28,7 +29,7 @@ function fakePluginInput(
 type Hooks = Awaited<ReturnType<typeof WorkflowPlugin>>
 type WorkflowTool = NonNullable<NonNullable<Hooks["tool"]>[string]>
 
-function fakeToolCtx(sessionID: string) {
+function fakeToolCtx(sessionID: string, onMetadata: (input: { title?: string; metadata?: Record<string, unknown> }) => void = () => {}) {
   return {
     sessionID,
     messageID: "m1",
@@ -36,7 +37,7 @@ function fakeToolCtx(sessionID: string) {
     directory: "/tmp",
     worktree: "/tmp",
     abort: new AbortController().signal,
-    metadata: () => {},
+    metadata: onMetadata,
     ask: async () => {},
   } as unknown as Parameters<WorkflowTool["execute"]>[1]
 }
@@ -58,6 +59,30 @@ describe("WorkflowPlugin (adapter)", () => {
     const hooks = await WorkflowPlugin(fakePluginInput(makeFakeClient()))
     expect(hooks.tool?.workflow).toBeDefined()
     expect(typeof workflowTool(hooks).execute).toBe("function")
+  })
+
+  it("starts a discoverable endpoint for a real host input and removes it on dispose", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "wf-plugin-endpoint-"))
+    const statePath = path.join(root, ".opencode")
+    const hooks = await WorkflowPlugin({
+      ...fakePluginInput(makeFakeClient(), { directory: root, worktree: root }),
+      serverUrl: new URL("http://127.0.0.1:1"),
+    })
+    try {
+      const descriptors = await readDescriptors(statePath)
+      expect(descriptors).toHaveLength(1)
+      expect(descriptors[0]).toMatchObject({ pid: process.pid, directory: root, worktree: root })
+      const health = await fetch(`${descriptors[0]!.url}/health`, {
+        headers: { authorization: `Bearer ${descriptors[0]!.token}` },
+      })
+      expect(await health.json()).toEqual({ ok: true })
+
+      await hooks.dispose?.()
+      expect(await readDescriptors(statePath)).toEqual([])
+    } finally {
+      await hooks.dispose?.()
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("executes an inline workflow end-to-end against the injected client", async () => {
@@ -82,6 +107,41 @@ describe("WorkflowPlugin (adapter)", () => {
     // the Run was parented to the invoking session
     expect(client.createCalls[0]?.parentID).toBe("session-42")
     expect(client.promptCalls[0]?.agent).toBe("general")
+  })
+
+  it("mirrors one throttled native progress shape with workflow and settled/total units", async () => {
+    const client = makeFakeClient({ reply: "Hi" })
+    const hooks = await WorkflowPlugin(fakePluginInput(client))
+    const metadata: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
+    await workflowTool(hooks).execute(
+      { source: SIMPLE_WORKFLOW, args: { name: "Sam" } },
+      fakeToolCtx("session-progress", (input) => metadata.push(input)),
+    )
+
+    expect(metadata.length).toBeGreaterThanOrEqual(2)
+    expect(metadata.at(-1)?.title).toMatch(/^workflow greet — starting · 1\/1 units · \d+s$/)
+    expect(metadata.at(-1)?.metadata).toMatchObject({
+      workflow: "greet",
+      settledUnits: 1,
+      totalUnits: 1,
+    })
+  })
+
+  it("mirrors declared phase position in the native progress title", async () => {
+    const hooks = await WorkflowPlugin(fakePluginInput(makeFakeClient()))
+    const metadata: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
+    await workflowTool(hooks).execute(
+      {
+        source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "phased", description: "phased", phases: [{ title: "Research" }, { title: "Synthesize" }] },
+  async run({ phase }) { phase("Research"); phase("Synthesize"); return "done" },
+})`,
+      },
+      fakeToolCtx("session-phased", (input) => metadata.push(input)),
+    )
+
+    expect(metadata.at(-1)?.title).toMatch(/^workflow phased — phase 2\/2 · 0\/0 units · \d+s$/)
   })
 
   it("returns a failure result (does not throw) on bad source", async () => {

@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import type { SessionMessage } from "../src/client"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile } from "../src/orchestrator"
+import { createRunStore } from "../src/runs"
 import { makeFakeClient } from "./fake-client"
 
 const ECHO_WORKFLOW = `
@@ -69,6 +70,74 @@ describe("runWorkflow (inline source → run → result)", () => {
     expect(client.createCalls[0]).toEqual({ parentID: "parent-xyz", title: "wf:general" })
     expect(client.promptCalls[0]?.agent).toBe("general")
     expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "say: hi" }])
+  })
+
+  it("registers before execution and records ordered lifecycle plus done terminal state", async () => {
+    const store = createRunStore()
+    const events: string[] = []
+    const unitIds: string[] = []
+    store.subscribe((event) => {
+      events.push(event.type)
+      if (event.type === "unit.queued" || event.type === "unit.started" || event.type === "unit.settled") {
+        unitIds.push(event.unit.unitId)
+      }
+    })
+    await runWorkflow({
+      source: ECHO_WORKFLOW,
+      args: { word: "tracked" },
+      client: makeFakeClient({ reply: "ok" }),
+      parentSessionID: "parent-tracked",
+      runId: "run-tracked",
+      provenance: "durable",
+      store,
+    })
+
+    expect(events).toEqual(["run.started", "run.log", "unit.queued", "unit.started", "unit.settled", "run.ended"])
+    expect(new Set(unitIds).size).toBe(1)
+    expect(store.get("run-tracked")).toMatchObject({
+      workflow: "echo",
+      provenance: "durable",
+      parentSessionID: "parent-tracked",
+      status: "done",
+      endedAt: expect.any(Number),
+      units: [{ status: "ok", sessionID: "child-1" }],
+    })
+  })
+
+  it("keeps declared phases ordered while recording the current phase", async () => {
+    const store = createRunStore()
+    await runWorkflow({
+      source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "phased", description: "phased", phases: [{ title: "Research" }, { title: "Synthesize" }] },
+  async run({ phase }) { phase("Research"); phase("Synthesize"); return "done" },
+})`,
+      client: makeFakeClient(),
+      parentSessionID: "p",
+      runId: "run-phased",
+      store,
+    })
+
+    expect(store.get("run-phased")).toMatchObject({
+      status: "done",
+      phases: ["Research", "Synthesize"],
+      currentPhase: "Synthesize",
+    })
+  })
+
+  it("marks a registered run failed when workflow author code throws", async () => {
+    const store = createRunStore()
+    await expect(
+      runWorkflow({
+        source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({ meta: { name: "throws", description: "throws" }, async run() { throw new Error("author failure") } })`,
+        client: makeFakeClient(),
+        parentSessionID: "p",
+        runId: "run-failed",
+        store,
+      }),
+    ).rejects.toThrow("author failure")
+    expect(store.get("run-failed")).toMatchObject({ status: "failed", endedAt: expect.any(Number) })
   })
 
   it("cleans up the temp module after running", async () => {
@@ -372,6 +441,7 @@ export default defineWorkflow({ meta: { name: "hang", description: "x", unitTime
   it("aborting the Run cancels an IN-FLIGHT hung Unit (not just queued ones)", async () => {
     const client = makeFakeClient({ hang: true })
     const ctrl = new AbortController()
+    const store = createRunStore()
     const p = runWorkflow({
       // no short unitTimeout — only the abort can end this hang within the test
       source: `import { defineWorkflow } from "@opencode-ai/workflow"
@@ -379,6 +449,8 @@ export default defineWorkflow({ meta: { name: "hang2", description: "x" }, async
       client,
       parentSessionID: "p",
       signal: ctrl.signal,
+      runId: "run-aborted",
+      store,
     })
     await new Promise((r) => setTimeout(r, 25)) // let the Unit launch + begin its (hanging) prompt
     ctrl.abort()
@@ -386,6 +458,7 @@ export default defineWorkflow({ meta: { name: "hang2", description: "x" }, async
     expect(out.result).toEqual({ r: null })
     expect(out.state.errors[0]?.error).toMatch(/aborted/)
     expect(client.abortCalls.length).toBeGreaterThan(0)
+    expect(store.get("run-aborted")).toMatchObject({ status: "aborted", endedAt: expect.any(Number) })
   })
 })
 

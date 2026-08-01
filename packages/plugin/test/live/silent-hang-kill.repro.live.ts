@@ -166,9 +166,9 @@ async function driveToStuck(
       onLog: (m) => console.log(`    [wf] log: ${m}`),
       onUnitStart: () =>
         console.log(`    [wf] unit launched (+${Date.now() - start}ms) — model call → stall stub`),
-      onUnit: (u) =>
+      onUnitSettled: (u) =>
         console.log(
-          `    [wf] unit settled ok=${u.ok} child=${u.sessionID} (+${Date.now() - start}ms) — UNEXPECTED during a stall`,
+          `    [wf] unit settled status=${u.status} child=${u.sessionID} (+${Date.now() - start}ms) — UNEXPECTED during a stall`,
         ),
     },
   })

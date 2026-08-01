@@ -5,7 +5,9 @@
     "composite": true,
     "noEmit": false,
     "emitDeclarationOnly": true,
-    "outDir": "./dist-types"
+    "outDir": "./dist-types",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid"
   },
   "references": [{ "path": "../workflow" }],
   "include": ["src", "test"]

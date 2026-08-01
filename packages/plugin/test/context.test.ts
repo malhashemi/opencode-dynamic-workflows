@@ -238,7 +238,7 @@ describe("ctx.collect", () => {
 })
 
 describe("ctx unit tracking (out-of-band visibility)", () => {
-  it("records each Unit's child session id, label, ok, and fires onUnit", async () => {
+  it("records each Unit's child session id, label, ok, and fires onUnitSettled", async () => {
     const state = createEngineState()
     const seen: { sessionID: string | null; ok: boolean }[] = []
     const ctx = createWorkflowContext({
@@ -246,7 +246,7 @@ describe("ctx unit tracking (out-of-band visibility)", () => {
       parentSessionID: "p",
       args: undefined,
       state,
-      events: { onUnit: (u) => seen.push({ sessionID: u.sessionID, ok: u.ok }) },
+      events: { onUnitSettled: (u) => seen.push({ sessionID: u.sessionID, ok: u.status === "ok" }) },
     })
     await ctx.agent("a", { subagent: "writer", label: "intro" })
     expect(state.units).toEqual([{ sessionID: "ses-1", label: "intro", subagent: "writer", phase: null, ok: true }])

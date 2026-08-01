@@ -9,12 +9,14 @@ import { existsSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin, PluginOptions, ToolContext } from "@opencode-ai/plugin"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "./client"
-import type { EngineEvents } from "./context"
+import { removeDescriptor, writeDescriptor } from "./discovery"
+import { startEndpoint, type EndpointOptions } from "./endpoint"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile, type RunWorkflowOutput } from "./orchestrator"
 import { buildRegistry, type Registry, type RegistryEntry } from "./registry"
+import { createRunStore, type RunEvent, type RunSnapshot, type RunStore } from "./runs"
 import { toJsonSchema } from "./schema-bridge"
 
 const PLUGIN_ID = "opencode-dynamic-workflows"
@@ -297,6 +299,103 @@ function failResult(error: unknown) {
   return { title: "workflow failed", output: `Error: ${message}` }
 }
 
+function dashboardOptions(options: PluginOptions | undefined): EndpointOptions {
+  const dashboard = options?.dashboard
+  if (typeof dashboard !== "object" || dashboard === null || Array.isArray(dashboard)) return {}
+  const value = dashboard as Record<string, unknown>
+  return {
+    enabled: typeof value.enabled === "boolean" ? value.enabled : undefined,
+    port: typeof value.port === "number" ? value.port : undefined,
+    host: typeof value.host === "string" ? value.host : undefined,
+  }
+}
+
+async function resolveStatePath(
+  client: Parameters<Plugin>[0]["client"],
+  directory: string | undefined,
+  worktree: string | undefined,
+): Promise<string | null> {
+  try {
+    // Partial PluginInput doubles used by the engine tests intentionally omit the SDK path namespace.
+    if ("path" in client && client.path && typeof client.path.get === "function") {
+      const response = await client.path.get(directory ? { query: { directory } } : undefined)
+      if (typeof response.data?.state === "string" && response.data.state) return response.data.state
+    }
+  } catch {
+    // A host-version/path lookup failure falls through to the project-local state root below.
+  }
+  const root = worktree || directory
+  return root ? path.join(root, ".opencode") : null
+}
+
+function eventRunId(event: RunEvent): string {
+  return event.type === "run.started" || event.type === "run.ended" ? event.run.runId : event.runId
+}
+
+function nativeProgressTitle(run: RunSnapshot, now = Date.now()): string {
+  const settled = run.units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
+  const elapsed = Math.max(0, Math.floor(((run.endedAt ?? now) - run.startedAt) / 1_000))
+  const minutes = Math.floor(elapsed / 60)
+  const seconds = elapsed % 60
+  const elapsedText = minutes > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`
+  const phaseIndex = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
+  const phase = phaseIndex >= 0 ? `phase ${phaseIndex + 1}/${run.phases.length}` : run.currentPhase ?? "starting"
+  return `workflow ${run.workflow} — ${phase} · ${settled}/${run.units.length} units · ${elapsedText}`
+}
+
+function createNativeProgressMirror(ctx: ToolContext, store: RunStore, runId: string) {
+  const intervalMs = 100
+  let lastEmittedAt = 0
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let stopped = false
+
+  const emit = () => {
+    timer = null
+    const run = store.get(runId)
+    if (!run) return
+    lastEmittedAt = Date.now()
+    const settled = run.units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
+    try {
+      ctx.metadata({
+        title: nativeProgressTitle(run, lastEmittedAt),
+        metadata: {
+          runId,
+          workflow: run.workflow,
+          phase: run.currentPhase,
+          settledUnits: settled,
+          totalUnits: run.units.length,
+          elapsedMs: (run.endedAt ?? lastEmittedAt) - run.startedAt,
+        },
+      })
+    } catch {
+      // Progress rendering is best-effort and must never change the Run's result.
+    }
+  }
+
+  const schedule = () => {
+    if (stopped) return
+    const wait = intervalMs - (Date.now() - lastEmittedAt)
+    if (wait <= 0) emit()
+    else if (!timer) timer = setTimeout(emit, wait)
+  }
+  const unsubscribe = store.subscribe((event) => {
+    if (eventRunId(event) === runId) schedule()
+  })
+  const elapsedTimer = setInterval(schedule, 1_000)
+
+  return {
+    stop() {
+      if (stopped) return
+      if (timer) clearTimeout(timer)
+      clearInterval(elapsedTimer)
+      timer = null
+      stopped = true
+      unsubscribe()
+      emit()
+    },
+  }
+}
+
 /**
  * Promote inline ad-hoc `source` to a DURABLE Workflow: a verbatim save into `<project>/.opencode/workflows/`.
  * `save` is the target name/path under that dir (may contain `/` for a namespace). The source is validated
@@ -348,13 +447,40 @@ async function promote(input: { source: string; save: string; directory?: string
   }
 }
 
-export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serverUrl }) => {
+export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serverUrl }, options) => {
   // The real plugin host always injects `serverUrl`, so production uses a constructed v2 SDK client. The
   // fallback preserves unit tests that intentionally pass a partial PluginInput with only the in-memory fake.
   const workflowClient: WorkflowClient = serverUrl
     ? createOpencodeClient({ baseUrl: serverUrl.toString() })
     : (client as unknown as WorkflowClient)
+  const store = createRunStore()
+  // A real host always supplies serverUrl. Partial structural PluginInput doubles deliberately do not; avoid
+  // opening an orphan server for those initialization-only tests while retaining default-on production.
+  const endpoint = serverUrl ? await startEndpoint(store, dashboardOptions(options)) : null
+  let descriptorStatePath: string | null = null
+  if (endpoint) {
+    descriptorStatePath = await resolveStatePath(client, directory, worktree)
+    if (descriptorStatePath && directory && worktree) {
+      try {
+        await writeDescriptor(descriptorStatePath, {
+          url: endpoint.url,
+          token: endpoint.token,
+          pid: process.pid,
+          directory,
+          worktree,
+          startedAt: Date.now(),
+        })
+      } catch (error) {
+        await endpoint.stop()
+        throw error
+      }
+    }
+  }
   return {
+    dispose: async () => {
+      if (descriptorStatePath) await removeDescriptor(descriptorStatePath)
+      await endpoint?.stop()
+    },
     // Inject slash commands by mutating `cfg.command` in the `config` hook — the only channel (no
     // command-registration hook exists), and it fires BEFORE opencode lazily builds the Command registry off
     // this same cached config object (verified live by the injection probe). Two layers, both `??=` so a
@@ -399,8 +525,6 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
           save: tool.schema.string().optional().describe("Promote: save the inline `source` verbatim to <project>/.opencode/workflows/<save>.ts (may include `/` for a namespace) and return its registry key."),
         },
         async execute(input, ctx) {
-          ctx.metadata({ title: "workflow: starting" })
-
           // LIST mode — discover durable Workflows across scopes; no Run. Rebuilt per call so a just-written
           // or edited file is reflected immediately (the plugin owns discovery; opencode's own registries are
           // frozen per process).
@@ -424,26 +548,12 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
             }
           }
 
-          // Accumulate child-session refs as Units settle and re-emit them on the running tool part. No current
-          // renderer consumes this for a tool named "workflow" (both the web UI and the TUI name-gate the rich
-          // card to "task"), but it persists on the part for out-of-band navigation and a future widget /
-          // upstream change. See the orchestration spec's rendering note.
-          const childSessions: { sessionID: string; label: string | null; subagent: string; ok: boolean }[] = []
-          const events: EngineEvents = {
-            onLog: (m) => ctx.metadata({ title: `workflow: ${m}` }),
-            onPhase: (t) => ctx.metadata({ title: `workflow phase: ${t}` }),
-            onUnit: (u) => {
-              if (!u.sessionID) return
-              childSessions.push({ sessionID: u.sessionID, label: u.label, subagent: u.subagent, ok: u.ok })
-              ctx.metadata({ title: `workflow: ${childSessions.length} unit(s) started`, metadata: { childSessions } })
-            },
-          }
           const common = {
             args: normalizeArgs(input.args), // un-stringify args from the workflow-provider seam (see normalizeArgs)
             client: workflowClient,
             parentSessionID: ctx.sessionID,
             signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
-            events,
+            store,
           }
 
           try {
@@ -460,7 +570,15 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
                 }
               }
               try {
-                return runResult(await runWorkflowFromFile(entry.absPath, common))
+                const runId = crypto.randomUUID()
+                const mirror = createNativeProgressMirror(ctx, store, runId)
+                try {
+                  return runResult(
+                    await runWorkflowFromFile(entry.absPath, { ...common, runId, provenance: "durable" }),
+                  )
+                } finally {
+                  mirror.stop()
+                }
               } catch (error) {
                 // Echo the expected schema on an arg-validation miss so the model fixes `args` first-try
                 // (rather than guessing field names). Other errors fall through to the outer catch.
@@ -475,7 +593,15 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
 
             // RUN AD-HOC — inline source.
             if (input.source) {
-              return runResult(await runWorkflow({ source: input.source, ...common }))
+              const runId = crypto.randomUUID()
+              const mirror = createNativeProgressMirror(ctx, store, runId)
+              try {
+                return runResult(
+                  await runWorkflow({ source: input.source, ...common, runId, provenance: "inline" }),
+                )
+              } finally {
+                mirror.stop()
+              }
             }
 
             return {
