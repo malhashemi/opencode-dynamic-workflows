@@ -12,16 +12,16 @@
     "./tui": "./src/tui/index.tsx"
   },
   "dependencies": {
-    "@opencode-ai/workflow": "workspace:*"
+    "@opencode-ai/workflow": "workspace:*",
+    "@opentui/core": "0.4.5",
+    "@opentui/solid": "0.4.5"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "1.15.x",
-    "@opencode-ai/sdk": "1.15.x"
+    "@opencode-ai/plugin": "1.18.x",
+    "@opencode-ai/sdk": "1.18.x"
   },
   "devDependencies": {
-    "@opentui/core": "0.2.16",
-    "@opentui/keymap": "0.2.16",
-    "@opentui/solid": "0.2.16",
+    "@opentui/keymap": "0.4.5",
     "solid-js": "1.9.12"
   }
 }

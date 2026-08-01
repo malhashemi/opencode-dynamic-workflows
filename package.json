@@ -12,8 +12,8 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.15.12",
-    "@opencode-ai/sdk": "1.15.12",
+    "@opencode-ai/plugin": "1.18.10",
+    "@opencode-ai/sdk": "1.18.10",
     "@types/bun": "latest",
     "typescript": "^5.9.3"
   }
