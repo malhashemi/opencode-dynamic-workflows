@@ -88,6 +88,13 @@ export async function startEndpoint(store: RunStore, options: EndpointOptions = 
       return Bun.serve({
         hostname: host === "[::1]" ? "::1" : host,
         port: options.port ?? 0,
+        // `/events` is a long-lived stream that is idle by design between run transitions, and Bun closes an
+        // idle connection after 10 seconds by default — sooner than this endpoint's own 15-second keepalive
+        // could refresh it. Every subscriber was therefore dropped roughly every ten seconds and survived
+        // only because the TUI client reconnects. Verified against a real host: with the default, an SSE
+        // reader receives the ": connected" comment and then "socket connection was closed unexpectedly"
+        // before any run event arrives. 0 disables the timeout, which is the correct setting for SSE.
+        idleTimeout: 0,
         fetch(request) {
           const url = new URL(request.url)
           if (!authorized(request, url, token)) {

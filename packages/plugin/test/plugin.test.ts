@@ -63,7 +63,12 @@ describe("WorkflowPlugin (adapter)", () => {
 
   it("starts a discoverable endpoint for a real host input and removes it on dispose", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "wf-plugin-endpoint-"))
-    const statePath = path.join(root, ".opencode")
+    // The descriptor lands in OpenCode's canonical XDG state dir — never by asking the host for it, which
+    // would deadlock an instance that is still bootstrapping this very plugin. Redirect XDG so the test
+    // exercises the production computation without writing into the developer's real state directory.
+    const previousXdgState = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = path.join(root, "xdg-state")
+    const statePath = path.join(root, "xdg-state", "opencode")
     const hooks = await WorkflowPlugin({
       ...fakePluginInput(makeFakeClient(), { directory: root, worktree: root }),
       serverUrl: new URL("http://127.0.0.1:1"),
@@ -81,6 +86,8 @@ describe("WorkflowPlugin (adapter)", () => {
       expect(await readDescriptors(statePath)).toEqual([])
     } finally {
       await hooks.dispose?.()
+      if (previousXdgState === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = previousXdgState
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -107,6 +114,52 @@ describe("WorkflowPlugin (adapter)", () => {
     // the Run was parented to the invoking session
     expect(client.createCalls[0]?.parentID).toBe("session-42")
     expect(client.promptCalls[0]?.agent).toBe("general")
+  })
+
+  // Regression: `serverUrl` is not always a server. In OpenCode's default TUI mode there is no HTTP listener
+  // — the host wires the injected client to an in-process `fetch` and leaves `serverUrl` as the placeholder
+  // `http://localhost:4096`. Believing `serverUrl` there means talking to nothing, or to an unrelated
+  // OpenCode holding that port. On a real TUI it made every unit fail with "session.create returned no
+  // session id" while the run still reported `done`.
+  it("routes engine calls through the host's injected transport rather than `serverUrl`", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "wf-plugin-transport-"))
+    const previousXdgState = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = path.join(root, "xdg-state")
+
+    // The transport the host would have wired to its in-process app. Nothing is listening on either address,
+    // so the ONLY way to tell which one the engine used is to watch which fetch is called.
+    const seen: string[] = []
+    const injected = Object.assign(makeFakeClient(), {
+      _client: {
+        getConfig: () => ({
+          baseUrl: "http://127.0.0.1:1",
+          fetch: async (request: Request | string) => {
+            seen.push(typeof request === "string" ? request : request.url)
+            return new Response("{}", { status: 500 })
+          },
+        }),
+      },
+    })
+
+    const hooks = await WorkflowPlugin({
+      ...fakePluginInput(injected, { directory: root, worktree: root }),
+      // A DIFFERENT, deliberately dead address: if the engine used this instead, the failure would not carry
+      // the marker, and the assertion below would tell us so.
+      serverUrl: new URL("http://127.0.0.1:2"),
+    })
+    try {
+      await workflowTool(hooks).execute(
+        { source: SIMPLE_WORKFLOW, args: { name: "Sam" } },
+        fakeToolCtx("session-transport"),
+      )
+      expect(seen.length).toBeGreaterThan(0)
+      for (const url of seen) expect(url).toContain("127.0.0.1:1")
+    } finally {
+      await hooks.dispose?.()
+      if (previousXdgState === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = previousXdgState
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("mirrors one throttled native progress shape with workflow and settled/total units", async () => {
@@ -142,6 +195,54 @@ export default defineWorkflow({
     )
 
     expect(metadata.at(-1)?.title).toMatch(/^workflow phased — phase 2\/2 · 0\/0 units · \d+s$/)
+  })
+
+  // The mirror is CHANGE-driven, not periodic. Every `ctx.metadata()` call makes the host replace the whole
+  // running tool part and reset its `time.start`, so an emission that carries no new information actively
+  // corrupts the one number the native UI does render (the tool call's duration).
+  it("emits native progress only on real transitions — not on logs, not on a quiet second", async () => {
+    const hooks = await WorkflowPlugin(fakePluginInput(makeFakeClient()))
+    const metadata: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
+    await workflowTool(hooks).execute(
+      {
+        source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "mirrored", description: "mirror probe", phases: [{ title: "one" }] },
+  async run({ phase, log }) {
+    phase("one")
+    await new Promise((resolve) => setTimeout(resolve, 250))   // drain the 100ms throttle
+    log("a"); log("b"); log("c")                               // run.log moves nothing in the record
+    await new Promise((resolve) => setTimeout(resolve, 1_200)) // the retired per-second timer would tick here
+    return "done"
+  },
+})`,
+      },
+      fakeToolCtx("session-mirror", (input) => metadata.push(input)),
+    )
+
+    // Exactly two transitions changed the record: the run starting, and the phase becoming "one".
+    expect(metadata).toHaveLength(2)
+    expect(metadata[0]?.title).toMatch(/^workflow mirrored — starting · 0\/0 units · \d+s$/)
+    expect(metadata[1]?.title).toMatch(/^workflow mirrored — phase 1\/1 · 0\/0 units · \d+s$/)
+    expect(metadata[1]?.metadata).toMatchObject({
+      workflow: "mirrored",
+      phase: "one",
+      settledUnits: 0,
+      totalUnits: 0,
+    })
+    // `run.ended` changes only status and timing, neither of which is in the record — so `stop()` stays silent
+    // instead of resetting the part's timing immediately before the result lands.
+  })
+
+  it("summarizes the run in the returned text — the only surface that renders everywhere", async () => {
+    const hooks = await WorkflowPlugin(fakePluginInput(makeFakeClient({ reply: "Hi, Sam!" })))
+    const out = (await workflowTool(hooks).execute(
+      { source: SIMPLE_WORKFLOW, args: { name: "Sam" } },
+      fakeToolCtx("session-summary"),
+    )) as { output: string }
+
+    const summary = out.output.split("\n").find((line) => line.startsWith("greet · "))
+    expect(summary).toMatch(/^greet · done · 1\/1 units · \d+s/)
   })
 
   it("returns a failure result (does not throw) on bad source", async () => {

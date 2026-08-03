@@ -1,0 +1,8 @@
+# OpenTUI's Solid JSX transform, installed for the test runner the same way the OpenCode host installs it
+# before importing an external TUI plugin (`ensureRuntimePluginSupport`). Without it, any test that MOUNTS a
+# `.tsx` view fails to compile.
+#
+# The path is relative rather than a bare specifier because `@opentui/solid` is a dependency of the plugin
+# WORKSPACE, not of the root, so it is not hoisted here.
+[test]
+preload = ["./packages/plugin/node_modules/@opentui/solid/scripts/preload.js"]

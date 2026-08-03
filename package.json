@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --build",
-    "test": "bun test"
+    "test": "bun test",
+    "verify:live": "bun test ./packages/plugin/test/live/phase-gate.live.ts ./packages/plugin/test/live/sidebar.tui.live.ts"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.18.10",

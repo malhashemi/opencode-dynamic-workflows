@@ -7,6 +7,7 @@
  */
 import { existsSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { tool } from "@opencode-ai/plugin"
 import type { Plugin, PluginOptions, ToolContext } from "@opencode-ai/plugin"
@@ -15,9 +16,13 @@ import type { WorkflowClient } from "./client"
 import { removeDescriptor, writeDescriptor } from "./discovery"
 import { startEndpoint, type EndpointOptions } from "./endpoint"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile, type RunWorkflowOutput } from "./orchestrator"
+import { formatElapsed, phasePosition, settledUnits } from "./progress"
 import { buildRegistry, type Registry, type RegistryEntry } from "./registry"
 import { createRunStore, type RunEvent, type RunSnapshot, type RunStore } from "./runs"
 import { toJsonSchema } from "./schema-bridge"
+
+/** The structural shape every mode of the `workflow` tool returns. */
+type WorkflowToolResult = { title: string; output: string; metadata?: Record<string, unknown> }
 
 const PLUGIN_ID = "opencode-dynamic-workflows"
 
@@ -161,9 +166,40 @@ export function normalizeArgs(args: unknown): unknown {
 /** Cap the per-Unit session listing in the output text; the full list is always in metadata.childSessions. */
 const MAX_LISTED_SESSIONS = 20
 
-function formatOutput(out: RunWorkflowOutput): string {
+/** `41.2k` for a token count worth abbreviating, the exact number otherwise. */
+function formatTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "0"
+  if (tokens < 1_000) return String(Math.round(tokens))
+  return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`
+}
+
+/**
+ * The one line a model relays into its reply: `deep-research · done · 14/14 units · 2m10s · 41k tok`.
+ *
+ * The returned text is the ONLY zero-install surface that renders everywhere (native TUI, desktop/web app,
+ * `opencode run`, SDK callers) — the app's generic tool card shows neither our title, our metadata, nor our
+ * output body, so anything the user must see rides the model's reply. Phase 5 appends the dashboard URL here.
+ *
+ * `run` is the terminal store snapshot; it carries the status/timing/tokens the engine's return value does not.
+ */
+function runSummaryLine(out: RunWorkflowOutput, run?: RunSnapshot): string {
+  const settled = out.state.units.length
+  const parts = [out.meta.name, run?.status ?? "done", `${settled}/${Math.max(out.state.unitCount, settled)} units`]
+  if (run) parts.push(formatElapsed((run.endedAt ?? Date.now()) - run.startedAt))
+  const tokens = run?.tokensSpent ?? out.state.tokensSpent
+  if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`)
+  return parts.join(" · ")
+}
+
+function formatOutput(out: RunWorkflowOutput, run?: RunSnapshot): string {
   const lines: string[] = []
   lines.push(typeof out.result === "string" ? out.result : JSON.stringify(out.result, null, 2))
+  lines.push("", runSummaryLine(out, run))
+
+  if (out.state.errors.length > 0) {
+    lines.push("", `⚠ ${out.state.errors.length} unit(s) failed:`)
+    for (const e of out.state.errors) lines.push(`  - [${e.subagent}] ${e.error}`)
+  }
 
   const withSession = out.state.units.filter((u) => u.sessionID)
   if (withSession.length > 0) {
@@ -174,19 +210,14 @@ function formatOutput(out: RunWorkflowOutput): string {
     const extra = withSession.length - MAX_LISTED_SESSIONS
     if (extra > 0) lines.push(`  - …and ${extra} more (see metadata.childSessions)`)
   }
-
-  if (out.state.errors.length > 0) {
-    lines.push("", `⚠ ${out.state.errors.length} unit(s) failed:`)
-    for (const e of out.state.errors) lines.push(`  - [${e.subagent}] ${e.error}`)
-  }
   return lines.join("\n")
 }
 
 /** Build the tool result for a completed Run — shared by the run-by-name and run-ad-hoc paths. */
-function runResult(out: RunWorkflowOutput) {
+function runResult(out: RunWorkflowOutput, run?: RunSnapshot): WorkflowToolResult {
   return {
     title: out.meta.name,
-    output: formatOutput(out),
+    output: formatOutput(out, run),
     metadata: {
       workflow: out.meta.name,
       units: out.state.unitCount,
@@ -310,70 +341,160 @@ function dashboardOptions(options: PluginOptions | undefined): EndpointOptions {
   }
 }
 
-async function resolveStatePath(
-  client: Parameters<Plugin>[0]["client"],
-  directory: string | undefined,
-  worktree: string | undefined,
-): Promise<string | null> {
-  try {
-    // Partial PluginInput doubles used by the engine tests intentionally omit the SDK path namespace.
-    if ("path" in client && client.path && typeof client.path.get === "function") {
-      const response = await client.path.get(directory ? { query: { directory } } : undefined)
-      if (typeof response.data?.state === "string" && response.data.state) return response.data.state
-    }
-  } catch {
-    // A host-version/path lookup failure falls through to the project-local state root below.
+/**
+ * OpenCode's canonical state directory — the rendezvous point where the server target publishes its endpoint
+ * descriptor and the TUI target (via `api.state.path.state`) looks for it.
+ *
+ * Computed locally, on purpose. The obvious implementation asks the running host (`GET /path`), but a server
+ * plugin is initialized *inside* an instance's bootstrap and that instance answers no HTTP until every
+ * plugin's init resolves — so awaiting our own host deadlocks it. Observed on a real 1.18.10 host: with the
+ * plugin installed, `/path?directory=<project>` never returns and the TUI never paints a single frame.
+ *
+ * Deriving it is exact rather than approximate: the host's value is itself a pure XDG computation
+ * (`packages/core/src/global.ts` → `xdg-basedir`), so both targets land on the same directory with no I/O.
+ */
+/** The HeyAPI transport the host configured on the client it injected: base URL, `fetch`, and auth headers. */
+interface InjectedTransport {
+  baseUrl?: string
+  fetch?: typeof globalThis.fetch
+  headers?: Record<string, string>
+}
+
+function readInjectedTransport(client: unknown): InjectedTransport | null {
+  const inner = (client as { _client?: { getConfig?: () => InjectedTransport } } | null)?._client
+  const config = typeof inner?.getConfig === "function" ? inner.getConfig() : null
+  if (!config || (!config.fetch && !config.baseUrl)) return null
+  return config
+}
+
+/**
+ * Build the engine's v2 client on the SAME transport the host handed us, not on `serverUrl`.
+ *
+ * `PluginInput.serverUrl` is not always a server. In OpenCode's DEFAULT TUI mode there is no HTTP listener
+ * at all: the TUI talks to its worker over RPC, and the host builds the plugin's injected client with a
+ * `fetch` that dispatches straight into the in-process Hono app — leaving `serverUrl` as the placeholder
+ * `http://localhost:4096` (`packages/opencode/src/plugin/index.ts`). A plugin that believes `serverUrl`
+ * therefore talks to nothing, or — worse — to whichever unrelated OpenCode happens to hold port 4096.
+ *
+ * Observed on a real 1.18.10 TUI before this: every unit failed instantly with "session.create returned no
+ * session id", so a workflow "completed" having done nothing. Only `opencode serve` (a real listener) worked.
+ *
+ * Reusing the injected transport also inherits the host's `ServerAuth` headers, so a password-protected
+ * server keeps working. The v2 client is still constructed separately — the engine needs the flat v2 request
+ * shapes, and the injected client is the legacy one.
+ */
+function createWorkflowClient(input: {
+  client: Parameters<Plugin>[0]["client"]
+  directory: string | undefined
+  serverUrl: URL | undefined
+}): WorkflowClient {
+  const transport = readInjectedTransport(input.client)
+  if (transport) {
+    return createOpencodeClient({
+      ...(transport.baseUrl ? { baseUrl: transport.baseUrl } : {}),
+      ...(transport.fetch ? { fetch: transport.fetch } : {}),
+      ...(transport.headers ? { headers: transport.headers } : {}),
+      ...(input.directory ? { directory: input.directory } : {}),
+    })
   }
-  const root = worktree || directory
-  return root ? path.join(root, ".opencode") : null
+  // No readable transport: a partial structural PluginInput from a unit test, or an SDK whose internals moved.
+  if (input.serverUrl) {
+    return createOpencodeClient({
+      baseUrl: input.serverUrl.toString(),
+      ...(input.directory ? { directory: input.directory } : {}),
+    })
+  }
+  return input.client as unknown as WorkflowClient
+}
+
+export function opencodeStatePath(): string {
+  const xdg = process.env.XDG_STATE_HOME
+  const base = xdg && xdg.length > 0 ? xdg : path.join(os.homedir(), ".local", "state")
+  return path.join(base, "opencode")
 }
 
 function eventRunId(event: RunEvent): string {
   return event.type === "run.started" || event.type === "run.ended" ? event.run.runId : event.runId
 }
 
-function nativeProgressTitle(run: RunSnapshot, now = Date.now()): string {
-  const settled = run.units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
-  const elapsed = Math.max(0, Math.floor(((run.endedAt ?? now) - run.startedAt) / 1_000))
-  const minutes = Math.floor(elapsed / 60)
-  const seconds = elapsed % 60
-  const elapsedText = minutes > 0 ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`
-  const phaseIndex = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
-  const phase = phaseIndex >= 0 ? `phase ${phaseIndex + 1}/${run.phases.length}` : run.currentPhase ?? "starting"
-  return `workflow ${run.workflow} — ${phase} · ${settled}/${run.units.length} units · ${elapsedText}`
+/** The durable, machine-readable progress record carried by the native tool part. */
+interface NativeProgressRecord {
+  runId: string
+  workflow: string
+  phase: string | null
+  settledUnits: number
+  totalUnits: number
+  elapsedMs: number
 }
 
-function createNativeProgressMirror(ctx: ToolContext, store: RunStore, runId: string) {
+function nativeProgressRecord(run: RunSnapshot, now = Date.now()): NativeProgressRecord {
+  return {
+    runId: run.runId,
+    workflow: run.workflow,
+    phase: run.currentPhase,
+    settledUnits: settledUnits(run),
+    totalUnits: run.units.length,
+    elapsedMs: (run.endedAt ?? now) - run.startedAt,
+  }
+}
+
+function nativeProgressTitle(run: RunSnapshot, now = Date.now()): string {
+  const record = nativeProgressRecord(run, now)
+  const phase = phasePosition(run) || run.currentPhase || "starting"
+  return `workflow ${run.workflow} — ${phase} · ${record.settledUnits}/${record.totalUnits} units · ${formatElapsed(record.elapsedMs)}`
+}
+
+/**
+ * Everything except `elapsedMs`: two records with the same key describe a run that has not actually moved.
+ *
+ * The separator is written as an escape rather than a literal control byte, so the source file stays text to
+ * git and grep, and no field value can forge a key collision.
+ */
+function progressChangeKey(record: NativeProgressRecord): string {
+  return [record.runId, record.workflow, record.phase ?? "", record.settledUnits, record.totalUnits].join("\u0000")
+}
+
+/**
+ * Mirror live run state into the invoking tool's native part.
+ *
+ * Emission is CHANGE-DRIVEN, not periodic: the host replaces the whole running part on every `ctx.metadata()`
+ * call and resets its `time.start` while doing so, so a per-second elapsed tick silently rewrote the one
+ * number the native UI does render. Now only a real transition (run started, phase change, unit queued, unit
+ * settled) emits — `run.log` and `unit.started` move nothing in the record, so they emit nothing — and the
+ * final `stop()` emit happens only if something changed after the last one, instead of unconditionally
+ * resetting the part's timing immediately before the result lands.
+ */
+function createNativeProgressMirror(ctx: ToolContext, store: RunStore, runId: string): { stop(): void } {
   const intervalMs = 100
   let lastEmittedAt = 0
+  let lastKey: string | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
+
+  const changed = (): boolean => {
+    const run = store.get(runId)
+    return run ? progressChangeKey(nativeProgressRecord(run)) !== lastKey : false
+  }
 
   const emit = () => {
     timer = null
     const run = store.get(runId)
     if (!run) return
-    lastEmittedAt = Date.now()
-    const settled = run.units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
+    const now = Date.now()
+    const record = nativeProgressRecord(run, now)
+    const key = progressChangeKey(record)
+    if (key === lastKey) return
+    lastEmittedAt = now
+    lastKey = key
     try {
-      ctx.metadata({
-        title: nativeProgressTitle(run, lastEmittedAt),
-        metadata: {
-          runId,
-          workflow: run.workflow,
-          phase: run.currentPhase,
-          settledUnits: settled,
-          totalUnits: run.units.length,
-          elapsedMs: (run.endedAt ?? lastEmittedAt) - run.startedAt,
-        },
-      })
+      ctx.metadata({ title: nativeProgressTitle(run, now), metadata: { ...record } })
     } catch {
       // Progress rendering is best-effort and must never change the Run's result.
     }
   }
 
   const schedule = () => {
-    if (stopped) return
+    if (stopped || !changed()) return
     const wait = intervalMs - (Date.now() - lastEmittedAt)
     if (wait <= 0) emit()
     else if (!timer) timer = setTimeout(emit, wait)
@@ -381,17 +502,16 @@ function createNativeProgressMirror(ctx: ToolContext, store: RunStore, runId: st
   const unsubscribe = store.subscribe((event) => {
     if (eventRunId(event) === runId) schedule()
   })
-  const elapsedTimer = setInterval(schedule, 1_000)
 
   return {
     stop() {
       if (stopped) return
       if (timer) clearTimeout(timer)
-      clearInterval(elapsedTimer)
       timer = null
       stopped = true
       unsubscribe()
-      emit()
+      // A throttled change may still be pending; flush it, but never re-emit an unchanged record.
+      if (changed()) emit()
     },
   }
 }
@@ -448,18 +568,14 @@ async function promote(input: { source: string; save: string; directory?: string
 }
 
 export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serverUrl }, options) => {
-  // The real plugin host always injects `serverUrl`, so production uses a constructed v2 SDK client. The
-  // fallback preserves unit tests that intentionally pass a partial PluginInput with only the in-memory fake.
-  const workflowClient: WorkflowClient = serverUrl
-    ? createOpencodeClient({ baseUrl: serverUrl.toString() })
-    : (client as unknown as WorkflowClient)
+  const workflowClient = createWorkflowClient({ client, directory, serverUrl })
   const store = createRunStore()
   // A real host always supplies serverUrl. Partial structural PluginInput doubles deliberately do not; avoid
   // opening an orphan server for those initialization-only tests while retaining default-on production.
   const endpoint = serverUrl ? await startEndpoint(store, dashboardOptions(options)) : null
   let descriptorStatePath: string | null = null
   if (endpoint) {
-    descriptorStatePath = await resolveStatePath(client, directory, worktree)
+    descriptorStatePath = opencodeStatePath()
     if (descriptorStatePath && directory && worktree) {
       try {
         await writeDescriptor(descriptorStatePath, {
@@ -573,9 +689,10 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
                 const runId = crypto.randomUUID()
                 const mirror = createNativeProgressMirror(ctx, store, runId)
                 try {
-                  return runResult(
-                    await runWorkflowFromFile(entry.absPath, { ...common, runId, provenance: "durable" }),
-                  )
+                  const out = await runWorkflowFromFile(entry.absPath, { ...common, runId, provenance: "durable" })
+                  // The terminal store snapshot, read AFTER the orchestrator applied `run.ended`: it is the only
+                  // carrier of the run's final status, wall-clock, and token spend for the summary line.
+                  return runResult(out, store.get(runId))
                 } finally {
                   mirror.stop()
                 }
@@ -596,9 +713,8 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
               const runId = crypto.randomUUID()
               const mirror = createNativeProgressMirror(ctx, store, runId)
               try {
-                return runResult(
-                  await runWorkflow({ source: input.source, ...common, runId, provenance: "inline" }),
-                )
+                const out = await runWorkflow({ source: input.source, ...common, runId, provenance: "inline" })
+                return runResult(out, store.get(runId))
               } finally {
                 mirror.stop()
               }
