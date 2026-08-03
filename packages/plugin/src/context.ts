@@ -34,6 +34,14 @@ export interface EngineEvents {
   onUnitQueued?: (unit: UnitSnapshot) => void
   onUnitStart?: (unit: UnitSnapshot) => void
   onUnitSettled?: (unit: UnitSnapshot) => void
+  /**
+   * A best-effort cancel for one in-flight Unit, emitted once its child session exists.
+   *
+   * Routed as an EVENT so the context never learns what a `runId` is: the orchestrator owns run identity and
+   * the control registry, and this keeps the engine's execution core independent of the control layer. Fires
+   * again per structured-output retry attempt (each attempt is a fresh child); the last handle wins.
+   */
+  onUnitCancelable?: (unitId: string, cancel: () => void) => void
 }
 
 export interface EngineState {
@@ -146,6 +154,11 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           // blocking the whole Run.
           signal,
           timeoutMs: opts.timeoutMs ?? input.unitTimeout,
+          // Only wire the handle when someone is listening: without a subscriber the runner keeps its plain
+          // blocking-prompt path rather than building a per-attempt controller nobody can reach.
+          ...(events?.onUnitCancelable
+            ? { onCancelable: (cancel: () => void) => events.onUnitCancelable?.(unitId, cancel) }
+            : {}),
         })
 
         // Record the Unit's child session (present even when the prompt failed; null only on create failure) so

@@ -1,0 +1,384 @@
+/** @jsxImportSource @opentui/solid */
+/**
+ * The run browser as OpenTUI actually renders it, driven the way a keystroke drives it.
+ *
+ * `route-model.test.ts` proves the navigation; this proves that the three levels lay out, that the keys are
+ * wired to the model, and that the mode and keymap layer arrive on mount and leave on unmount — the last of
+ * which is the difference between "esc got me out" and "esc got me out and now the session prompt is dead".
+ *
+ * Real key dispatch needs the host's `KeymapProvider`, which a mounted view has no way to supply, so keys are
+ * simulated by invoking the command each binding points at. Everything downstream of the key lookup — which is
+ * where all of this plugin's behavior lives — runs for real.
+ */
+import { createSignal } from "solid-js"
+import { describe, expect, it } from "bun:test"
+import type { ControlAction, ControlResult } from "../../src/control"
+import type { RunSnapshot, UnitSnapshot } from "../../src/runs"
+import type { RunControlClient } from "../../src/tui/control"
+import {
+  commandName,
+  footerHint,
+  OPEN_COMMAND,
+  openWorkflowRoute,
+  registerKeymap,
+  registerOpenCommand,
+  WORKFLOW_BINDINGS,
+  WORKFLOW_ROUTE,
+} from "../../src/tui/keymap"
+import WorkflowRoute from "../../src/tui/route"
+import { createFakeTuiApi, type FakeTuiApi } from "./fake-api"
+import { mountView, type MountedView } from "./render"
+
+function unit(overrides: Partial<UnitSnapshot> = {}): UnitSnapshot {
+  return {
+    unitId: "unit-1",
+    ordinal: 1,
+    label: "arxiv sweep",
+    subagent: "explore",
+    phase: "gather",
+    status: "running",
+    sessionID: "ses_child_1",
+    prompt: "sweep arxiv for recent papers",
+    startedAt: Date.now() - 18_000,
+    endedAt: null,
+    ...overrides,
+  }
+}
+
+function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
+  return {
+    runId: "run-1",
+    workflow: "deep-research",
+    provenance: "durable",
+    parentSessionID: "ses_parent",
+    status: "running",
+    phases: ["plan", "gather", "synthesize"],
+    currentPhase: "gather",
+    units: [unit()],
+    logs: ["gathered 9/20 sources"],
+    errors: [],
+    tokensSpent: 41_200,
+    startedAt: Date.now() - 130_000,
+    endedAt: null,
+    ...overrides,
+  }
+}
+
+interface Harness {
+  view: MountedView
+  fake: FakeTuiApi
+  sent: ControlAction[]
+  setRuns: (runs: readonly RunSnapshot[]) => void
+  /** Simulate a keystroke by running the command its binding points at. */
+  press: (action: (typeof WORKFLOW_BINDINGS)[number]["action"]) => Promise<void>
+}
+
+async function mountRoute(
+  initial: readonly RunSnapshot[],
+  options: { params?: Record<string, unknown>; result?: ControlResult; width?: number; height?: number } = {},
+): Promise<Harness> {
+  const fake = createFakeTuiApi()
+  const [runs, setRuns] = createSignal<readonly RunSnapshot[]>(initial)
+  const sent: ControlAction[] = []
+  const control: RunControlClient = {
+    async send(action) {
+      sent.push(action)
+      return options.result ?? { ok: true }
+    },
+  }
+  const view = await mountView(
+    () => <WorkflowRoute api={fake.api} runs={runs} control={control} params={options.params} />,
+    { width: options.width ?? 100, height: options.height ?? 24 },
+  )
+  return {
+    view,
+    fake,
+    sent,
+    setRuns,
+    async press(action) {
+      fake.runCommand(commandName(action))
+      await view.flush()
+    },
+  }
+}
+
+describe("workflow keymap", () => {
+  it("registers only the enabled bindings, scoped to the route's own mode", () => {
+    const fake = createFakeTuiApi()
+    const seen: string[] = []
+    const dispose = registerKeymap(fake.api, (action) => seen.push(action))
+
+    const layer = fake.keymapLayers[0]
+    expect(fake.keymapLayers).toHaveLength(1)
+    expect(layer?.mode).toBe(WORKFLOW_ROUTE)
+    expect(layer?.bindings?.map((binding) => binding.key)).toEqual([
+      "up,k",
+      "down,j",
+      "return,right,l",
+      "escape,left,h",
+      "f",
+      "x",
+      "q",
+    ])
+    // `r` and `s` are declared but not wired — the vocabulary is fixed now so Phases 3 and 6 add behavior, not keys.
+    expect(layer?.bindings?.some((binding) => binding.key === "r" || binding.key === "s")).toBe(false)
+
+    fake.runCommand(commandName("stop"))
+    expect(seen).toEqual(["stop"])
+
+    dispose()
+    expect(fake.keymapLayers).toHaveLength(0)
+  })
+
+  it("shows the unwired keys in the footer as parenthesised rather than absent", () => {
+    expect(footerHint()).toBe("↑↓ select · ⏎ open · esc back · f filter · x stop · (r restart) · (s save) · q close")
+  })
+
+  it("registers a palette/slash way in, because the sidebar shows nothing until a run starts", () => {
+    const fake = createFakeTuiApi()
+    registerOpenCommand(fake.api)
+    const command = fake.keymapLayers[0]?.commands?.[0] as Record<string, unknown> | undefined
+    expect(command?.name).toBe(OPEN_COMMAND)
+    expect(command?.namespace).toBe("palette")
+    expect(command?.slashName).toBe("workflow-runs")
+    // No default keybinding: a global key taken by a plugin is a key taken from the user.
+    expect(fake.keymapLayers[0]?.bindings).toEqual([])
+
+    fake.runCommand(OPEN_COMMAND)
+    expect(fake.navigations).toEqual([{ name: WORKFLOW_ROUTE, params: {} }])
+  })
+
+  it("remembers the session it was opened from, so `esc` lands back where the user was", () => {
+    const fake = createFakeTuiApi()
+    fake.api.route.navigate("session", { sessionID: "ses_here" })
+    openWorkflowRoute(fake.api, "run-7")
+    expect(fake.navigations.at(-1)).toEqual({
+      name: WORKFLOW_ROUTE,
+      params: { runId: "run-7", returnTo: "ses_here" },
+    })
+
+    // From home there is nothing to return to, and inventing one would land the user somewhere they never were.
+    const fromHome = createFakeTuiApi()
+    openWorkflowRoute(fromHome.api, "run-7")
+    expect(fromHome.navigations.at(-1)).toEqual({ name: WORKFLOW_ROUTE, params: { runId: "run-7" } })
+  })
+})
+
+describe("workflow route render", () => {
+  it("renders the list level: breadcrumb, filter, and one row per run", async () => {
+    const harness = await mountRoute([
+      run(),
+      run({ runId: "run-2", workflow: "summarize", status: "done", endedAt: Date.now(), units: [unit({ status: "ok" })] }),
+    ])
+    try {
+      const frame = harness.view.text()
+      expect(frame).toContain("Workflows")
+      expect(frame).toContain("filter: all")
+      expect(frame).toContain("deep-research")
+      expect(frame).toContain("phase 2/3 · gather · 0/1 units")
+      expect(frame).toContain("summarize")
+      expect(frame).toContain("done · 1/1 units")
+      // The selection marker sits on the first row, and only on it.
+      expect(frame.split("\n").filter((line) => line.includes("▸"))).toHaveLength(1)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("starts every row's detail at the same column, whatever the names are", async () => {
+    // With a bare space between name and detail, two runs whose names differ in length put their details in
+    // different places and the list reads as ragged text rather than a table.
+    const harness = await mountRoute([
+      run({ runId: "short", workflow: "echo" }),
+      run({ runId: "long", workflow: "deep-research" }),
+    ])
+    try {
+      const detailColumns = harness.view
+        .text()
+        .split("\n")
+        .filter((line) => line.includes("units"))
+        .map((line) => line.indexOf("phase"))
+      expect(detailColumns).toHaveLength(2)
+      expect(detailColumns[0]).toBe(detailColumns[1] as number)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says so when there is nothing to browse", async () => {
+    const harness = await mountRoute([])
+    try {
+      expect(harness.view.text()).toContain("No workflow runs to show")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("pushes its mode and keymap layer on mount, and gives both back on unmount", async () => {
+    const harness = await mountRoute([run()])
+    expect(harness.fake.modes).toEqual([WORKFLOW_ROUTE])
+    expect(harness.fake.keymapLayers).toHaveLength(1)
+
+    harness.view.unmount()
+    // The whole reason the mode is scoped: a session prompt whose keys never came back is a dead terminal.
+    expect(harness.fake.modes).toEqual([])
+    expect(harness.fake.keymapLayers).toHaveLength(0)
+  })
+
+  it("drills list → run → unit under the keys, and backs out again", async () => {
+    const harness = await mountRoute([run()])
+    try {
+      await harness.press("drill")
+      let frame = harness.view.text()
+      expect(frame).toContain("Workflows ▸ deep-research")
+      expect(frame).toContain("running · phase 2/3 gather · 0/1 units")
+      expect(frame).toContain("41k tok")
+      expect(frame).toContain("Phase 1/3  plan")
+      expect(frame).toContain("#1 explore")
+      expect(frame).toContain("Recent")
+      expect(frame).toContain("gathered 9/20 sources")
+
+      // Row 0 is the `plan` phase; the unit sits under `gather`.
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("drill")
+      frame = harness.view.text()
+      expect(frame).toContain("Workflows ▸ deep-research ▸ #1 arxiv sweep")
+      expect(frame).toContain("ses_child_1")
+      expect(frame).toContain("sweep arxiv for recent papers")
+
+      await harness.press("back")
+      expect(harness.view.text()).toContain("Workflows ▸ deep-research")
+      await harness.press("back")
+      expect(harness.view.text()).toContain("filter: all")
+      expect(harness.view.text()).not.toContain("▸ deep-research")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("shows a failed unit's error on its own screen", async () => {
+    const failed = run({
+      units: [unit({ status: "failed", endedAt: Date.now(), error: "unit stopped before completion" })],
+    })
+    const harness = await mountRoute([failed], { params: { runId: "run-1" } })
+    try {
+      // Entered from the sidebar, so the run level is already open.
+      expect(harness.view.text()).toContain("Workflows ▸ deep-research")
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("drill")
+      const frame = harness.view.text()
+      expect(frame).toContain("Error")
+      expect(frame).toContain("unit stopped before completion")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("cycles the filter and re-lists", async () => {
+    const harness = await mountRoute([run(), run({ runId: "run-2", workflow: "summarize", status: "done", endedAt: Date.now() })])
+    try {
+      await harness.press("filter")
+      let frame = harness.view.text()
+      expect(frame).toContain("filter: active")
+      expect(frame).toContain("deep-research")
+      expect(frame).not.toContain("summarize")
+
+      await harness.press("filter")
+      frame = harness.view.text()
+      expect(frame).toContain("filter: done")
+      expect(frame).toContain("summarize")
+      expect(frame).not.toContain("deep-research")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("sends a stop for the selection and reports what came back", async () => {
+    const harness = await mountRoute([run()])
+    try {
+      await harness.press("stop")
+      expect(harness.sent).toEqual([{ action: "stop.run", runId: "run-1" }])
+      await harness.view.flush()
+      expect(harness.view.text()).toContain("stopping run…")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says why a stop did nothing rather than swallowing it", async () => {
+    const harness = await mountRoute([run({ status: "done", endedAt: Date.now() })], {
+      result: { ok: false, reason: "not-running" },
+    })
+    try {
+      await harness.press("stop")
+      await harness.view.flush()
+      expect(harness.view.text()).toContain("already finished")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("targets the selected unit when the cursor is on one", async () => {
+    const harness = await mountRoute([run()], { params: { runId: "run-1" } })
+    try {
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("stop")
+      expect(harness.sent).toEqual([{ action: "stop.unit", runId: "run-1", unitId: "unit-1" }])
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("leaves the route on `q`, and on `back` from the list — returning to the session it was opened from", async () => {
+    const fromSession = await mountRoute([run()], { params: { returnTo: "ses_parent" } })
+    try {
+      await fromSession.press("back")
+      expect(fromSession.fake.navigations).toEqual([{ name: "session", params: { sessionID: "ses_parent" } }])
+    } finally {
+      fromSession.view.unmount()
+    }
+
+    // With no session to return to, home is the honest fallback: a plugin route has no history to walk back.
+    const standalone = await mountRoute([run()])
+    try {
+      await standalone.press("close")
+      expect(standalone.fake.navigations).toEqual([{ name: "home", params: undefined }])
+    } finally {
+      standalone.view.unmount()
+    }
+  })
+
+  it("survives a run vanishing underneath a drilled-in cursor", async () => {
+    // The failure this guards is not cosmetic: a breadcrumb built from a missing run, or a `<For>` emptying
+    // out beside a sibling, is how OpenTUI ends up with a text node under a box and takes the host down.
+    const harness = await mountRoute([run()], { params: { runId: "run-1" } })
+    try {
+      expect(harness.view.text()).toContain("Workflows ▸ deep-research")
+
+      harness.setRuns([])
+      await harness.view.flush()
+      const frame = harness.view.text()
+      expect(frame).toContain("No workflow runs to show")
+      expect(frame).not.toContain("▸ deep-research")
+
+      harness.setRuns([run({ runId: "run-9", workflow: "refine" })])
+      await harness.view.flush()
+      expect(harness.view.text()).toContain("refine")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("keeps every row on one line at a narrow terminal", async () => {
+    const harness = await mountRoute([run({ workflow: "deep-research-with-a-very-long-name" })], { width: 80, height: 24 })
+    try {
+      for (const line of harness.view.text().split("\n")) expect(line.length).toBeLessThanOrEqual(80)
+      expect(harness.view.text()).toContain("deep-research")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+})

@@ -35,6 +35,15 @@ export interface RunAgentOptions {
    * permission ask or a stalled stream blocking forever. Absent/non-finite ⇒ no timeout (legacy long-Unit behavior).
    */
   timeoutMs?: number
+  /**
+   * Called once the child session exists, with a best-effort cancel for THIS unit's in-flight prompt.
+   *
+   * Deliberately surfaces the abort handle the runner already owns (the prompt races timeout and the Run
+   * signal) rather than adding a second cancellation mechanism: an out-of-band "stop this unit" is exactly the
+   * same event as a timeout, arriving from a person instead of a clock. Re-called per structured-output retry
+   * attempt, because each attempt is a fresh child — a stale handle would cancel a session nobody is waiting on.
+   */
+  onCancelable?: (cancel: () => void, childSessionID: string) => void
 }
 
 type SettleResult = SessionPromptResult | "aborted" | "timeout"
@@ -133,6 +142,11 @@ export async function runAgent(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const isLast = attempt === maxAttempts - 1
+    // One controller per ATTEMPT: each attempt gets its own child, so a handle handed out for attempt 1 must
+    // not be able to cancel attempt 2's session. Created only when someone asked for a handle, so a unit with
+    // no `onCancelable` keeps the original "no guard ⇒ plain blocking prompt" fast path in `settlePrompt`.
+    const stop = opts.onCancelable ? new AbortController() : undefined
+    const promptSignal = stop ? (opts.signal ? AbortSignal.any([opts.signal, stop.signal]) : stop.signal) : opts.signal
     // Never-throw for runtime failures (D9): any transport rejection becomes `{ ok: false }` so a single
     // failed Unit is recorded in `ctx.errors` and never aborts the surrounding run or fan-out.
     try {
@@ -142,6 +156,8 @@ export async function runAgent(
       })
       childSessionID = created.data?.id
       if (!childSessionID) return { ok: false, error: "session.create returned no session id" }
+      // After the child exists, so the handle can name the session a surface would navigate to.
+      if (stop) opts.onCancelable?.(() => stop.abort(), childSessionID)
 
       // Long-await guard: a Unit can run for many minutes. We impose NO client-side timeout on this blocking
       // prompt, so a slow Unit is not cut short by us; a dropped connection surfaces as a rejection (caught
@@ -156,11 +172,21 @@ export async function runAgent(
         }),
         childSessionID,
         client,
-        opts.signal,
+        promptSignal,
         opts.timeoutMs,
       )
       // Abort/timeout are NOT structured failures — fail fast, no retry (retrying a hang would re-hang).
-      if (settled === "aborted") return { ok: false, error: "unit aborted before completion", childSessionID }
+      if (settled === "aborted") {
+        // Distinguish "somebody stopped this one unit" from "the whole run was aborted". Both cancel the same
+        // prompt, but only the first leaves the rest of the run alive, and the unit row is where a user reads
+        // which of the two happened.
+        const stopped = stop?.signal.aborted === true && opts.signal?.aborted !== true
+        return {
+          ok: false,
+          error: stopped ? "unit stopped before completion" : "unit aborted before completion",
+          childSessionID,
+        }
+      }
       if (settled === "timeout") {
         return { ok: false, error: `unit timed out after ${opts.timeoutMs}ms with no response — a subagent prompt hung (commonly an unanswered permission ask in the child session)`, childSessionID }
       }

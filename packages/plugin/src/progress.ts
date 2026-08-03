@@ -24,6 +24,13 @@ export function formatElapsed(milliseconds: number): string {
   return `${rest}s`
 }
 
+/** `41.2k` for a token count worth abbreviating, the exact number otherwise. */
+export function formatTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "0"
+  if (tokens < 1_000) return String(Math.round(tokens))
+  return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`
+}
+
 /**
  * `phase 2/3` for a run whose current phase is one of its known phases, `""` otherwise.
  *

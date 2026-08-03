@@ -47,7 +47,9 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
         </text>
         <For each={view().rows}>
           {(row: SidebarRunRow) => (
-            <box>
+            // The whole row is the target, both lines: a two-line row whose second line is inert reads as a
+            // rendering accident rather than as one item.
+            <box onMouseUp={() => props.onOpen?.(row.runId)}>
               <box flexDirection="row" justifyContent="space-between">
                 <box flexDirection="row" gap={1} flexShrink={1}>
                   <text flexShrink={0} fg={glyphColor(row)}>
@@ -66,9 +68,13 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
           )}
         </For>
         <Show when={view().pendingQuestions > 0}>
-          <text fg={theme().accent}>
-            {`❓ ${view().pendingQuestions} question${view().pendingQuestions === 1 ? "" : "s"} waiting`}
-          </text>
+          {/* The badge opens the LIST, not a run: with several runs asking, "which one" is the first thing
+              the user has to answer, and Phase 4's question level hangs off the same stack. */}
+          <box onMouseUp={() => props.onOpen?.(null)}>
+            <text fg={theme().accent}>
+              {`❓ ${view().pendingQuestions} question${view().pendingQuestions === 1 ? "" : "s"} waiting`}
+            </text>
+          </box>
         </Show>
       </box>
     </Show>

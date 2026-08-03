@@ -204,6 +204,37 @@ describe("workflow sidebar render", () => {
       }
     })
 
+    /**
+     * The strip is a summary, and a summary you cannot follow is a dead end.
+     *
+     * Clicked for real rather than by calling the handler: a handler wired to the wrong element, or to one
+     * with no hit area, looks identical in a captured frame to one wired correctly.
+     */
+    it("opens the run browser on the row that was clicked, and the list from the badge", async () => {
+      const fake = createFakeTuiApi()
+      fake.api.route.navigate("session", { sessionID: "ses_here" })
+      registerSidebar(fake.api, () => [withInteractions(run(), 1)])
+      const plugin = fake.slots[0]
+      if (!plugin) throw new Error("registerSidebar did not register a slot")
+
+      const view = await mountSidebarSlot(plugin)
+      try {
+        await view.click(4, view.lineOf(/deep-research/))
+        expect(fake.navigations.at(-1)).toEqual({
+          name: "workflow-runs",
+          params: { runId: "run-1", returnTo: "ses_here" },
+        })
+
+        // Back in the session — the sidebar only exists there, so this is the only way a second click happens.
+        fake.api.route.navigate("session", { sessionID: "ses_here" })
+        // The badge opens the LIST: with several runs asking, "which one" is the first thing to answer.
+        await view.click(4, view.lineOf(/question waiting/))
+        expect(fake.navigations.at(-1)).toEqual({ name: "workflow-runs", params: { returnTo: "ses_here" } })
+      } finally {
+        view.unmount()
+      }
+    })
+
     it("appears and disappears in place as runs start and settle", async () => {
       const [runs, setRuns] = createSignal<readonly RunSnapshot[]>([])
       const view = await mountSidebarSlot(registeredPlugin(runs))

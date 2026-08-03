@@ -17,6 +17,14 @@ export interface TuiRunClient {
   runs: Accessor<readonly RunSnapshot[]>
   rescan(): Promise<void>
   stop(): void
+  /**
+   * The endpoint that owns a run, for addressing a write to it.
+   *
+   * Derived from the same merge that produces `runs()`, so the endpoint a control action is sent to is by
+   * construction the one whose snapshot the user is looking at — rather than a second lookup that could pick a
+   * different host for the same id.
+   */
+  endpointFor(runId: string): EndpointDescriptor | undefined
 }
 
 interface LiveEndpoint {
@@ -181,18 +189,23 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
   const reconnectMinMs = Math.max(10, options.reconnectMinMs ?? 250)
   const reconnectMaxMs = Math.max(reconnectMinMs, options.reconnectMaxMs ?? 5_000)
   const endpoints = new Map<string, LiveEndpoint>()
+  const owners = new Map<string, EndpointDescriptor>()
   const [runs, setRuns] = createSignal<readonly RunSnapshot[]>([])
   let stopped = false
   let rescanning: Promise<void> | null = null
 
   const publish = () => {
     const merged = new Map<string, RunSnapshot>()
+    owners.clear()
     for (const key of [...endpoints.keys()].sort()) {
       const endpoint = endpoints.get(key)
       if (!endpoint) continue
       for (const run of endpoint.runs.values()) {
         const current = merged.get(run.runId)
-        if (!current || run.startedAt >= current.startedAt) merged.set(run.runId, cloneRunSnapshot(run))
+        if (!current || run.startedAt >= current.startedAt) {
+          merged.set(run.runId, cloneRunSnapshot(run))
+          owners.set(run.runId, endpoint.descriptor)
+        }
       }
     }
     setRuns(
@@ -299,5 +312,13 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
   if (options.signal?.aborted) stop()
   else void rescan()
 
-  return { runs, rescan, stop }
+  return {
+    runs,
+    rescan,
+    stop,
+    endpointFor(runId) {
+      const descriptor = owners.get(runId)
+      return descriptor ? { ...descriptor } : undefined
+    },
+  }
 }

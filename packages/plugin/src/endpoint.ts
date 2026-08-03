@@ -1,9 +1,21 @@
+import { parseControlAction, type ControlFailure, type ControlRegistry, type ControlResult } from "./control"
 import type { RunStore } from "./runs"
 
 export interface EndpointOptions {
   enabled?: boolean
   port?: number
   host?: string
+}
+
+/**
+ * Capabilities the endpoint exposes but does not own.
+ *
+ * Injected rather than constructed here so the transport stays a thin projection of engine state: the endpoint
+ * knows how to authenticate a request and shape a response, and nothing about how a run is stopped. Later
+ * phases add members (Phase 3's journal reader, Phase 4's interaction controller) without touching routing.
+ */
+export interface EndpointDeps {
+  control?: ControlRegistry
 }
 
 export interface Endpoint {
@@ -39,7 +51,28 @@ function json(value: unknown, status = 200): Response {
   })
 }
 
-export async function startEndpoint(store: RunStore, options: EndpointOptions = {}): Promise<Endpoint | null> {
+/**
+ * HTTP status for a control outcome. The BODY is always the `ControlResult` — the status exists so an
+ * intermediary (or a curl-wielding operator) reads the same story the client does, not so the client has to
+ * decode two representations of one answer.
+ */
+const CONTROL_STATUS: Record<ControlFailure, number> = {
+  "unknown-run": 404,
+  "unknown-unit": 404,
+  "unknown-request": 404,
+  "not-running": 409,
+  unsupported: 400,
+}
+
+function controlResponse(result: ControlResult): Response {
+  return json(result, result.ok ? 200 : (CONTROL_STATUS[result.reason ?? "unsupported"] ?? 400))
+}
+
+export async function startEndpoint(
+  store: RunStore,
+  options: EndpointOptions = {},
+  deps: EndpointDeps = {},
+): Promise<Endpoint | null> {
   if (options.enabled === false) return null
   const host = options.host ?? "127.0.0.1"
   if (!isLoopbackHost(host)) throw new Error(`workflow endpoint host must be loopback (got ${JSON.stringify(host)})`)
@@ -95,10 +128,20 @@ export async function startEndpoint(store: RunStore, options: EndpointOptions = 
         // reader receives the ": connected" comment and then "socket connection was closed unexpectedly"
         // before any run event arrives. 0 disables the timeout, which is the correct setting for SSE.
         idleTimeout: 0,
-        fetch(request) {
+        async fetch(request) {
           const url = new URL(request.url)
           if (!authorized(request, url, token)) {
             return json({ error: "unauthorized" }, 401)
+          }
+          // The one non-GET route. Checked before the GET guard so `GET /control` is a method error rather
+          // than a 404 — the difference between "you called it wrong" and "it isn't there".
+          if (url.pathname === "/control") {
+            if (request.method !== "POST") return json({ error: "method not allowed" }, 405)
+            if (!deps.control) return controlResponse({ ok: false, reason: "unsupported" })
+            const body = await request.json().catch(() => null)
+            const action = parseControlAction(body)
+            if (!action) return json({ ok: false, reason: "unsupported", error: "malformed action" }, 400)
+            return controlResponse(await deps.control.dispatch(action))
           }
           if (request.method !== "GET") return json({ error: "method not allowed" }, 405)
           if (url.pathname === "/health") return json({ ok: true })

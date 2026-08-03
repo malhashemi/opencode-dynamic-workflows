@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url"
 import type { DefineWorkflowConfig } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { createEngineState, createWorkflowContext, runOwnedRoots, type EngineEvents, type EngineState } from "./context"
+import type { ControlRegistry } from "./control"
 import { createRunStore, type RunSnapshot, type RunStore } from "./runs"
 import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type Watcher } from "./watcher"
 
@@ -52,6 +53,14 @@ export interface RunWorkflowInput {
   provenance?: RunSnapshot["provenance"]
   /** Live run store shared by the plugin endpoint and progress mirrors. */
   store?: RunStore
+  /**
+   * Lets an out-of-band surface stop this run or one of its units.
+   *
+   * Without it the tool's own abort signal IS the run signal, so nothing outside the invoking session can stop
+   * anything. Supplying a registry gives the run a controller of its own, linked to `input.signal` rather than
+   * replaced by it: the tool's abort still stops the run, and now so does a keypress in the run browser.
+   */
+  control?: ControlRegistry
 }
 
 export interface RunWorkflowOutput {
@@ -123,8 +132,15 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
   let state: EngineState | null = null
   let startedAt: number | null = null
   let registered = false
-  const signal = input.signal ?? new AbortController().signal
+  // The run's OWN controller, composed with (not replaced by) the caller's signal. Both can abort this run:
+  // the tool that started it, and any surface holding the control registry. `AbortSignal.any` keeps the
+  // linkage garbage-collectable, so a long-lived tool signal never accumulates listeners across runs.
+  const stopController = new AbortController()
+  const signal = input.signal ? AbortSignal.any([input.signal, stopController.signal]) : stopController.signal
   let terminalStatus: Exclude<RunSnapshot["status"], "running"> = signal.aborted ? "aborted" : "failed"
+  let unregisterRun: (() => void) | null = null
+  /** Live per-unit cancel-handle disposers, so a settled unit stops being addressable. */
+  const unitHandles = new Map<string, () => void>()
 
   const finishRun = (status: Exclude<RunSnapshot["status"], "running">) => {
     if (!registered || !state || startedAt === null) return
@@ -179,6 +195,9 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       endedAt: null,
     })
     registered = true
+    // Registered only once the run EXISTS in the store: a surface can never address a run it cannot see, so
+    // `stop.run` for an unregistered id is honestly `unknown-run` rather than a silent no-op.
+    unregisterRun = input.control?.registerRun(runId, stopController) ?? null
     watcher = startWatcher({
       client: input.client,
       parentSessionID: input.parentSessionID,
@@ -209,9 +228,26 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         input.events?.onUnitStart?.({ ...unit })
       },
       onUnitSettled: (unit) => {
+        // Drop the cancel handle FIRST: once a unit is settled, `stop.unit` must report `unknown-unit` rather
+        // than abort a child session the engine has already moved past.
+        unitHandles.get(unit.unitId)?.()
+        unitHandles.delete(unit.unitId)
         store.apply({ type: "unit.settled", runId, unit })
         input.events?.onUnitSettled?.({ ...unit })
       },
+      // Wired only when someone can actually use a handle. The runner builds a per-attempt AbortController the
+      // moment this exists, so leaving it undefined keeps a plain `runWorkflow()` on its original prompt path.
+      ...(input.control || input.events?.onUnitCancelable
+        ? {
+            onUnitCancelable: (unitId: string, cancel: () => void) => {
+              // A retry attempt supersedes its predecessor's handle — the previous child is already abandoned.
+              unitHandles.get(unitId)?.()
+              const dispose = input.control?.registerUnit(runId, unitId, cancel)
+              if (dispose) unitHandles.set(unitId, dispose)
+              input.events?.onUnitCancelable?.(unitId, cancel)
+            },
+          }
+        : {}),
     }
     const ctx = createWorkflowContext({
       client: input.client,
@@ -235,6 +271,11 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
   } finally {
     finishRun(terminalStatus)
     watcher?.stop()
+    // Unregister before the temp file goes: a terminal run must stop being addressable immediately, or a
+    // surface still holding a stale row would get `ok: true` for a stop that can no longer do anything.
+    for (const dispose of unitHandles.values()) dispose()
+    unitHandles.clear()
+    unregisterRun?.()
     await rm(file, { force: true })
   }
 }

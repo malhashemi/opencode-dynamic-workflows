@@ -118,6 +118,34 @@ Runs the real `opencode` TUI inside tmux at 140×40 and reads the screen back.
   finished in seconds never showed whether it worked — and one that failed vanished just as quietly.
 - Section order after LSP and before todos, asserted over whichever of those sections actually rendered.
 
+### `route.tui.live.ts` — the run browser, under real keystrokes
+
+Opens the `workflow-runs` route in the same tmux-driven TUI and drives it with `send-keys`. Uses
+`long-run.workflow.ts`, a fixture that holds its own run open until something stops it — `phase-gate` is over
+in seconds, so a probe racing to press a key would be asserting against a run that had already finished.
+
+- **The palette way in.** `ctrl+p` → "browse runs" → `Enter`. The sidebar strip renders nothing until a run
+  starts, so a palette entry is the only way to reach the browser when you are looking for a run you remember.
+- **Drill.** `Enter` walks list → run → unit; the breadcrumb names each level (`Workflows ▸ long-run ▸ #1 slow
+  unit`), and the unit level shows the run's own recorded child session ID.
+- **Session ids are real.** A second block runs `phase-gate`, reads the child session ID off the unit level,
+  then starts a throwaway `opencode serve` in the same project and resolves it through the SDK, parent and all.
+- **Filter.** `f` cycles `all → active → done → failed`; under `done` a running run leaves the list.
+- **Width.** `resize(80, 40)` and every row still fits its line.
+- **Stop, in three projections.** `x` on a live run, then the same stop asserted in the route's frame
+  (`⊘ long-run` · `aborted · 1/1 units`), in the sidebar strip after leaving the route, and in the engine's
+  `/state`. This is the first write direction the endpoint has ever had, so it is checked from all three.
+- **No stuck mode.** After `q`, the probe types into the session prompt and confirms the echo. A route that
+  pushes a keymap mode and never pops it leaves the terminal permanently deaf — and looks perfectly fine in a
+  screenshot.
+
+Two things this probe deliberately does **not** cover, each with a better home:
+
+| Not here | Where instead | Why |
+|---|---|---|
+| Clicking a sidebar row to open the browser | `test/tui/sidebar-view.test.tsx` | tmux injects keystrokes, not mouse events; the mounted harness clicks for real, through the host's slot registry |
+| `stop.unit` on an in-flight unit | `test/control.test.ts` | its window is a unit that is genuinely running, whose length is a property of whichever model is pinned; the unit test stops a real in-flight unit against a client that never answers |
+
 ---
 
 ## Reading a failure
@@ -145,6 +173,9 @@ where the screen stopped matching the story.
 | "no workflow endpoint descriptor … appeared" | Server target inactive, or `directory`/`worktree` were not both supplied to the plugin |
 | Frames look right, colors assertion fails | The theme resolved accent and `textMuted` to the same value — try another theme before suspecting the code |
 | A pattern with `$` never matches a whole frame | `waitFor` tests the entire frame; anchor patterns need the `m` flag |
+| "Workflows: browse runs" never appears after `ctrl+p` | The command palette is bound elsewhere in the developer's config — run with `OPENCODE_LIVE_ISOLATE_CONFIG=1`, or check `tui.json` keybinds |
+| The route opens but keys do nothing | The keymap layer's `mode` and the mode the route pushes have drifted apart; both are `WORKFLOW_ROUTE` in `src/tui/keymap.ts` |
+| The route closed but the prompt ignores typing | A pushed mode was never popped. The pop is `onCleanup(api.mode.push(...))` in `src/tui/route.tsx`; `test/tui/route.test.tsx` asserts it on unmount |
 
 ## Debugging by hand
 

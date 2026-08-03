@@ -13,8 +13,14 @@
  * the OpenCode host installs before importing an external TUI plugin.
  */
 import { createSlot, createSolidSlotRegistry, testRender, useRenderer } from "@opentui/solid"
-import type { TuiSlotPlugin, TuiTheme } from "@opencode-ai/plugin/tui"
+import type { TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import type { JSX } from "solid-js"
+import { fakeTheme } from "./fake-api"
+
+// Re-exported so a view test imports its theme double from wherever it already imports its harness. The
+// definition lives in `fake-api.ts` because the structural API double needs it too, and a `.ts` module should
+// not have to reach into a `.tsx` one to get a plain object.
+export { fakeTheme } from "./fake-api"
 
 export interface MountedView {
   /** The last rendered frame, as plain text with trailing whitespace trimmed per line. */
@@ -22,26 +28,23 @@ export interface MountedView {
   /** Drive render passes until the frame settles. Required after changing any signal the view reads. */
   flush(): Promise<void>
   press(key: string): Promise<void>
+  /**
+   * Click at a cell, in the frame's own coordinates.
+   *
+   * The only way to prove a mouse affordance is real: a handler wired to the wrong element, or to an element
+   * with no hit area, looks identical in a captured frame to one wired correctly.
+   */
+  click(x: number, y: number): Promise<void>
+  /** Find the row index of the first line matching `pattern` — the `y` a click needs. */
+  lineOf(pattern: RegExp): number
   unmount(): void
 }
 
 export interface MountOptions {
+  /** Defaults to 42 — the width the host gives `sidebar_content`. A full-screen route wants far more. */
   width?: number
-  /** Defaults to 42 — the width the host gives `sidebar_content`. */
+  /** Defaults to 20. */
   height?: number
-}
-
-/** A structural `TuiTheme` with distinguishable tokens, so a color assertion can name what it expects. */
-export function fakeTheme(overrides: Partial<Record<string, string>> = {}): TuiTheme {
-  const current = {
-    text: "#ffffff",
-    textMuted: "#888888",
-    accent: "#00ccff",
-    success: "#00ff00",
-    error: "#ff0000",
-    ...overrides,
-  }
-  return { current } as unknown as TuiTheme
 }
 
 /**
@@ -92,20 +95,28 @@ export async function mountView(render: () => JSX.Element, options: MountOptions
   // an empty screen — settle it once before anyone can capture.
   await app.flush()
 
+  const text = () =>
+    app
+      .captureCharFrame()
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+
   return {
-    text() {
-      return app
-        .captureCharFrame()
-        .split("\n")
-        .map((line) => line.trimEnd())
-        .join("\n")
-    },
+    text,
     async flush() {
       await app.flush()
     },
     async press(key: string) {
       app.mockInput.pressKey(key)
       await app.flush()
+    },
+    async click(x: number, y: number) {
+      await app.mockMouse.click(x, y)
+      await app.flush()
+    },
+    lineOf(pattern: RegExp) {
+      return text().split("\n").findIndex((line) => pattern.test(line))
     },
     unmount() {
       app.renderer.destroy()

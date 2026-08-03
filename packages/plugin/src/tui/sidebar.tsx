@@ -2,6 +2,7 @@ import type { TuiPluginApi, TuiSlotContext, TuiTheme } from "@opencode-ai/plugin
 import { createComponent, type Accessor } from "solid-js"
 import { formatElapsed, phasePosition, settledUnits } from "../progress"
 import type { RunSnapshot } from "../runs"
+import { openWorkflowRoute } from "./keymap"
 
 // Re-exported so every sidebar consumer imports its row model and its formatters from one place, while the
 // server target keeps importing them from `../progress` (no solid-js in the published server entrypoint).
@@ -43,6 +44,13 @@ export interface SidebarView {
 export interface WorkflowSidebarProps {
   runs: Accessor<readonly RunSnapshot[]>
   theme: TuiTheme
+  /**
+   * Open the run browser on a run — or on the whole list, from the question badge.
+   *
+   * The strip is a summary, and a summary that cannot be followed is a dead end: every row here is a run whose
+   * detail lives one level away. Optional so a view test can mount without a router.
+   */
+  onOpen?: (runId: string | null) => void
 }
 
 /**
@@ -129,7 +137,11 @@ export function registerSidebar(api: TuiPluginApi, runs: Accessor<readonly RunSn
     order: 350,
     slots: {
       sidebar_content(context: TuiSlotContext) {
-        return createComponent(WorkflowSidebar, { runs, theme: context.theme })
+        return createComponent(WorkflowSidebar, {
+          runs,
+          theme: context.theme,
+          onOpen: (runId: string | null) => openWorkflowRoute(api, runId),
+        })
       },
     },
   })

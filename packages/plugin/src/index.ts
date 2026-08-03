@@ -13,10 +13,11 @@ import { tool } from "@opencode-ai/plugin"
 import type { Plugin, PluginOptions, ToolContext } from "@opencode-ai/plugin"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "./client"
+import { createControlRegistry } from "./control"
 import { removeDescriptor, writeDescriptor } from "./discovery"
 import { startEndpoint, type EndpointOptions } from "./endpoint"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile, type RunWorkflowOutput } from "./orchestrator"
-import { formatElapsed, phasePosition, settledUnits } from "./progress"
+import { formatElapsed, formatTokens, phasePosition, settledUnits } from "./progress"
 import { buildRegistry, type Registry, type RegistryEntry } from "./registry"
 import { createRunStore, type RunEvent, type RunSnapshot, type RunStore } from "./runs"
 import { toJsonSchema } from "./schema-bridge"
@@ -165,13 +166,6 @@ export function normalizeArgs(args: unknown): unknown {
 
 /** Cap the per-Unit session listing in the output text; the full list is always in metadata.childSessions. */
 const MAX_LISTED_SESSIONS = 20
-
-/** `41.2k` for a token count worth abbreviating, the exact number otherwise. */
-function formatTokens(tokens: number): string {
-  if (!Number.isFinite(tokens) || tokens <= 0) return "0"
-  if (tokens < 1_000) return String(Math.round(tokens))
-  return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`
-}
 
 /**
  * The one line a model relays into its reply: `deep-research · done · 14/14 units · 2m10s · 41k tok`.
@@ -570,9 +564,13 @@ async function promote(input: { source: string; save: string; directory?: string
 export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serverUrl }, options) => {
   const workflowClient = createWorkflowClient({ client, directory, serverUrl })
   const store = createRunStore()
+  // One registry per plugin instance, shared by every run it starts and by the endpoint that exposes them.
+  // Built unconditionally — it is the runs' cancellation bookkeeping, not a transport concern, so a host with
+  // no endpoint still gets units whose in-flight prompts are addressable.
+  const control = createControlRegistry()
   // A real host always supplies serverUrl. Partial structural PluginInput doubles deliberately do not; avoid
   // opening an orphan server for those initialization-only tests while retaining default-on production.
-  const endpoint = serverUrl ? await startEndpoint(store, dashboardOptions(options)) : null
+  const endpoint = serverUrl ? await startEndpoint(store, dashboardOptions(options), { control }) : null
   let descriptorStatePath: string | null = null
   if (endpoint) {
     descriptorStatePath = opencodeStatePath()
@@ -670,6 +668,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
             parentSessionID: ctx.sessionID,
             signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
             store,
+            control, // …and let a surface outside this session stop the run or one of its units
           }
 
           try {
