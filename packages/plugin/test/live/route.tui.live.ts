@@ -41,16 +41,16 @@ const RUN_TIMEOUT_MS = 300_000
 /**
  * The three levels, each identified by its breadcrumb line.
  *
- * Written to be MUTUALLY EXCLUSIVE, which matters more than it looks: a loose `/Workflows ▸ long-run/` also
+ * Written to be MUTUALLY EXCLUSIVE, which matters more than it looks: a loose `/Workflows › long-run/` also
  * matches the unit level's longer breadcrumb, so a `waitFor` after pressing Escape would pass without the
  * Escape having done anything — and the probe would then fail three keystrokes later, blaming the wrong key.
- * The breadcrumb and the filter indicator share one flex row, so anchoring on `filter:` pins the level exactly.
+ * The breadcrumb and the filter indicator share one flex row, so anchoring on `filter` pins the level exactly.
  */
-const LIST_LEVEL = /Workflows\s+filter:/
-const RUN_LEVEL = /Workflows ▸ long-run\s+filter:/
-const UNIT_LEVEL = /Workflows ▸ long-run ▸ #1 slow unit\s+filter:/
+const LIST_LEVEL = /Workflows\s+filter/
+const RUN_LEVEL = /Workflows › long-run\s+filter/
+const UNIT_LEVEL = /Workflows › long-run › #1 slow unit\s+filter/
 /** The route's footer — the least ambiguous "the browser is on screen" marker there is. */
-const ROUTE_FOOTER = /↑↓ select · ⏎ open/
+const ROUTE_FOOTER = /↑↓ select\s+⏎ open/
 /** The sidebar's settled row for a stopped run: the spinner has become the aborted glyph. */
 const SIDEBAR_ABORTED = /⊘ long-run/
 
@@ -211,14 +211,14 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
 
     // `all` → `active` → `done`: the second press is the one that must drop a running run out of the list.
     await press(tui, "f")
-    await tui.waitFor(/filter: active/, { timeoutMs: 10_000, intervalMs: 200 })
+    await tui.waitFor(/filter active/, { timeoutMs: 10_000, intervalMs: 200 })
     await press(tui, "f")
-    const filteredDone = stripAnsi(await tui.waitFor(/filter: done/, { timeoutMs: 10_000, intervalMs: 200 }))
+    const filteredDone = stripAnsi(await tui.waitFor(/filter done/, { timeoutMs: 10_000, intervalMs: 200 }))
     await saveFrame("40-route-filter-done", filteredDone)
     await press(tui, "f")
-    await tui.waitFor(/filter: failed/, { timeoutMs: 10_000, intervalMs: 200 })
+    await tui.waitFor(/filter failed/, { timeoutMs: 10_000, intervalMs: 200 })
     await press(tui, "f")
-    await tui.waitFor(/filter: all/, { timeoutMs: 10_000, intervalMs: 200 })
+    await tui.waitFor(/filter all/, { timeoutMs: 10_000, intervalMs: 200 })
 
     await tui.resize(80, 40)
     const narrow = stripAnsi(await tui.waitFor(ROUTE_FOOTER, { timeoutMs: 20_000, intervalMs: 200 }))
@@ -228,7 +228,7 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
 
     // The control leg. `x` on the list level targets the selected run.
     await press(tui, "x")
-    const stopped = stripAnsi(await tui.waitFor(/aborted ·/, { timeoutMs: 60_000, intervalMs: 200 }))
+    const stopped = stripAnsi(await tui.waitFor(/⊘ long-run/, { timeoutMs: 60_000, intervalMs: 200 }))
     await saveFrame("60-route-stopped", stopped)
     stoppedRun = await waitForRun(descriptor, (run) => run.status !== "running", 60_000)
 
@@ -267,16 +267,18 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
   it("opens from the command palette onto the run list", () => {
     expect(frames.list).toMatch(ROUTE_FOOTER)
     expect(frames.list).toMatch(LIST_LEVEL)
-    expect(frames.list).toContain("filter: all")
+    expect(frames.list).toContain("filter all")
     expect(frames.list).toContain(WORKFLOW_KEY)
-    // The keys that Phases 3 and 6 will wire are visible now, marked as not yet working.
-    expect(frames.list).toContain("(r restart)")
-    expect(frames.list).toContain("(s save)")
+    // The keys that Phases 3 and 6 will wire are visible now, dimmed rather than absent, so the vocabulary
+    // does not shift under the user when they start working.
+    expect(frames.list).toContain("r restart")
+    expect(frames.list).toContain("s save")
   })
 
   it("drills list → run → unit under Enter, naming each level in the breadcrumb", () => {
     expect(frames.run).toMatch(RUN_LEVEL)
-    expect(frames.run).toMatch(/running · phase \d\/2 \w+ · 1\/1 units/)
+    // The stat strip: status, then each figure with its own meter.
+    expect(frames.run).toMatch(/running\s+▰*▱*\s*phase \d\/2 \w+\s+▰+\s*1\/1 units/)
     expect(frames.run).toContain("Phase 1/2  work")
     expect(frames.run).toContain("#1 general")
 
@@ -300,7 +302,7 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
   }, 120_000)
 
   it("filters the list, dropping a running run under `done`", () => {
-    expect(frames.filteredDone).toContain("filter: done")
+    expect(frames.filteredDone).toContain("filter done")
     expect(frames.filteredDone).not.toContain(WORKFLOW_KEY)
     expect(frames.filteredDone).toContain("No workflow runs to show")
   })
@@ -315,7 +317,8 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
   it("stops the run from a keystroke, and the same stop shows in all three projections", () => {
     // 1. the route's own frame
     expect(frames.stopped).toMatch(/⊘ long-run/)
-    expect(frames.stopped).toMatch(/aborted · \d+\/\d+ units/)
+    expect(frames.stopped).toMatch(/aborted/)
+    expect(frames.stopped).toMatch(/\d+\/\d+ units/)
     // 2. the sidebar strip, back in the session
     expect(frames.sidebar).toMatch(SIDEBAR_ABORTED)
     // 3. the engine's own state

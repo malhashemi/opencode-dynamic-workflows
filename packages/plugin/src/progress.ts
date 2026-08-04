@@ -32,12 +32,38 @@ export function formatTokens(tokens: number): string {
 }
 
 /**
- * `phase 2/3` for a run whose current phase is one of its known phases, `""` otherwise.
+ * `phase 2/3` when the workflow declared its phases, `phase 2` when it did not, `""` before the first one.
  *
- * The store appends every observed phase to `run.phases`, so an undeclared `phase("x")` still yields a
- * position — the empty string only appears before the first phase call.
+ * The denominator is only printed when it is actually known. The store appends every observed phase to
+ * `run.phases`, so a workflow that declares nothing and calls `phase()` three times would otherwise read
+ * `phase 1/1` → `phase 2/2` → `phase 3/3` — each of which claims the run is on its last phase. Dropping the
+ * denominator is the honest rendering: the position is real, the total is not yet knowable.
+ *
+ * Declaring `meta.phases` is what buys the denominator, and with it the queued phase rows the run browser
+ * shows ahead of the current one.
  */
 export function phasePosition(run: RunSnapshot): string {
   const index = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
-  return index >= 0 ? `phase ${index + 1}/${run.phases.length}` : ""
+  if (index < 0) return ""
+  return run.phasesDeclared ? `phase ${index + 1}/${run.phases.length}` : `phase ${index + 1}`
+}
+
+/** Phase progress as a fraction, or `null` when the total is not knowable. */
+export function phaseProgress(run: RunSnapshot): { index: number; total: number } | null {
+  if (!run.phasesDeclared || run.phases.length === 0) return null
+  const index = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
+  return index >= 0 ? { index: index + 1, total: run.phases.length } : null
+}
+
+/** `▰▰▱▱` — a block meter, sized in cells, for a 0..1 ratio. */
+export function meter(ratio: number, width: number): string {
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0))
+  const filled = Math.round(clamped * width)
+  return "▰".repeat(filled) + "▱".repeat(Math.max(0, width - filled))
+}
+
+/** `14:03` — wall-clock start, so a list of runs reads as a timeline rather than a pile of durations. */
+export function formatClock(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
 }

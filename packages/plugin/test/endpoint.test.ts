@@ -11,6 +11,7 @@ function snapshot(): RunSnapshot {
     parentSessionID: "parent",
     status: "running",
     phases: [],
+    phasesDeclared: false,
     currentPhase: null,
     units: [],
     logs: [],

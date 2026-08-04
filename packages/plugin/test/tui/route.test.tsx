@@ -53,6 +53,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     parentSessionID: "ses_parent",
     status: "running",
     phases: ["plan", "gather", "synthesize"],
+    phasesDeclared: true,
     currentPhase: "gather",
     units: [unit()],
     logs: ["gathered 9/20 sources"],
@@ -173,13 +174,18 @@ describe("workflow route render", () => {
     try {
       const frame = harness.view.text()
       expect(frame).toContain("Workflows")
-      expect(frame).toContain("filter: all")
+      expect(frame).toContain("filter all")
       expect(frame).toContain("deep-research")
-      expect(frame).toContain("phase 2/3 · gather · 0/1 units")
+      expect(frame).toContain("phase 2/3 gather")
+      expect(frame).toContain("0/1 units")
       expect(frame).toContain("summarize")
-      expect(frame).toContain("done · 1/1 units")
-      // The selection marker sits on the first row, and only on it.
-      expect(frame.split("\n").filter((line) => line.includes("▸"))).toHaveLength(1)
+      expect(frame).toContain("1/1 units")
+      // A live run carries a partial phase meter; a finished one reads as complete.
+      expect(frame).toMatch(/deep-research\s+▰+▱/)
+      expect(frame).toMatch(/summarize\s+▰▰▰▰/)
+      // "done · phase 3/3" says nothing "done" did not, so a successful run drops its position.
+      expect(frame).toContain("done")
+      expect(frame.split("\n").find((line) => line.includes("summarize"))).not.toContain("phase")
     } finally {
       harness.view.unmount()
     }
@@ -230,8 +236,12 @@ describe("workflow route render", () => {
     try {
       await harness.press("drill")
       let frame = harness.view.text()
-      expect(frame).toContain("Workflows ▸ deep-research")
-      expect(frame).toContain("running · phase 2/3 gather · 0/1 units")
+      expect(frame).toContain("Workflows › deep-research")
+      // The stat strip carries each figure with its own meter, rather than one `·`-joined sentence.
+      expect(frame).toContain("running")
+      expect(frame).toContain("phase 2/3 gather")
+      expect(frame).toContain("0/1 units")
+      expect(frame).toContain("41k tok")
       expect(frame).toContain("41k tok")
       expect(frame).toContain("Phase 1/3  plan")
       expect(frame).toContain("#1 explore")
@@ -243,14 +253,14 @@ describe("workflow route render", () => {
       await harness.press("down")
       await harness.press("drill")
       frame = harness.view.text()
-      expect(frame).toContain("Workflows ▸ deep-research ▸ #1 arxiv sweep")
+      expect(frame).toContain("Workflows › deep-research › #1 arxiv sweep")
       expect(frame).toContain("ses_child_1")
       expect(frame).toContain("sweep arxiv for recent papers")
 
       await harness.press("back")
-      expect(harness.view.text()).toContain("Workflows ▸ deep-research")
+      expect(harness.view.text()).toContain("Workflows › deep-research")
       await harness.press("back")
-      expect(harness.view.text()).toContain("filter: all")
+      expect(harness.view.text()).toContain("filter all")
       expect(harness.view.text()).not.toContain("▸ deep-research")
     } finally {
       harness.view.unmount()
@@ -264,7 +274,7 @@ describe("workflow route render", () => {
     const harness = await mountRoute([failed], { params: { runId: "run-1" } })
     try {
       // Entered from the sidebar, so the run level is already open.
-      expect(harness.view.text()).toContain("Workflows ▸ deep-research")
+      expect(harness.view.text()).toContain("Workflows › deep-research")
       await harness.press("down")
       await harness.press("down")
       await harness.press("drill")
@@ -281,13 +291,13 @@ describe("workflow route render", () => {
     try {
       await harness.press("filter")
       let frame = harness.view.text()
-      expect(frame).toContain("filter: active")
+      expect(frame).toContain("filter active")
       expect(frame).toContain("deep-research")
       expect(frame).not.toContain("summarize")
 
       await harness.press("filter")
       frame = harness.view.text()
-      expect(frame).toContain("filter: done")
+      expect(frame).toContain("filter done")
       expect(frame).toContain("summarize")
       expect(frame).not.toContain("deep-research")
     } finally {
@@ -356,7 +366,7 @@ describe("workflow route render", () => {
     // out beside a sibling, is how OpenTUI ends up with a text node under a box and takes the host down.
     const harness = await mountRoute([run()], { params: { runId: "run-1" } })
     try {
-      expect(harness.view.text()).toContain("Workflows ▸ deep-research")
+      expect(harness.view.text()).toContain("Workflows › deep-research")
 
       harness.setRuns([])
       await harness.view.flush()
@@ -379,6 +389,59 @@ describe("workflow route render", () => {
       expect(harness.view.text()).toContain("deep-research")
     } finally {
       harness.view.unmount()
+    }
+  })
+
+  it("keeps the selected row readable even when the theme's selection tokens collide", async () => {
+    // The regression this exists for: the selected row was drawn with `selectedListItemText` over
+    // `backgroundElement`. That token is cut to sit on the HOST's selection fill, so against ours it landed
+    // invisible — on a real host every selected cell rendered blank, leaving a row that was nothing but its
+    // status glyph and its meter. The adversarial theme below collapses those two tokens onto one colour;
+    // any styling that depends on them contrasting fails here instead of on someone's terminal.
+    const fake = createFakeTuiApi("/tmp/opencode-state", {
+      selectedListItemText: "#222222",
+      backgroundElement: "#222222",
+    })
+    const [runs] = createSignal<readonly RunSnapshot[]>([run()])
+    const view = await mountView(
+      () => <WorkflowRoute api={fake.api} runs={runs} control={{ async send() { return { ok: true } } }} />,
+      { width: 120, height: 24 },
+    )
+    try {
+      const selected = view.text().split("\n").find((line) => line.includes("deep-research"))
+      expect(selected).toBeDefined()
+      // The row must carry its name and its figures, not just the glyph and meter that ignore selection.
+      expect(selected).toContain("deep-research")
+      expect(selected).toContain("phase 2/3")
+      expect(selected).toContain("0/1 units")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("drops columns by how little they carry, rather than truncating all of them equally", async () => {
+    const wide = await mountRoute([run({ tokensSpent: 41_200 })], { width: 130, height: 24 })
+    try {
+      const frame = wide.view.text()
+      expect(frame).toContain("41k tok") // the widest layout affords everything
+      expect(frame).toMatch(/\d{2}:\d{2}/) // …including the start clock
+      expect(frame).toContain("▰")
+    } finally {
+      wide.view.unmount()
+    }
+
+    const narrow = await mountRoute([run({ tokensSpent: 41_200 })], { width: 80, height: 24 })
+    try {
+      const frame = narrow.view.text()
+      // Identity, phase, and counts survive; the niceties go.
+      expect(frame).toContain("deep-research")
+      expect(frame).toContain("0/1 units")
+      expect(frame).not.toContain("41k tok")
+      // The footer sheds its unwired hints too, rather than running off the edge.
+      expect(frame).not.toContain("restart")
+      for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(80)
+    } finally {
+      narrow.view.unmount()
     }
   })
 })

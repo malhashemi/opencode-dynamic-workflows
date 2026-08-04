@@ -15,6 +15,7 @@ import {
   reduceRoute,
   runRows,
   selectedControl,
+  selectIndex,
   unitDetail,
   type RouteState,
 } from "../../src/tui/route-model"
@@ -43,6 +44,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     parentSessionID: "parent",
     status: "running",
     phases: ["plan", "gather", "synthesize"],
+    phasesDeclared: true,
     currentPhase: "gather",
     units: [unit()],
     logs: [],
@@ -86,13 +88,34 @@ describe("listRows", () => {
 
   it("describes a live run by where it is and a settled one by how it ended", () => {
     const [live] = listRows([run({ units: [unit(), unit({ unitId: "unit-2", status: "ok", endedAt: 2_000 })] })], "all")
-    expect(live?.detail).toBe("phase 2/3 · gather · 1/2 units")
+    expect(live?.position).toBe("phase 2/3")
+    expect(live?.phase).toBe("gather")
+    expect(live?.units).toBe("1/2")
     expect(live?.glyph).toBe("running")
 
     const [settled] = listRows([run({ status: "done", endedAt: 4_000, units: [unit({ status: "ok", endedAt: 3_000 })] })], "all")
-    expect(settled?.detail).toBe("done · 1/1 units")
+    // A settled run's phase title is stale news; its outcome takes the column.
+    expect(settled?.phase).toBe("done")
+    expect(settled?.units).toBe("1/1")
     expect(settled?.glyph).toBe("done")
     expect(settled?.elapsed).toBe("3s")
+  })
+
+  it("carries the columns a list needs to read as a timeline, not just a pile of durations", () => {
+    const [row] = listRows([run({ tokensSpent: 41_200, units: [unit(), unit({ unitId: "u2", status: "ok" })] })], "all")
+    expect(row?.tokens).toBe("41k")
+    expect(row?.startedAt).toMatch(/^\d{2}:\d{2}$/)
+    expect(row?.phaseRatio).toBeCloseTo(2 / 3)
+    expect(row?.unitRatio).toBeCloseTo(1 / 2)
+  })
+
+  it("omits the phase meter and denominator for a workflow that never declared its phases", () => {
+    // `phase 1/1` on the first of three undeclared phases does not merely round badly — it asserts the run is
+    // on its last phase.
+    const undeclared = run({ phases: ["Plan"], phasesDeclared: false, currentPhase: "Plan" })
+    const [row] = listRows([undeclared], "all")
+    expect(row?.position).toBe("phase 1")
+    expect(row?.phaseRatio).toBeNull()
   })
 
   it("marks every row live until Phase 3 merges journal history in", () => {
@@ -298,5 +321,31 @@ describe("selectedControl", () => {
     for (const action of ["up", "drill", "filter", "save", "restart", "resume"] as const) {
       expect(selectedControl(initialRouteState(), runs, action)).toBeNull()
     }
+  })
+})
+
+describe("selectIndex — what a mouse click means", () => {
+  it("moves the selection at the current level", () => {
+    const moved = selectIndex(initialRouteState(), 2)
+    expect(moved.stack[0]).toMatchObject({ kind: "list", selected: 2 })
+  })
+
+  it("is identity when the click lands on the row already selected", () => {
+    const state = selectIndex(initialRouteState(), 2)
+    // Reference equality, not just deep equality: the view re-normalizes several times a second, and a fresh
+    // object each time invalidates every memo downstream for no reason.
+    expect(selectIndex(state, 2)).toBe(state)
+  })
+
+  it("refuses to invent a selection on the unit level, which scrolls rather than selects", () => {
+    // Phaseless, so the run level's first row is the unit itself rather than a phase header.
+    const only = [run({ phases: [], phasesDeclared: false, currentPhase: null, units: [unit({ phase: null })] })]
+    const drilled = reduceRoute(reduceRoute(initialRouteState(), "drill", only), "drill", only)
+    expect(drilled.stack.at(-1)?.kind).toBe("unit")
+    expect(selectIndex(drilled, 3)).toBe(drilled)
+  })
+
+  it("never selects a negative row", () => {
+    expect(selectIndex(initialRouteState(), -5).stack[0]).toMatchObject({ selected: 0 })
   })
 })

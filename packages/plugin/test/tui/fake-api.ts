@@ -7,14 +7,34 @@ import type {
 } from "@opencode-ai/plugin/tui"
 
 /** A structural `TuiTheme` with distinguishable tokens, so a color assertion can name what it expects. */
+/**
+ * A theme double covering EVERY token the views read, each with a distinct value.
+ *
+ * Completeness is the point, not tidiness. An absent token arrives at OpenTUI as `undefined`, which renders as
+ * the terminal's default colour — i.e. always visible. A view that reaches for a token this object forgot
+ * therefore looks perfect in every mounted test and can still be invisible on a real theme. That is not
+ * hypothetical: the run browser's selected row used `selectedListItemText` over `backgroundElement`, passed
+ * here, and rendered every selected cell blank on a real host.
+ */
 export function fakeTheme(overrides: Partial<Record<string, string>> = {}): TuiTheme {
   const current = {
+    primary: "#5588ff",
+    secondary: "#8855ff",
+    accent: "#00ccff",
+    error: "#ff0000",
+    warning: "#ffaa00",
+    success: "#00ff00",
+    info: "#00aaff",
     text: "#ffffff",
     textMuted: "#888888",
-    accent: "#00ccff",
-    success: "#00ff00",
-    warning: "#ffaa00",
-    error: "#ff0000",
+    selectedListItemText: "#001122",
+    background: "#000000",
+    backgroundPanel: "#111111",
+    backgroundElement: "#222222",
+    backgroundMenu: "#181818",
+    border: "#444444",
+    borderActive: "#666666",
+    borderSubtle: "#333333",
     ...overrides,
   }
   return { current } as unknown as TuiTheme
@@ -52,7 +72,11 @@ export interface FakeTuiApi {
   dispose(): Promise<void>
 }
 
-export function createFakeTuiApi(statePath = "/tmp/opencode-state"): FakeTuiApi {
+export function createFakeTuiApi(
+  statePath = "/tmp/opencode-state",
+  /** Token overrides, for pinning a view's legibility against a hostile palette. */
+  themeOverrides: Partial<Record<string, string>> = {},
+): FakeTuiApi {
   const slots: TuiSlotPlugin[] = []
   const routes: TuiRouteDefinition[][] = []
   const keymapLayers: FakeKeymapLayer[] = []
@@ -104,7 +128,7 @@ export function createFakeTuiApi(statePath = "/tmp/opencode-state"): FakeTuiApi 
         }
       },
     },
-    theme: fakeTheme(),
+    theme: fakeTheme(themeOverrides),
     attention: {
       async notify(input: TuiAttentionNotifyInput) {
         attention.push(input)

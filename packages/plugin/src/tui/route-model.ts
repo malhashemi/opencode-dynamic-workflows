@@ -9,7 +9,7 @@
  * Every function is total. `reduceRoute` normalizes its result against the runs it was given, so a stack can
  * never point at a run that has gone, and a selection can never sit past the end of its level.
  */
-import { formatElapsed, phasePosition, settledUnits } from "../progress"
+import { formatClock, formatElapsed, formatTokens, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { ControlAction } from "../control"
 import type { RunSnapshot, UnitSnapshot } from "../runs"
 
@@ -33,13 +33,33 @@ export interface RouteState {
   filter: RunStatusFilter
 }
 
+/**
+ * One run as a row of independent COLUMNS rather than a pre-joined string.
+ *
+ * The row used to carry a single `detail` with everything ` · `-joined into it, which forced every surface to
+ * show all of it or none — so a narrow terminal had to drop the row's meaning rather than its least important
+ * column, and nothing could be aligned against anything else. Keeping the fields apart lets the renderer
+ * decide, per width, what survives.
+ */
 export interface ListRow {
   runId: string
   glyph: "running" | "done" | "failed" | "aborted"
   workflow: string
-  /** Phase position + counts while live; final status + counts once settled. */
-  detail: string
+  /** `phase 2/4` (declared) or `phase 2` (not), `""` before the first phase. */
+  position: string
+  /** Current phase title while live; the final status once settled. */
+  phase: string
+  /** Phase completion as a 0..1 ratio, or `null` when the workflow never declared its phases. */
+  phaseRatio: number | null
+  /** `10/10`. */
+  units: string
+  /** Unit completion as a 0..1 ratio; `null` when the run has launched none. */
+  unitRatio: number | null
+  /** `35k`, or `""` below the threshold worth showing. */
+  tokens: string
   elapsed: string
+  /** `14:03` — when the run started. */
+  startedAt: string
   /** False for journal-only history rows (Phase 3); every row is live today. */
   live: boolean
   /** Phase 4 fills this from `RunSnapshot.interactions`. */
@@ -118,18 +138,24 @@ export function listRows(runs: readonly RunSnapshot[], filter: RunStatusFilter):
       return b.startedAt - a.startedAt || a.runId.localeCompare(b.runId)
     })
     .map((run) => {
-      const counts = `${settledUnits(run)}/${run.units.length} units`
-      const position = phasePosition(run)
-      const detail =
-        run.status === "running"
-          ? [position, run.currentPhase ?? "starting", counts].filter(Boolean).join(" · ")
-          : `${run.status} · ${counts}`
+      const settled = settledUnits(run)
+      const progress = phaseProgress(run)
+      // Where a run STOPPED is worth a column only when it stopped early. On a success the phase position is
+      // noise ("done · phase 3/3" says nothing "done" did not); on a failure it is the first thing asked.
+      const stoppedEarly = run.status === "failed" || run.status === "aborted"
       return {
         runId: run.runId,
         glyph: run.status,
         workflow: run.workflow,
-        detail,
+        position: run.status === "running" || stoppedEarly ? phasePosition(run) : "",
+        // A settled run's phase title is stale news; its outcome is the thing worth the column.
+        phase: run.status === "running" ? (run.currentPhase ?? "starting") : run.status,
+        phaseRatio: run.status === "done" ? 1 : progress ? progress.index / progress.total : null,
+        units: `${settled}/${run.units.length}`,
+        unitRatio: run.units.length > 0 ? settled / run.units.length : null,
+        tokens: run.tokensSpent > 0 ? formatTokens(run.tokensSpent) : "",
         elapsed: formatElapsed((run.endedAt ?? now) - run.startedAt),
+        startedAt: formatClock(run.startedAt),
         live: true,
         pendingQuestions: pendingInteractions(run),
       }
@@ -280,6 +306,23 @@ export function normalizeRoute(state: RouteState, runs: readonly RunSnapshot[]):
   // which, in a live browser, is several times a second — and a fresh object each time would invalidate every
   // memo downstream for no reason.
   return sameStack(state.stack, stack) ? state : { stack, filter: state.filter }
+}
+
+/**
+ * Move the selection to an absolute index at the current level — what a mouse click means.
+ *
+ * Routed through the model rather than set on the view's signal directly, so a click lands under the same
+ * clamping and the same level rules as `↑`/`↓`. A click on the unit level is a no-op: that level has a scroll
+ * position, not a selection.
+ */
+export function selectIndex(state: RouteState, index: number): RouteState {
+  const level = state.stack[state.stack.length - 1]
+  // Phase 4's `question` level will land here too; it has its own selection, so revisit when it arrives.
+  if (!level || level.kind === "unit") return state
+  if (level.selected === index) return state
+  const stack = state.stack.slice()
+  stack[stack.length - 1] = { ...level, selected: Math.max(0, index) }
+  return { stack, filter: state.filter }
 }
 
 function sameStack(a: readonly RouteLevel[], b: readonly RouteLevel[]): boolean {

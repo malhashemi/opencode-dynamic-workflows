@@ -186,6 +186,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       parentSessionID: input.parentSessionID,
       status: "running",
       phases: (config.meta.phases ?? []).map((phase) => phase.title),
+      phasesDeclared: (config.meta.phases ?? []).length > 0,
       currentPhase: null,
       units: [],
       logs: [],

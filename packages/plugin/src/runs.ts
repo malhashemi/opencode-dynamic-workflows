@@ -20,7 +20,20 @@ export interface RunSnapshot {
   provenance: "durable" | "inline"
   parentSessionID: string
   status: "running" | "done" | "failed" | "aborted"
+  /**
+   * Phase titles. Seeded from `meta.phases` when the workflow declared them, and grown by observation as
+   * `phase()` is called either way — so this list is a PLAN when {@link phasesDeclared}, and a running
+   * total otherwise.
+   */
   phases: string[]
+  /**
+   * Whether `phases` was known in full before the run started.
+   *
+   * Without this the two cases are indistinguishable, and every surface renders the observed count as if it
+   * were the total: a workflow that will call `phase()` three times reads `phase 1/1` on its first phase,
+   * then `phase 2/2`. That is not merely imprecise, it actively asserts there is nothing left to come.
+   */
+  phasesDeclared: boolean
   currentPhase: string | null
   units: UnitSnapshot[]
   logs: string[]

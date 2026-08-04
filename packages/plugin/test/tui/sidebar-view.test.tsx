@@ -24,6 +24,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     parentSessionID: "parent",
     status: "running",
     phases: ["plan", "gather sources", "synthesize"],
+    phasesDeclared: true,
     currentPhase: "gather sources",
     units: [],
     logs: [],

@@ -11,13 +11,14 @@
  * pieces of state the model cannot: the keymap layer, the pushed mode, and the last control outcome.
  */
 import type { ScrollBoxRenderable } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Accessor } from "solid-js"
 import type { ControlAction, ControlResult } from "../control"
-import { formatElapsed, formatTokens, phasePosition, settledUnits } from "../progress"
+import { formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { RunSnapshot } from "../runs"
 import type { RunControlClient } from "./control"
-import { registerKeymap, footerHint, WORKFLOW_ROUTE, type WorkflowBinding } from "./keymap"
+import { footerGroups, registerKeymap, WORKFLOW_ROUTE, type FooterGroup, type WorkflowBinding } from "./keymap"
 import {
   breadcrumb,
   initialRouteState,
@@ -26,6 +27,7 @@ import {
   reduceRoute,
   runRows,
   selectedControl,
+  selectIndex,
   unitDetail,
   type ListRow,
   type RouteState,
@@ -42,6 +44,34 @@ const ROW_GLYPHS = { queued: "·", ok: "✓", failed: "✗", replayed: "↺", qu
 /** How much of the run's log tail the run level shows. Enough for context, never enough to become the screen. */
 const RECENT_LOGS = 5
 
+/** Cells in a phase or unit meter. Four reads as progress; more reads as a chart nobody asked for. */
+const METER_WIDTH = 4
+
+/**
+ * What survives at a given terminal width.
+ *
+ * Columns are dropped in order of how much meaning they carry, rather than truncating every column equally:
+ * a run's identity and its phase are the point, its start clock is a nicety. `minimal` is the 80-column
+ * contract the live probe holds us to.
+ */
+type Density = "full" | "compact" | "minimal"
+
+function densityFor(width: number): Density {
+  if (width >= 116) return "full"
+  if (width >= 92) return "compact"
+  return "minimal"
+}
+
+/** Right-align a numeric column so digits line up down the list instead of drifting with their width. */
+function rightAlign(value: string, width: number): string {
+  return value.length >= width ? value : value.padStart(width)
+}
+
+/** The settled outcome mark for a run status; `running` animates and so has none. */
+function statusGlyph(status: RunSnapshot["status"]): string {
+  return status === "running" ? "" : LIST_GLYPHS[status]
+}
+
 export interface WorkflowRouteProps {
   api: TuiPluginApi
   runs: Accessor<readonly RunSnapshot[]>
@@ -55,16 +85,35 @@ function stringParam(params: Record<string, unknown> | undefined, key: string): 
   return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
-/** `running · phase 2/3 gather sources · 14/40 units · 2m10s · 41k tok` */
-function runSummary(run: RunSnapshot, now: number): string {
-  const parts: string[] = [run.status]
+/** One labelled figure in the run-level stat strip. */
+interface Stat {
+  meter: string | null
+  label: string
+}
+
+/**
+ * The run's vital signs, as separate figures rather than one `·`-joined sentence.
+ *
+ * Each stat can then carry its own meter and its own colour, and a narrow terminal drops whole stats instead
+ * of truncating the middle of a string.
+ */
+function runStats(run: RunSnapshot, now: number): Stat[] {
+  const stats: Stat[] = []
+  const progress = phaseProgress(run)
   const position = phasePosition(run)
   const phase = run.currentPhase ?? "starting"
-  parts.push(position ? `${position} ${phase}` : phase)
-  parts.push(`${settledUnits(run)}/${run.units.length} units`)
-  parts.push(formatElapsed((run.endedAt ?? now) - run.startedAt))
-  if (run.tokensSpent > 0) parts.push(`${formatTokens(run.tokensSpent)} tok`)
-  return parts.join(" · ")
+  stats.push({
+    meter: progress ? meter(progress.index / progress.total, METER_WIDTH) : null,
+    label: position ? `${position} ${phase}` : phase,
+  })
+  const settled = settledUnits(run)
+  stats.push({
+    meter: run.units.length > 0 ? meter(settled / run.units.length, METER_WIDTH) : null,
+    label: `${settled}/${run.units.length} units`,
+  })
+  stats.push({ meter: null, label: formatElapsed((run.endedAt ?? now) - run.startedAt) })
+  if (run.tokensSpent > 0) stats.push({ meter: null, label: `${formatTokens(run.tokensSpent)} tok` })
+  return stats
 }
 
 /** What a control action did, in the words the user needs — never a bare `ok: false`. */
@@ -178,6 +227,35 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     Math.min(NAME_COLUMN_MAX, Math.max(0, ...rows().map((row) => row.workflow.length))),
   )
 
+  const dimensions = useTerminalDimensions()
+  const density = createMemo<Density>(() => densityFor(dimensions().width))
+
+  /**
+   * Footer hints, trimmed to what the width can hold.
+   *
+   * Unwired keys stay, dimmed — the vocabulary must not shift when Phases 3 and 6 wire them — but a footer
+   * that runs off the right edge teaches nothing, so the least-essential hints go first at narrow widths.
+   */
+  const footer = createMemo<FooterGroup[]>(() => {
+    const groups = footerGroups()
+    if (density() === "full") return groups
+    const dropped = density() === "minimal" ? ["restart", "save", "close"] : ["close"]
+    return groups.filter((group) => !dropped.includes(group.label))
+  })
+
+  const statusColor = (status: RunSnapshot["status"]) => {
+    if (status === "running") return theme().accent
+    if (status === "failed") return theme().error
+    if (status === "aborted") return theme().warning
+    return theme().success
+  }
+  const unitStatusColor = (status: UnitDetail["status"]) => {
+    if (status === "running") return theme().accent
+    if (status === "failed") return theme().error
+    if (status === "ok") return theme().success
+    return theme().textMuted
+  }
+
   const listGlyph = (row: ListRow) => (row.glyph === "running" ? spinner() : LIST_GLYPHS[row.glyph])
   const listGlyphColor = (row: ListRow) => {
     if (row.glyph === "running") return theme().accent
@@ -197,47 +275,147 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     return current && current.kind !== "unit" ? current.selected : -1
   }
 
+  /**
+   * A row the cursor is on: filled, not merely marked, so the eye finds it without hunting for a caret.
+   *
+   * The FOREGROUND deliberately does not change with selection, beyond promoting the name to the accent.
+   * Pairing a selection background with `selectedListItemText` looks like the obvious move and is a trap —
+   * that token is cut to sit on the host's own selection fill, and against any other background it can land
+   * invisible. It did: on a real host every selected cell rendered blank, leaving a row that was nothing but
+   * its status glyph and its meter, while the mounted tests passed on a fake theme whose tokens happened to
+   * contrast. Reusing the same foregrounds the unselected row uses cannot fail that way in any theme.
+   */
+  const rowBackground = (index: number) => (index === selectedIndex() ? theme().backgroundElement : undefined)
+  const rowText = (index: number) => (index === selectedIndex() ? theme().accent : theme().text)
+  const rowMuted = (_index: number) => theme().textMuted
+
+  /** Click to select; click the selected row again to open it — the same two steps the keyboard takes. */
+  const clickRow = (index: number) => {
+    if (index === selectedIndex()) dispatch("drill")
+    else setState((current) => selectIndex(current, index))
+  }
+
   return (
-    <box flexGrow={1} flexDirection="column" paddingLeft={1} paddingRight={1}>
-      <box flexDirection="row" justifyContent="space-between">
-        <text fg={theme().text}>
-          <b>{crumb()}</b>
-        </text>
-        <text fg={theme().textMuted}>{`filter: ${state().filter}`}</text>
+    <box flexGrow={1} flexDirection="column" backgroundColor={theme().background}>
+      {/* Header bar — a surface rather than a line of text, so the route reads as a screen of its own. */}
+      <box
+        flexDirection="row"
+        justifyContent="space-between"
+        paddingLeft={1}
+        paddingRight={1}
+        backgroundColor={theme().backgroundPanel}
+      >
+        <box flexDirection="row" gap={1} flexShrink={1}>
+          <For each={crumb().split(" ▸ ")}>
+            {(segment: string, index) => (
+              <box flexDirection="row" gap={1} flexShrink={index() === 0 ? 0 : 1}>
+                <Show when={index() > 0}>
+                  <text flexShrink={0} fg={theme().borderSubtle}>
+                    ›
+                  </text>
+                </Show>
+                <text
+                  flexShrink={1}
+                  fg={index() === crumb().split(" ▸ ").length - 1 ? theme().accent : theme().textMuted}
+                >
+                  {index() === crumb().split(" ▸ ").length - 1 ? <b>{segment}</b> : segment}
+                </text>
+              </box>
+            )}
+          </For>
+        </box>
+        <box flexDirection="row" gap={1} flexShrink={0}>
+          <text fg={theme().textMuted}>filter</text>
+          <text fg={theme().info}>
+            <b>{state().filter}</b>
+          </text>
+        </box>
       </box>
 
-      <box>
-        <Show when={activeRun()}>
-          {(run: Accessor<RunSnapshot>) => <text fg={theme().textMuted}>{runSummary(run(), now())}</text>}
-        </Show>
-      </box>
+      {/* Stat strip — the active run's vital signs, each figure with its own meter. */}
+      <Show when={activeRun()}>
+        {(run: Accessor<RunSnapshot>) => (
+          <box
+            flexDirection="row"
+            gap={2}
+            paddingLeft={1}
+            paddingRight={1}
+            backgroundColor={theme().backgroundElement}
+          >
+            <text flexShrink={0} fg={statusColor(run().status)}>
+              <b>{run().status === "running" ? `${spinner()} running` : `${statusGlyph(run().status)} ${run().status}`}</b>
+            </text>
+            <For each={runStats(run(), now())}>
+              {(stat: Stat) => (
+                <box flexDirection="row" gap={1} flexShrink={1}>
+                  <Show when={stat.meter}>
+                    {(bar: Accessor<string>) => (
+                      <text flexShrink={0} fg={theme().accent}>
+                        {bar()}
+                      </text>
+                    )}
+                  </Show>
+                  <text flexShrink={1} fg={theme().textMuted}>
+                    {stat.label}
+                  </text>
+                </box>
+              )}
+            </For>
+          </box>
+        )}
+      </Show>
 
-      <box flexGrow={1} flexDirection="column" paddingTop={1}>
+      <box flexGrow={1} flexDirection="column" paddingTop={1} paddingLeft={1} paddingRight={1}>
         <Show when={level()?.kind === "list"}>
           <box flexDirection="column">
             <Show when={rows().length === 0}>
-              <text fg={theme().textMuted}>No workflow runs to show. Start one with the `workflow` tool.</text>
+              <box flexDirection="column" paddingTop={1} gap={1}>
+                <text fg={theme().textMuted}>No workflow runs to show.</text>
+                <text fg={theme().borderSubtle}>Start one with the `workflow` tool, then come back.</text>
+              </box>
             </Show>
             <For each={rows()}>
               {(row: ListRow, index) => (
-                <box flexDirection="row" justifyContent="space-between">
+                <box
+                  flexDirection="row"
+                  justifyContent="space-between"
+                  backgroundColor={rowBackground(index())}
+                  onMouseUp={() => clickRow(index())}
+                >
                   <box flexDirection="row" gap={1} flexShrink={1}>
-                    <text flexShrink={0} fg={theme().accent}>
-                      {index() === selectedIndex() ? "▸" : " "}
-                    </text>
                     <text flexShrink={0} fg={listGlyphColor(row)}>
-                      {listGlyph(row)}
+                      {` ${listGlyph(row)}`}
                     </text>
-                    <text flexShrink={0} fg={index() === selectedIndex() ? theme().accent : theme().text}>
-                      {row.workflow.padEnd(nameColumn())}
+                    <text flexShrink={0} fg={rowText(index())}>
+                      <b>{row.workflow.padEnd(nameColumn())}</b>
                     </text>
-                    <text flexShrink={1} fg={theme().textMuted}>
-                      {row.detail}
+                    <Show when={density() !== "minimal" && row.phaseRatio !== null}>
+                      <text flexShrink={0} fg={theme().accent}>
+                        {meter(row.phaseRatio ?? 0, METER_WIDTH)}
+                      </text>
+                    </Show>
+                    <text flexShrink={1} fg={rowMuted(index())}>
+                      {[row.position, row.phase].filter(Boolean).join(" ")}
                     </text>
                   </box>
-                  <text flexShrink={0} fg={theme().textMuted}>
-                    {row.elapsed}
-                  </text>
+                  <box flexDirection="row" gap={2} flexShrink={0}>
+                    <text flexShrink={0} fg={rowMuted(index())}>
+                      {rightAlign(`${row.units} units`, 12)}
+                    </text>
+                    <Show when={density() === "full"}>
+                      <text flexShrink={0} fg={rowMuted(index())}>
+                        {rightAlign(row.tokens ? `${row.tokens} tok` : "", 9)}
+                      </text>
+                    </Show>
+                    <text flexShrink={0} fg={rowMuted(index())}>
+                      {rightAlign(row.elapsed, 7)}
+                    </text>
+                    <Show when={density() !== "minimal"}>
+                      <text flexShrink={0} fg={theme().borderSubtle}>
+                        {rightAlign(row.startedAt, 5)}
+                      </text>
+                    </Show>
+                  </box>
                 </box>
               )}
             </For>
@@ -251,39 +429,46 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             </Show>
             <For each={detailRows()}>
               {(row: RunLevelRow, index) => (
-                <box flexDirection="row" justifyContent="space-between">
+                <box
+                  flexDirection="row"
+                  justifyContent="space-between"
+                  backgroundColor={rowBackground(index())}
+                  onMouseUp={() => clickRow(index())}
+                >
                   <box flexDirection="row" gap={1} flexShrink={1}>
-                    <text flexShrink={0} fg={theme().accent}>
-                      {index() === selectedIndex() ? "▸" : " "}
-                    </text>
                     <text flexShrink={0} fg={rowGlyphColor(row)}>
-                      {`${row.indent === 1 ? "  " : ""}${rowGlyph(row)}`}
+                      {`${row.indent === 1 ? "   " : " "}${rowGlyph(row)}`}
                     </text>
-                    <text flexShrink={0} fg={index() === selectedIndex() ? theme().accent : theme().text}>
-                      {row.label}
+                    <text flexShrink={0} fg={row.indent === 0 ? rowText(index()) : rowMuted(index())}>
+                      {row.indent === 0 ? <b>{row.label}</b> : row.label}
                     </text>
-                    <text flexShrink={1} fg={theme().textMuted}>
+                    <text flexShrink={1} fg={rowMuted(index())}>
                       {row.detail}
                     </text>
                   </box>
-                  <text flexShrink={0} fg={theme().textMuted}>
-                    {row.elapsed}
+                  <text flexShrink={0} fg={rowMuted(index())}>
+                    {rightAlign(row.elapsed, 7)}
                   </text>
                 </box>
               )}
             </For>
-            <box paddingTop={1}>
-              <Show when={(activeRun()?.logs.length ?? 0) > 0}>
-                <box flexDirection="column">
-                  <text fg={theme().text}>
-                    <b>Recent</b>
-                  </text>
-                  <For each={(activeRun()?.logs ?? []).slice(-RECENT_LOGS)}>
-                    {(log: string) => <text fg={theme().textMuted}>{` ${log}`}</text>}
-                  </For>
-                </box>
-              </Show>
-            </box>
+            <Show when={(activeRun()?.logs.length ?? 0) > 0}>
+              <box
+                flexDirection="column"
+                marginTop={1}
+                paddingLeft={1}
+                paddingRight={1}
+                border
+                borderStyle="rounded"
+                borderColor={theme().borderSubtle}
+                title=" Recent "
+                titleAlignment="left"
+              >
+                <For each={(activeRun()?.logs ?? []).slice(-RECENT_LOGS)}>
+                  {(log: string) => <text fg={theme().textMuted}>{log}</text>}
+                </For>
+              </box>
+            </Show>
           </box>
         </Show>
 
@@ -292,36 +477,56 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             <Show when={unit()}>
               {(detail: Accessor<UnitDetail>) => (
                 <box flexDirection="column" gap={1}>
-                  <text fg={theme().text}>
-                    {`#${detail().ordinal} ${detail().label ?? detail().subagent} · ${detail().status}` +
-                      `${detail().elapsed ? ` · ${detail().elapsed}` : ""}`}
-                  </text>
-                  <text fg={theme().textMuted}>
-                    {`subagent ${detail().subagent} · phase ${detail().phase ?? "(none)"} · session ` +
-                      `${detail().sessionID ?? "(none)"}`}
-                  </text>
-                  <box flexDirection="column">
-                    <text fg={theme().text}>
-                      <b>Prompt</b>
+                  <box flexDirection="row" gap={2}>
+                    <text flexShrink={1} fg={theme().accent}>
+                      <b>{`#${detail().ordinal} ${detail().label ?? detail().subagent}`}</b>
                     </text>
-                    <text fg={theme().textMuted} wrapMode="word">
+                    <text flexShrink={0} fg={unitStatusColor(detail().status)}>
+                      {detail().status}
+                    </text>
+                    <Show when={detail().elapsed}>
+                      <text flexShrink={0} fg={theme().textMuted}>
+                        {detail().elapsed}
+                      </text>
+                    </Show>
+                  </box>
+                  <box flexDirection="row" gap={2}>
+                    <text fg={theme().textMuted}>{`subagent ${detail().subagent}`}</text>
+                    <text fg={theme().textMuted}>{`phase ${detail().phase ?? "(none)"}`}</text>
+                    <text fg={theme().info}>{`session ${detail().sessionID ?? "(none)"}`}</text>
+                  </box>
+                  <box
+                    flexDirection="column"
+                    paddingLeft={1}
+                    paddingRight={1}
+                    border
+                    borderStyle="rounded"
+                    borderColor={theme().borderSubtle}
+                    title=" Prompt "
+                    titleAlignment="left"
+                  >
+                    <text fg={theme().text} wrapMode="word">
                       {detail().prompt}
                     </text>
                   </box>
-                  <box>
-                    <Show when={detail().error}>
-                      {(error: Accessor<string>) => (
-                        <box flexDirection="column">
-                          <text fg={theme().error}>
-                            <b>Error</b>
-                          </text>
-                          <text fg={theme().error} wrapMode="word">
-                            {error()}
-                          </text>
-                        </box>
-                      )}
-                    </Show>
-                  </box>
+                  <Show when={detail().error}>
+                    {(error: Accessor<string>) => (
+                      <box
+                        flexDirection="column"
+                        paddingLeft={1}
+                        paddingRight={1}
+                        border
+                        borderStyle="rounded"
+                        borderColor={theme().error}
+                        title=" Error "
+                        titleAlignment="left"
+                      >
+                        <text fg={theme().error} wrapMode="word">
+                          {error()}
+                        </text>
+                      </box>
+                    )}
+                  </Show>
                 </box>
               )}
             </Show>
@@ -329,14 +534,33 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         </Show>
       </box>
 
-      <box>
-        <Show when={notice()}>
-          {(message: Accessor<string>) => <text fg={theme().warning}>{message()}</text>}
-        </Show>
+      <Show when={notice()}>
+        {(message: Accessor<string>) => (
+          <box paddingLeft={1} paddingRight={1} backgroundColor={theme().backgroundElement}>
+            <text fg={theme().warning}>{message()}</text>
+          </box>
+        )}
+      </Show>
+
+      {/* Footer bar — keys in accent against muted labels, so the vocabulary is scannable rather than prose. */}
+      <box
+        flexDirection="row"
+        gap={2}
+        paddingLeft={1}
+        paddingRight={1}
+        backgroundColor={theme().backgroundPanel}
+      >
+        <For each={footer()}>
+          {(group: FooterGroup) => (
+            <box flexDirection="row" gap={1} flexShrink={0}>
+              <text fg={group.enabled ? theme().accent : theme().borderSubtle}>
+                <b>{group.keys}</b>
+              </text>
+              <text fg={group.enabled ? theme().textMuted : theme().borderSubtle}>{group.label}</text>
+            </box>
+          )}
+        </For>
       </box>
-      <text fg={theme().textMuted} wrapMode="word">
-        {footerHint()}
-      </text>
     </box>
   )
 }

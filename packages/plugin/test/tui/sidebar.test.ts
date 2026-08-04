@@ -32,6 +32,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     parentSessionID: "parent",
     status: "running",
     phases: ["Review"],
+    phasesDeclared: true,
     currentPhase: "Review",
     units: [unit("ok", 1), unit("running", 2), unit("queued", 3), unit("failed", 4)],
     logs: [],

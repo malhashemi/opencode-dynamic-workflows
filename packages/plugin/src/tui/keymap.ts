@@ -108,7 +108,20 @@ export function commandName(action: WorkflowBinding["action"]): string {
  * commands into the single `↑↓ select` a user actually reads. A disabled binding is parenthesised rather than
  * omitted — see this module's header for why it is there at all.
  */
-export function footerHint(bindings: readonly WorkflowBinding[] = WORKFLOW_BINDINGS): string {
+export interface FooterGroup {
+  /** Display form of the key(s), already collapsed — `↑↓`, `⏎`, `esc`. */
+  keys: string
+  label: string
+  enabled: boolean
+}
+
+/**
+ * The footer's hints as structured groups, so a renderer can colour the key differently from its label.
+ *
+ * {@link footerHint} is the flat-string rendering of exactly this, kept for the tests and for any surface that
+ * only has one colour to spend.
+ */
+export function footerGroups(bindings: readonly WorkflowBinding[] = WORKFLOW_BINDINGS): FooterGroup[] {
   const groups: { keys: string[]; label: string; enabled: boolean }[] = []
   for (const binding of bindings) {
     const last = groups[groups.length - 1]
@@ -118,9 +131,13 @@ export function footerHint(bindings: readonly WorkflowBinding[] = WORKFLOW_BINDI
     }
     groups.push({ keys: [displayKey(binding)], label: binding.label, enabled: binding.enabled })
   }
-  return groups
+  return groups.map((group) => ({ keys: group.keys.join(""), label: group.label, enabled: group.enabled }))
+}
+
+export function footerHint(bindings: readonly WorkflowBinding[] = WORKFLOW_BINDINGS): string {
+  return footerGroups(bindings)
     .map((group) => {
-      const hint = `${group.keys.join("")} ${group.label}`
+      const hint = `${group.keys} ${group.label}`
       return group.enabled ? hint : `(${hint})`
     })
     .join(" · ")
