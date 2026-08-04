@@ -136,15 +136,38 @@ describe("runAgent — structured output", () => {
     expect(client.promptCalls[0]?.format).toBeUndefined()
   })
 
-  it("retries a StructuredOutputError then succeeds — a fresh child per attempt (serialization invariant)", async () => {
+  it("corrects a StructuredOutputError IN the same child, telling the model what went wrong", async () => {
+    const TASK = "summarize the quarterly filings"
     const client = makeFakeClient({
       responses: [{ structuredError: "no tool call" }, { structured: { title: "late", score: 1 } }],
     })
-    const result = await runAgent(client, "p", "x", { schema: Finding })
+    const result = await runAgent(client, "p", TASK, { schema: Finding })
 
     expect(result).toMatchObject({ ok: true, kind: "structured", value: { title: "late", score: 1 } })
-    expect(client.createCalls).toHaveLength(2)
+    // ONE child, two turns. Retrying used to mean a new session and the whole prompt again, to a model with
+    // no memory of the attempt and no idea what was wrong with it — three full-price rolls of one die.
+    expect(client.createCalls).toHaveLength(1)
     expect(client.promptCalls).toHaveLength(2)
+
+    // The first turn is the task; the second is a short correction that does NOT re-send it. Re-stating the
+    // task invites the model to redo the work, which is both expensive and how a "retry" quietly becomes a
+    // different answer.
+    const [first, second] = client.promptCalls
+    expect(first?.parts?.[0]?.text).toBe(TASK)
+    expect(second?.parts?.[0]?.text).toContain("StructuredOutput")
+    expect(second?.parts?.[0]?.text).not.toContain(TASK)
+  })
+
+  it("hands the model the actual validation error when its call was the wrong shape", async () => {
+    const client = makeFakeClient({
+      responses: [{ structured: { title: "ok" } }, { structured: { title: "ok", score: 3 } }],
+    })
+    const result = await runAgent(client, "p", "x", { schema: Finding })
+
+    expect(result).toMatchObject({ ok: true, kind: "structured", value: { title: "ok", score: 3 } })
+    // The whole point: the correction names the offending field, so the model can fix it rather than guess.
+    expect(client.promptCalls[1]?.parts?.[0]?.text).toContain("score")
+    expect(client.createCalls).toHaveLength(1)
   })
 
   it("resolves to ok:false after exhausting retries on a persistent StructuredOutputError", async () => {

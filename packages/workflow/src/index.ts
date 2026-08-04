@@ -62,7 +62,15 @@ export interface AgentOpts<S extends z.ZodType | undefined = undefined> {
   label?: string
   /** Progress group for this Unit. */
   phase?: string
-  /** Model override `{ providerID, modelID }`; omit to inherit the session model. */
+  /**
+   * Model override `{ providerID, modelID }`.
+   *
+   * Omit it and the unit runs on the **subagent's own configured model** — the engine passes `agent:` to the
+   * host, which resolves the model from that agent's config, so `subagent` already decides the model. This
+   * only overrides that.
+   *
+   * Not validated against the host's model list: a typo resolves however the host resolves an unknown id.
+   */
   model?: { providerID: string; modelID: string }
   /**
    * Zod schema for structured output. The engine converts it to a native `format:{type:"json_schema"}`

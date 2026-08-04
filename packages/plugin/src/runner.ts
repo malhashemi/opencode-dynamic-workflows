@@ -103,6 +103,27 @@ export function stringifyError(error: unknown): string {
   }
 }
 
+/**
+ * The corrective turn sent back into the same child session after a structured attempt failed.
+ *
+ * Deliberately short and shape-only. The model already holds the task, its research, and its own previous
+ * answer in context — re-stating any of that invites it to redo the work, which is both expensive and how a
+ * "retry" quietly becomes a different answer. `validationError` is the zod message when the tool was called
+ * with the wrong shape, and `null` when it was not called at all.
+ */
+function repairPrompt(validationError: string | null): string {
+  const cause =
+    validationError === null
+      ? "You replied with text instead of calling the StructuredOutput tool."
+      : `Your StructuredOutput call did not match the required schema:\n${validationError}`
+  return (
+    `${cause}\n\n` +
+    "Call the StructuredOutput tool again with the SAME content as before, corrected so it satisfies the " +
+    "schema. Every required field must be present. Do not redo the work and do not change your conclusions — " +
+    "fix only the shape."
+  )
+}
+
 /** opencode raises a named `StructuredOutputError` when forced structured output fails (`message-v2.ts:42`). */
 function isStructuredOutputError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "StructuredOutputError"
@@ -139,6 +160,15 @@ export async function runAgent(
   const maxAttempts = schema === undefined ? 1 : Math.max(0, opts.retries ?? DEFAULT_RETRIES) + 1
   let childSessionID: string | undefined
   let lastError = "structured output failed"
+  /**
+   * A corrective turn for the NEXT attempt, or `null` to start a fresh unit.
+   *
+   * Set whenever a structured attempt fails in a way the model itself can fix. Retrying used to mean throwing
+   * the child session away and re-sending the whole prompt to a model with no memory of the attempt and no
+   * idea what was wrong with it — three full-price rolls of the same dice. Correcting in place costs one short
+   * turn instead, because the model still has the entire task in its context and only has to fix the shape.
+   */
+  let repair: string | null = null
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const isLast = attempt === maxAttempts - 1
@@ -150,12 +180,15 @@ export async function runAgent(
     // Never-throw for runtime failures (D9): any transport rejection becomes `{ ok: false }` so a single
     // failed Unit is recorded in `ctx.errors` and never aborts the surrounding run or fan-out.
     try {
-      const created = await client.session.create({
-        parentID: parentSessionID,
-        title: `wf:${subagent}`,
-      })
-      childSessionID = created.data?.id
-      if (!childSessionID) return { ok: false, error: "session.create returned no session id" }
+      // A repair turn continues the SAME child; only a fresh unit needs a new one.
+      if (!repair || !childSessionID) {
+        const created = await client.session.create({
+          parentID: parentSessionID,
+          title: `wf:${subagent}`,
+        })
+        childSessionID = created.data?.id
+        if (!childSessionID) return { ok: false, error: "session.create returned no session id" }
+      }
       // After the child exists, so the handle can name the session a surface would navigate to.
       if (stop) opts.onCancelable?.(() => stop.abort(), childSessionID)
 
@@ -167,7 +200,7 @@ export async function runAgent(
           sessionID: childSessionID,
           agent: subagent,
           ...(opts.model ? { model: opts.model } : {}),
-          parts: [{ type: "text", text: prompt }],
+          parts: [{ type: "text", text: repair ?? prompt }],
           ...(format ? { format } : {}),
         }),
         childSessionID,
@@ -208,7 +241,11 @@ export async function runAgent(
       // --- structured path ---
       if (info?.error) {
         lastError = stringifyError(info.error)
-        if (isStructuredOutputError(info.error) && !isLast) continue // retry only the structured failure
+        if (isStructuredOutputError(info.error) && !isLast) {
+          // The model answered in prose instead of calling the tool. Say so, in the same session.
+          repair = repairPrompt(null)
+          continue
+        }
         // A restricted/research-oriented subagent (e.g. "explore") commonly fails structured output — but NOT
         // because of permissions. The StructuredOutput tool is injected AFTER tool-resolution (prompt.ts:1404)
         // and its execute never calls ctx.ask (prompt.ts:1757), so it is never permission-gated; explore's
@@ -227,9 +264,13 @@ export async function runAgent(
       }
       const parsed = parseStructured(schema, info.structured)
       if (parsed.ok) return { ok: true, kind: "structured", value: parsed.value, childSessionID, outputTokens }
-      // JSON-Schema-valid but zod-invalid (a refinement/transform): retryable, like a StructuredOutputError.
+      // The model called the tool but filled it in wrong. It is the one party that can fix that, and it needs
+      // exactly one thing to do so: the validation error. Hand it over rather than starting again in silence.
       lastError = `structured output failed schema validation: ${parsed.error}`
-      if (!isLast) continue
+      if (!isLast) {
+        repair = repairPrompt(parsed.error)
+        continue
+      }
       return { ok: false, error: lastError, childSessionID }
     } catch (error) {
       // Infra/transport rejection — never retried (deterministic-ish failure), never thrown.
