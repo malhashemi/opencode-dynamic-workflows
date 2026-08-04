@@ -291,8 +291,34 @@ describe("unitDetail", () => {
       error: "boom",
       elapsed: "3s",
       replayed: false,
+      output: null,
     })
     expect(unitDetail(target, "nope")).toBeNull()
+  })
+
+  it("carries a structured answer as JSON and a text answer as text", () => {
+    const structured = run({
+      units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, output: '{"areas":["a","b"]}' })],
+    })
+    expect(unitDetail(structured, "u1")?.output).toEqual({
+      kind: "json",
+      // Re-serialized with indentation: the engine stores it compact, the screen needs it readable.
+      content: '{\n  "areas": [\n    "a",\n    "b"\n  ]\n}',
+    })
+
+    const text = run({ units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, output: "just prose" })] })
+    expect(unitDetail(text, "u1")?.output).toEqual({ kind: "text", content: "just prose" })
+  })
+
+  it("treats a truncated structured answer as text rather than as broken JSON", () => {
+    // The engine caps long outputs, which can cut mid-token. Rendering that through a JSON highlighter shows
+    // a parse failure where the user asked to see an answer.
+    const cut = run({ units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, output: '{"areas":["a' })] })
+    expect(unitDetail(cut, "u1")?.output?.kind).toBe("text")
+  })
+
+  it("has no answer for a unit that has not finished", () => {
+    expect(unitDetail(run(), "unit-1")?.output).toBeNull()
   })
 })
 

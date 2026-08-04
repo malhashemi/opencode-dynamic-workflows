@@ -90,6 +90,32 @@ export interface UnitDetail {
   elapsed: string
   /** Phase 6 sets this on replayed units; false everywhere today. */
   replayed: boolean
+  /** What the unit answered. `null` while it is still running, or when it produced nothing. */
+  output: UnitOutput | null
+}
+
+/**
+ * A unit's answer, and which renderable should draw it.
+ *
+ * Structured results are re-serialized with indentation and handed to OpenTUI's `code` renderable as JSON,
+ * which syntax-highlights them through tree-sitter and falls back to plain text on its own if highlighting is
+ * unavailable. Text results stay text. Deciding this here keeps the view free of `JSON.parse` in a render
+ * path, and makes "was this structured?" a testable question.
+ */
+export interface UnitOutput {
+  kind: "json" | "text"
+  content: string
+}
+
+export function unitOutput(output: string | undefined): UnitOutput | null {
+  if (!output) return null
+  try {
+    // Re-serialized rather than passed through: the engine's own capping can truncate mid-token, and a
+    // half-parsed value should render as the text it actually is instead of as broken JSON.
+    return { kind: "json", content: JSON.stringify(JSON.parse(output), null, 2) }
+  } catch {
+    return { kind: "text", content: output }
+  }
 }
 
 const FILTER_ORDER: readonly RunStatusFilter[] = ["all", "active", "done", "failed"]
@@ -261,6 +287,7 @@ export function unitDetail(run: RunSnapshot, unitId: string): UnitDetail | null 
     error: unit.error ?? null,
     elapsed: unitElapsed(unit, Date.now()),
     replayed: isReplayed(unit),
+    output: unitOutput(unit.output),
   }
 }
 

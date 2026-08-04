@@ -11,7 +11,7 @@
 import type { AgentOpts, WorkflowContext, WorkflowError, z } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { DEFAULT_SUBAGENT, runAgent, stringifyError } from "./runner"
-import type { UnitSnapshot } from "./runs"
+import { toUnitOutput, type UnitSnapshot } from "./runs"
 import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
 
 /**
@@ -172,6 +172,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           startedAt,
           endedAt: Date.now(),
           error: result.ok ? undefined : result.error,
+          output: result.ok ? toUnitOutput(result.kind === "structured" ? result.value : result.text) : undefined,
         }
         events?.onUnitSettled?.({ ...settled })
 

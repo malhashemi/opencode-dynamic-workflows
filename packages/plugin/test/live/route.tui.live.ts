@@ -284,6 +284,9 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
 
     expect(frames.unit).toMatch(UNIT_LEVEL)
     expect(frames.unit).toContain("Prompt")
+    // Both halves. The screen used to show the question and then a screen of empty space.
+    expect(frames.unit).toContain("Answer")
+    expect(frames.unit).toContain("long-run-unit-ok")
   })
 
   it("shows the unit's real child session — the same id the engine recorded", () => {

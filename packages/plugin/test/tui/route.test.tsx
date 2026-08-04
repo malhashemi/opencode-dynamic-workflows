@@ -392,6 +392,56 @@ describe("workflow route render", () => {
     }
   })
 
+  it("shows what the unit answered, not just what it was asked", async () => {
+    // The unit screen used to render the prompt and then a screen of empty space — the question without the
+    // answer, which is the half nobody opened it for.
+    const answered = run({
+      units: [unit({ status: "ok", endedAt: Date.now(), output: '{"areas":["Rayleigh scattering"],"ok":true}' })],
+    })
+    const harness = await mountRoute([answered], { width: 120, height: 30 })
+    try {
+      await harness.press("drill")
+      // Row 0 is the `plan` phase; the unit sits under `gather`.
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("drill")
+      const frame = harness.view.text()
+      expect(frame).toContain("Prompt")
+      expect(frame).toContain("Answer")
+      expect(frame).toContain("Rayleigh scattering")
+      // Rendered as indented JSON rather than the compact string the store holds.
+      expect(frame).toMatch(/"areas":\s*\[/)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says a unit has not answered yet instead of leaving a gap", async () => {
+    const harness = await mountRoute([run()], { width: 120, height: 30 })
+    try {
+      await harness.press("drill")
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("drill")
+      expect(harness.view.text()).toContain("Waiting for this unit to answer")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("does not tell a settled run it is `starting`", async () => {
+    // A run with no phases that has finished was rendering "✓ done  starting" in the stat strip.
+    const harness = await mountRoute([
+      run({ status: "done", endedAt: Date.now(), phases: [], phasesDeclared: false, currentPhase: null }),
+    ])
+    try {
+      await harness.press("drill")
+      expect(harness.view.text()).not.toContain("starting")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
   it("keeps the selected row readable even when the theme's selection tokens collide", async () => {
     // The regression this exists for: the selected row was drawn with `selectedListItemText` over
     // `backgroundElement`. That token is cut to sit on the HOST's selection fill, so against ours it landed

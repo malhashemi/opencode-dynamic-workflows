@@ -12,6 +12,33 @@ export interface UnitSnapshot {
   startedAt: number | null
   endedAt: number | null
   error?: string
+  /**
+   * What the unit actually answered — its text, or its structured value as JSON.
+   *
+   * Recorded because a unit's result otherwise exists only inside the running script: the store knew a unit
+   * had settled `ok` and nothing about what it produced, so the run browser could show the question and never
+   * the answer. Capped at {@link MAX_UNIT_OUTPUT} — `/state` carries every unit of every live run, and one
+   * long research answer should not be able to make that payload unbounded.
+   */
+  output?: string
+}
+
+/**
+ * Cap on a recorded unit output, in characters.
+ *
+ * Generous rather than tight: this is the thing a person opened the unit level to read, so truncating it at a
+ * few hundred characters would defeat the point. Truncation is marked, never silent.
+ */
+export const MAX_UNIT_OUTPUT = 12_000
+
+/** A unit's result, as the store should carry it: JSON for structured values, verbatim for text, capped. */
+export function toUnitOutput(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
+  if (text.length === 0) return undefined
+  return text.length <= MAX_UNIT_OUTPUT
+    ? text
+    : `${text.slice(0, MAX_UNIT_OUTPUT)}\n… truncated (${text.length - MAX_UNIT_OUTPUT} more characters)`
 }
 
 export interface RunSnapshot {

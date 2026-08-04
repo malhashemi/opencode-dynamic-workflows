@@ -11,6 +11,7 @@
  * pieces of state the model cannot: the keymap layer, the pushed mode, and the last control outcome.
  */
 import type { ScrollBoxRenderable } from "@opentui/core"
+import { SyntaxStyle } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Accessor } from "solid-js"
@@ -31,6 +32,7 @@ import {
   unitDetail,
   type ListRow,
   type RouteState,
+  type UnitOutput,
   type RunLevelRow,
   type UnitDetail,
 } from "./route-model"
@@ -101,11 +103,16 @@ function runStats(run: RunSnapshot, now: number): Stat[] {
   const stats: Stat[] = []
   const progress = phaseProgress(run)
   const position = phasePosition(run)
-  const phase = run.currentPhase ?? "starting"
-  stats.push({
-    meter: progress ? meter(progress.index / progress.total, METER_WIDTH) : null,
-    label: position ? `${position} ${phase}` : phase,
-  })
+  // `starting` is only true of a run that has not reached its first phase. A SETTLED run with no phases at all
+  // was rendering "✓ done  starting", which is both contradictory and the opposite of what happened.
+  const phase = run.currentPhase ?? (run.status === "running" ? "starting" : "")
+  const label = [position, phase].filter(Boolean).join(" ")
+  if (label) {
+    stats.push({
+      meter: progress ? meter(progress.index / progress.total, METER_WIDTH) : null,
+      label,
+    })
+  }
   const settled = settledUnits(run)
   stats.push({
     meter: run.units.length > 0 ? meter(settled / run.units.length, METER_WIDTH) : null,
@@ -229,6 +236,25 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
 
   const dimensions = useTerminalDimensions()
   const density = createMemo<Density>(() => densityFor(dimensions().width))
+
+  /**
+   * Highlighting for a unit's structured answer, mapped from the host theme rather than hardcoded.
+   *
+   * Rebuilt when the theme changes, so a JSON answer belongs to the same palette as everything around it —
+   * keys in accent, the same colour the run browser uses for every other identifier.
+   */
+  const syntaxStyle = createMemo(() =>
+    SyntaxStyle.fromStyles({
+      default: { fg: theme().text },
+      property: { fg: theme().accent, bold: true },
+      string: { fg: theme().success },
+      number: { fg: theme().warning },
+      constant: { fg: theme().info },
+      punctuation: { fg: theme().borderSubtle },
+      "punctuation.bracket": { fg: theme().borderSubtle },
+      "punctuation.delimiter": { fg: theme().borderSubtle },
+    }),
+  )
 
   /**
    * Footer hints, trimmed to what the width can hold.
@@ -505,10 +531,45 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                     title=" Prompt "
                     titleAlignment="left"
                   >
-                    <text fg={theme().text} wrapMode="word">
+                    <text fg={theme().textMuted} wrapMode="word">
                       {detail().prompt}
                     </text>
                   </box>
+
+                  {/* What it answered. The question was already on screen; this is the half that was missing. */}
+                  <Show when={detail().output}>
+                    {(output: Accessor<UnitOutput>) => (
+                      <box
+                        flexDirection="column"
+                        paddingLeft={1}
+                        paddingRight={1}
+                        border
+                        borderStyle="rounded"
+                        borderColor={theme().borderSubtle}
+                        title=" Answer "
+                        titleAlignment="left"
+                      >
+                        <Show
+                          when={output().kind === "json"}
+                          fallback={
+                            <text fg={theme().text} wrapMode="word">
+                              {output().content}
+                            </text>
+                          }
+                        >
+                          {/* tree-sitter highlights this asynchronously and degrades to plain text by itself. */}
+                          <code content={output().content} filetype="json" syntaxStyle={syntaxStyle()} />
+                        </Show>
+                      </box>
+                    )}
+                  </Show>
+
+                  {/* A unit that is still running has no answer yet — say which, rather than showing a gap. */}
+                  <Show when={!detail().output && detail().error === null}>
+                    <text fg={theme().textMuted}>
+                      {detail().status === "ok" ? "This unit returned nothing." : "Waiting for this unit to answer…"}
+                    </text>
+                  </Show>
                   <Show when={detail().error}>
                     {(error: Accessor<string>) => (
                       <box
