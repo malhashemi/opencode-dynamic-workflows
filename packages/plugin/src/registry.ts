@@ -111,6 +111,22 @@ export interface DiscoveredFile {
 }
 
 /**
+ * The one reserved namespace under a workflows directory: the run journal.
+ *
+ * `runs/<runId>/script.ts` is a RECORD of a workflow, not a workflow to run. Without this exclusion every
+ * journaled run would register itself as `runs:<runId>:<meta.name>` — so a project would accumulate one bogus
+ * registry entry per run, `list` would drown, and startup discovery would import every script ever executed.
+ * The journal's location is fixed by design (a run's record belongs beside the workflows that produced it), so
+ * the reservation is the cost of that decision, stated here rather than left implicit.
+ */
+const JOURNAL_SEGMENT = "runs"
+
+function isJournalRecord(relMatch: string): boolean {
+  const segments = relMatch.split(/[/\\]+/).filter((segment) => segment.length > 0)
+  return segments[1] === JOURNAL_SEGMENT
+}
+
+/**
  * Glob durable Workflow files within one scope dir (recursive, dot-dirs, symlinks followed). A non-existent
  * scope yields nothing (the global config dir may not exist; a stale `.opencode` may have vanished).
  */
@@ -119,6 +135,7 @@ export async function scanWorkflowFiles(dir: string): Promise<DiscoveredFile[]> 
   const glob = new Bun.Glob(WORKFLOW_GLOB)
   const out: DiscoveredFile[] = []
   for await (const relMatch of glob.scan({ cwd: dir, dot: true, followSymlinks: true, onlyFiles: true })) {
+    if (isJournalRecord(relMatch)) continue
     out.push({ absPath: path.join(dir, relMatch), relMatch })
   }
   // Sort so an intra-scope key clash resolves deterministically (last-wins → alphabetically-last file),

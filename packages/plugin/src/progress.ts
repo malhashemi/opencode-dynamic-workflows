@@ -13,6 +13,15 @@ export function settledUnits(run: RunSnapshot): number {
   return run.units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
 }
 
+/**
+ * The phase-bearing subset of a run.
+ *
+ * Narrower than `RunSnapshot` so a journal `RunSummary` positions itself with the SAME function a live snapshot
+ * does. A history row that computed its phase position differently would be a second implementation of the one
+ * rule this project has already got wrong once (`phase 1/1` on the first of three undeclared phases).
+ */
+export type PhaseSource = Pick<RunSnapshot, "phases" | "phasesDeclared" | "currentPhase">
+
 /** `2m10s` / `1h02m` / `9s` — stable at every width, never scientific, never negative. */
 export function formatElapsed(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1_000))
@@ -42,14 +51,14 @@ export function formatTokens(tokens: number): string {
  * Declaring `meta.phases` is what buys the denominator, and with it the queued phase rows the run browser
  * shows ahead of the current one.
  */
-export function phasePosition(run: RunSnapshot): string {
+export function phasePosition(run: PhaseSource): string {
   const index = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
   if (index < 0) return ""
   return run.phasesDeclared ? `phase ${index + 1}/${run.phases.length}` : `phase ${index + 1}`
 }
 
 /** Phase progress as a fraction, or `null` when the total is not knowable. */
-export function phaseProgress(run: RunSnapshot): { index: number; total: number } | null {
+export function phaseProgress(run: PhaseSource): { index: number; total: number } | null {
   if (!run.phasesDeclared || run.phases.length === 0) return null
   const index = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
   return index >= 0 ? { index: index + 1, total: run.phases.length } : null

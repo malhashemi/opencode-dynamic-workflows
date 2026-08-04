@@ -6,6 +6,7 @@
  * gone. Those are the assertions here. `route.test.tsx` proves the same model actually renders.
  */
 import { describe, expect, it } from "bun:test"
+import { toRunSummary, type RunSummary } from "../../src/journal"
 import type { RunSnapshot, UnitSnapshot } from "../../src/runs"
 import {
   breadcrumb,
@@ -57,8 +58,18 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 }
 
 /** Drive a sequence of actions against one set of runs, the way a keystroke run would. */
-function drive(state: RouteState, actions: Parameters<typeof reduceRoute>[1][], runs: readonly RunSnapshot[]) {
-  return actions.reduce((current, action) => reduceRoute(current, action, runs), state)
+function drive(
+  state: RouteState,
+  actions: Parameters<typeof reduceRoute>[1][],
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[] = [],
+) {
+  return actions.reduce((current, action) => reduceRoute(current, action, runs, history), state)
+}
+
+/** A journal summary for a run that is no longer in any store — history, as the endpoint serves it. */
+function summary(overrides: Partial<RunSnapshot> = {}): RunSummary {
+  return toRunSummary(run({ status: "done", endedAt: 4_000, ...overrides }))
 }
 
 describe("listRows", () => {
@@ -71,7 +82,7 @@ describe("listRows", () => {
   ]
 
   it("puts live runs first, then the newest settled ones", () => {
-    expect(listRows(runs, "all").map((row) => row.runId)).toEqual([
+    expect(listRows(runs, [], "all").map((row) => row.runId)).toEqual([
       "live-new",
       "live-old",
       "finished",
@@ -81,19 +92,19 @@ describe("listRows", () => {
   })
 
   it("filters by status, keeping a stopped run with the failures so `x` never hides its own result", () => {
-    expect(listRows(runs, "active").map((row) => row.runId)).toEqual(["live-new", "live-old"])
-    expect(listRows(runs, "done").map((row) => row.runId)).toEqual(["finished"])
-    expect(listRows(runs, "failed").map((row) => row.runId)).toEqual(["broken", "stopped"])
+    expect(listRows(runs, [], "active").map((row) => row.runId)).toEqual(["live-new", "live-old"])
+    expect(listRows(runs, [], "done").map((row) => row.runId)).toEqual(["finished"])
+    expect(listRows(runs, [], "failed").map((row) => row.runId)).toEqual(["broken", "stopped"])
   })
 
   it("describes a live run by where it is and a settled one by how it ended", () => {
-    const [live] = listRows([run({ units: [unit(), unit({ unitId: "unit-2", status: "ok", endedAt: 2_000 })] })], "all")
+    const [live] = listRows([run({ units: [unit(), unit({ unitId: "unit-2", status: "ok", endedAt: 2_000 })] })], [], "all")
     expect(live?.position).toBe("phase 2/3")
     expect(live?.phase).toBe("gather")
     expect(live?.units).toBe("1/2")
     expect(live?.glyph).toBe("running")
 
-    const [settled] = listRows([run({ status: "done", endedAt: 4_000, units: [unit({ status: "ok", endedAt: 3_000 })] })], "all")
+    const [settled] = listRows([run({ status: "done", endedAt: 4_000, units: [unit({ status: "ok", endedAt: 3_000 })] })], [], "all")
     // A settled run's phase title is stale news; its outcome takes the column.
     expect(settled?.phase).toBe("done")
     expect(settled?.units).toBe("1/1")
@@ -102,7 +113,7 @@ describe("listRows", () => {
   })
 
   it("carries the columns a list needs to read as a timeline, not just a pile of durations", () => {
-    const [row] = listRows([run({ tokensSpent: 41_200, units: [unit(), unit({ unitId: "u2", status: "ok" })] })], "all")
+    const [row] = listRows([run({ tokensSpent: 41_200, units: [unit(), unit({ unitId: "u2", status: "ok" })] })], [], "all")
     expect(row?.tokens).toBe("41k")
     expect(row?.startedAt).toMatch(/^\d{2}:\d{2}$/)
     expect(row?.phaseRatio).toBeCloseTo(2 / 3)
@@ -113,14 +124,86 @@ describe("listRows", () => {
     // `phase 1/1` on the first of three undeclared phases does not merely round badly — it asserts the run is
     // on its last phase.
     const undeclared = run({ phases: ["Plan"], phasesDeclared: false, currentPhase: "Plan" })
-    const [row] = listRows([undeclared], "all")
+    const [row] = listRows([undeclared], [], "all")
     expect(row?.position).toBe("phase 1")
     expect(row?.phaseRatio).toBeNull()
   })
 
-  it("marks every row live until Phase 3 merges journal history in", () => {
-    expect(listRows(runs, "all").every((row) => row.live)).toBe(true)
-    expect(listRows(runs, "all").every((row) => row.pendingQuestions === 0)).toBe(true)
+  it("marks a store row live and a journal row not", () => {
+    expect(listRows(runs, [], "all").every((row) => row.live)).toBe(true)
+    expect(listRows(runs, [], "all").every((row) => row.pendingQuestions === 0)).toBe(true)
+    expect(listRows([], [summary({ runId: "old" })], "all").map((row) => row.live)).toEqual([false])
+  })
+})
+
+describe("listRows: journal history alongside live runs", () => {
+  it("puts this session's runs first and history after, newest first within each", () => {
+    const rows = listRows(
+      [run({ runId: "live", startedAt: 5_000 }), run({ runId: "settled", status: "done", startedAt: 4_000, endedAt: 6_000 })],
+      [summary({ runId: "yesterday", startedAt: 1_000 }), summary({ runId: "today", startedAt: 3_000 })],
+      "all",
+    )
+    expect(rows.map((row) => row.runId)).toEqual(["live", "settled", "today", "yesterday"])
+    expect(rows.map((row) => row.live)).toEqual([true, true, false, false])
+  })
+
+  it("lets the live snapshot win when the journal also has the run", () => {
+    // The store's copy is current to the millisecond; the journal's was written when the run began.
+    const live = run({ runId: "same", status: "running", tokensSpent: 900 })
+    const rows = listRows([live], [toRunSummary(run({ runId: "same", status: "running", tokensSpent: 0 }))], "all")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ live: true, tokens: "900" })
+  })
+
+  it("fills every column a live row fills, so a history row is older rather than broken", () => {
+    const [row] = listRows(
+      [],
+      [
+        summary({
+          runId: "past",
+          status: "failed",
+          endedAt: 4_000,
+          tokensSpent: 41_200,
+          currentPhase: "gather",
+          units: [unit({ status: "ok", endedAt: 2_000 }), unit({ unitId: "u2", status: "failed", endedAt: 3_000 })],
+        }),
+      ],
+      "all",
+    )
+    expect(row).toMatchObject({
+      runId: "past",
+      glyph: "failed",
+      workflow: "deep-research",
+      // A failure keeps its position: where it stopped is the first thing asked about it.
+      position: "phase 2/3",
+      phase: "failed",
+      units: "2/2",
+      tokens: "41k",
+      elapsed: "3s",
+      live: false,
+    })
+    expect(row?.phaseRatio).toBeCloseTo(2 / 3)
+    expect(row?.startedAt).toMatch(/^\d{2}:\d{2}$/)
+  })
+
+  it("filters history by the same rule as live runs", () => {
+    const history = [
+      summary({ runId: "ok", status: "done" }),
+      summary({ runId: "broke", status: "failed" }),
+      summary({ runId: "stopped", status: "aborted" }),
+    ]
+    expect(listRows([], history, "done").map((row) => row.runId)).toEqual(["ok"])
+    expect(listRows([], history, "failed").map((row) => row.runId).sort()).toEqual(["broke", "stopped"])
+    expect(listRows([], history, "active")).toEqual([])
+  })
+
+  it("shows a journal run left `running` by a dead host as stopped, not as a phantom spinner", () => {
+    // Its engine is gone by definition — the client merges every live endpoint, so nothing claims it. Left as
+    // `running` it would sort ahead of every real run and spin forever.
+    const [row] = listRows([], [toRunSummary(run({ runId: "killed", status: "running", endedAt: null }))], "all")
+    expect(row?.glyph).toBe("aborted")
+    expect(row?.phase).toBe("aborted")
+    expect(listRows([], [toRunSummary(run({ runId: "killed", status: "running" }))], "active")).toEqual([])
   })
 })
 
@@ -349,9 +432,45 @@ describe("selectedControl", () => {
 
   it("answers null for an empty list and for every action it does not own yet", () => {
     expect(selectedControl(initialRouteState(), [], "stop")).toBeNull()
-    for (const action of ["up", "drill", "filter", "save", "restart", "resume"] as const) {
+    for (const action of ["up", "drill", "filter", "restart", "resume"] as const) {
       expect(selectedControl(initialRouteState(), runs, action)).toBeNull()
     }
+  })
+
+  it("targets the run for `save` from every level, because a unit has no script of its own", () => {
+    expect(selectedControl(initialRouteState(), runs, "save")).toEqual({ action: "save.run", runId: "a" })
+    const onUnit = drive(initialRouteState(), ["drill", "down", "down"], runs)
+    expect(selectedControl(onUnit, runs, "save")).toEqual({ action: "save.run", runId: "a" })
+    const atUnit = drive(initialRouteState(), ["drill", "down", "down", "drill"], runs)
+    expect(selectedControl(atUnit, runs, "save")).toEqual({ action: "save.run", runId: "a" })
+  })
+
+  it("targets a history row for `save` — the run whose engine is gone is the one worth keeping", () => {
+    const history = [summary({ runId: "past" })]
+    const onHistory = drive(initialRouteState(), ["down"], [], history)
+    expect(selectedControl(onHistory, [], "save", history)).toEqual({ action: "save.run", runId: "past" })
+  })
+})
+
+describe("history rows and navigation", () => {
+  const history = [summary({ runId: "past-a", startedAt: 3_000 }), summary({ runId: "past-b", startedAt: 2_000 })]
+
+  it("moves the cursor over history rows, which are part of the same list", () => {
+    const bottom = drive(initialRouteState(), ["down", "down", "down"], [], history)
+    expect(bottom.stack[0]).toEqual({ kind: "list", selected: 1 })
+  })
+
+  it("refuses to drill a history row: a summary has no phases or units to open", () => {
+    const onHistory = drive(initialRouteState(), ["down"], [], history)
+    expect(drive(onHistory, ["drill"], [], history).stack).toHaveLength(1)
+  })
+
+  it("clamps the cursor back when history is not passed to a level that counted it", () => {
+    // The guard behind `history` defaulting to none: a caller that renders history and forgets it here would
+    // leave the cursor pointing past the end of what it did count.
+    const onHistory = drive(initialRouteState(), ["down"], [], history)
+    expect(normalizeRoute(onHistory, []).stack[0]).toEqual({ kind: "list", selected: 0 })
+    expect(normalizeRoute(onHistory, [], history).stack[0]).toEqual({ kind: "list", selected: 1 })
   })
 })
 

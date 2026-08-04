@@ -146,6 +146,29 @@ Two things this probe deliberately does **not** cover, each with a better home:
 | Clicking a sidebar row to open the browser | `test/tui/sidebar-view.test.tsx` | tmux injects keystrokes, not mouse events; the mounted harness clicks for real, through the host's slot registry |
 | `stop.unit` on an in-flight unit | `test/control.test.ts` | its window is a unit that is genuinely running, whose length is a property of whichever model is pinned; the unit test stops a real in-flight unit against a client that never answers |
 
+### `journal.tui.live.ts` — durability, across four hosts
+
+The only claim in this package that cannot be checked inside one process: a run outliving the engine that ran
+it. So this probe runs workflows on a real host, **kills it**, and asks a different host — and then a real TUI
+— about runs whose engine no longer exists.
+
+| Host | What it proves |
+|---|---|
+| A · `opencode serve` | Runs `phase-gate` (durable) and a one-line inline workflow, journaling both under `<project>/.opencode/workflows/runs/<runId>/` |
+| B · `opencode serve` | A **cold** engine: `/state` is empty, `/history` serves both runs with every column a row needs, and `workflow({ status })` / `workflow({ result })` answer "from the journal" — including the fixture's own `phase-gate-unit-ok` |
+| C · `opencode .` (tmux) | The run browser's `History` section, and `s` promoting the journaled inline run to `.opencode/workflows/inline-keeper.ts` — verbatim. `s` on the durable run answers `already a durable workflow` |
+| D · `opencode serve` | Runs the promoted workflow **by its registry key**, so the save was real rather than cosmetic |
+
+- **The record is four files.** `run.json`, `units.jsonl`, `script.ts`, `result.json`, checked as a directory
+  listing after its host is gone.
+- **The script is byte-for-byte.** What `s` promotes is a copy, not a reconstruction, so the assertion is
+  equality with the source the model sent.
+- **`s` moved from dimmed to live in place.** The footer still reads `… x stop · (r restart) · s save · q
+  close`, in that order — asserted, because the point of shipping an inert key is that wiring it changes
+  nothing else.
+
+Costs five parent prompts and one child session. Only `phase-gate` dispatches a unit.
+
 ---
 
 ## Reading a failure
@@ -176,6 +199,9 @@ where the screen stopped matching the story.
 | "Workflows: browse runs" never appears after `ctrl+p` | The command palette is bound elsewhere in the developer's config — run with `OPENCODE_LIVE_ISOLATE_CONFIG=1`, or check `tui.json` keybinds |
 | The route opens but keys do nothing | The keymap layer's `mode` and the mode the route pushes have drifted apart; both are `WORKFLOW_ROUTE` in `src/tui/keymap.ts` |
 | The route closed but the prompt ignores typing | A pushed mode was never popped. The pop is `onCleanup(api.mode.push(...))` in `src/tui/route.tsx`; `test/tui/route.test.tsx` asserts it on unmount |
+| `History` never appears in the route, but `/history` answers | The TUI client's history read failed silently — check that the descriptor's endpoint is the one for THIS worktree, and that `/history` is authorized |
+| `/history` is empty after a restart | Nothing was journaled: the plugin resolves the journal from `worktree \|\| directory`, so a host with neither writes no records |
+| `s` answers "that run is not in the journal" | The row's owning endpoint could not be resolved. History rows are owned via `client.endpointFor` too — a live-only owner map would answer exactly this |
 
 ## Debugging by hand
 

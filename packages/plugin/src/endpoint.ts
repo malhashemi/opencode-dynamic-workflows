@@ -1,5 +1,6 @@
 import { parseControlAction, type ControlFailure, type ControlRegistry, type ControlResult } from "./control"
-import type { RunStore } from "./runs"
+import type { Journal } from "./journal"
+import type { RunSnapshot, RunStore } from "./runs"
 
 export interface EndpointOptions {
   enabled?: boolean
@@ -16,6 +17,13 @@ export interface EndpointOptions {
  */
 export interface EndpointDeps {
   control?: ControlRegistry
+  /**
+   * The durable history reader.
+   *
+   * Separate from `/state` on purpose: `/state` is a bootstrap payload re-sent on every reconnect, and a
+   * project accumulates runs forever. History is a paged read a client asks for when it wants it.
+   */
+  history?: Pick<Journal, "list" | "read">
 }
 
 export interface Endpoint {
@@ -61,11 +69,30 @@ const CONTROL_STATUS: Record<ControlFailure, number> = {
   "unknown-unit": 404,
   "unknown-request": 404,
   "not-running": 409,
+  conflict: 409,
   unsupported: 400,
 }
 
 function controlResponse(result: ControlResult): Response {
   return json(result, result.ok ? 200 : (CONTROL_STATUS[result.reason ?? "unsupported"] ?? 400))
+}
+
+const RUN_STATUSES: readonly RunSnapshot["status"][] = ["running", "done", "failed", "aborted"]
+
+/** `?status=done&status=failed` and `?status=done,failed` mean the same thing; anything unknown is ignored. */
+function historyStatuses(url: URL): RunSnapshot["status"][] {
+  return url.searchParams
+    .getAll("status")
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value): value is RunSnapshot["status"] => RUN_STATUSES.includes(value as RunSnapshot["status"]))
+}
+
+function historyLimit(url: URL): number | undefined {
+  const raw = url.searchParams.get("limit")
+  if (raw === null) return undefined
+  const value = Number(raw)
+  return Number.isInteger(value) && value >= 0 ? value : undefined
 }
 
 export async function startEndpoint(
@@ -146,6 +173,24 @@ export async function startEndpoint(
           if (request.method !== "GET") return json({ error: "method not allowed" }, 405)
           if (url.pathname === "/health") return json({ ok: true })
           if (url.pathname === "/state") return json({ runs: store.list(), revision })
+          if (url.pathname === "/history") {
+            // An engine with no journal (no project root) has no history rather than an error: the client's
+            // history section is simply empty, which is the truth.
+            if (!deps.history) return json({ history: [] })
+            const status = historyStatuses(url)
+            return json({
+              history: await deps.history.list({
+                ...(historyLimit(url) === undefined ? {} : { limit: historyLimit(url) }),
+                ...(status.length > 0 ? { status } : {}),
+              }),
+            })
+          }
+          if (url.pathname.startsWith("/history/")) {
+            const runId = decodeURIComponent(url.pathname.slice("/history/".length))
+            if (!deps.history || runId.length === 0) return json({ error: "not found" }, 404)
+            const record = await deps.history.read(runId)
+            return record ? json({ record }) : json({ error: "not found" }, 404)
+          }
           if (url.pathname !== "/events") return json({ error: "not found" }, 404)
 
           let connection: SseConnection | undefined

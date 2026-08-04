@@ -11,6 +11,7 @@
  */
 import { formatClock, formatElapsed, formatTokens, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { ControlAction } from "../control"
+import type { RunSummary } from "../journal"
 import type { RunSnapshot, UnitSnapshot } from "../runs"
 
 export type RunStatusFilter = "all" | "active" | "done" | "failed"
@@ -130,13 +131,13 @@ function pendingInteractions(run: RunSnapshot): number {
   return Array.isArray(value) ? value.length : 0
 }
 
-function matchesFilter(run: RunSnapshot, filter: RunStatusFilter): boolean {
+function matchesFilter(status: RunSnapshot["status"], filter: RunStatusFilter): boolean {
   if (filter === "all") return true
-  if (filter === "active") return run.status === "running"
-  if (filter === "done") return run.status === "done"
+  if (filter === "active") return status === "running"
+  if (filter === "done") return status === "done"
   // A stopped run belongs with the failures: both are "this did not finish the work", and separating them
   // would make `x` (stop) produce a run the user then cannot find under any filter.
-  return run.status === "failed" || run.status === "aborted"
+  return status === "failed" || status === "aborted"
 }
 
 export function initialRouteState(focusRunId?: string): RouteState {
@@ -148,43 +149,128 @@ export function initialRouteState(focusRunId?: string): RouteState {
 }
 
 /**
- * A run browser's list, newest first, live runs ahead of settled ones.
+ * One row's worth of a run, from either source.
  *
- * `history` (Phase 3) merges in here as rows with `live: false`; until then every row comes from the store.
+ * A live snapshot and a journal summary carry the same figures under different names; normalizing to this
+ * before building the row is what guarantees a history row fills the SAME columns rather than rendering as a
+ * gappy version of the row above it.
  */
-export function listRows(runs: readonly RunSnapshot[], filter: RunStatusFilter): ListRow[] {
+interface RowSource {
+  runId: string
+  workflow: string
+  status: RunSnapshot["status"]
+  phases: string[]
+  phasesDeclared: boolean
+  currentPhase: string | null
+  units: number
+  settled: number
+  tokensSpent: number
+  startedAt: number
+  endedAt: number | null
+  live: boolean
+  pendingQuestions: number
+}
+
+function toListRow(source: RowSource, now: number): ListRow {
+  const progress = phaseProgress(source)
+  // Where a run STOPPED is worth a column only when it stopped early. On a success the phase position is
+  // noise ("done · phase 3/3" says nothing "done" did not); on a failure it is the first thing asked.
+  const stoppedEarly = source.status === "failed" || source.status === "aborted"
+  return {
+    runId: source.runId,
+    glyph: source.status,
+    workflow: source.workflow,
+    position: source.status === "running" || stoppedEarly ? phasePosition(source) : "",
+    // A settled run's phase title is stale news; its outcome is the thing worth the column.
+    phase: source.status === "running" ? (source.currentPhase ?? "starting") : source.status,
+    phaseRatio: source.status === "done" ? 1 : progress ? progress.index / progress.total : null,
+    units: `${source.settled}/${source.units}`,
+    unitRatio: source.units > 0 ? source.settled / source.units : null,
+    tokens: source.tokensSpent > 0 ? formatTokens(source.tokensSpent) : "",
+    elapsed: formatElapsed((source.endedAt ?? now) - source.startedAt),
+    startedAt: formatClock(source.startedAt),
+    live: source.live,
+    pendingQuestions: source.pendingQuestions,
+  }
+}
+
+function fromRun(run: RunSnapshot): RowSource {
+  return {
+    runId: run.runId,
+    workflow: run.workflow,
+    status: run.status,
+    phases: run.phases,
+    phasesDeclared: run.phasesDeclared,
+    currentPhase: run.currentPhase,
+    units: run.units.length,
+    settled: settledUnits(run),
+    tokensSpent: run.tokensSpent,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    live: true,
+    pendingQuestions: pendingInteractions(run),
+  }
+}
+
+function fromSummary(summary: RunSummary): RowSource {
+  // A journal-only run cannot still be running. The client merges every endpoint it can see, so a run no live
+  // endpoint claims is one whose engine has gone — and rendering it as `running` would pin a phantom spinner
+  // to the top of the list forever, since live runs sort first.
+  const status = summary.status === "running" ? "aborted" : summary.status
+  return {
+    runId: summary.runId,
+    workflow: summary.workflow,
+    status,
+    phases: summary.phases,
+    phasesDeclared: summary.phasesDeclared,
+    currentPhase: summary.currentPhase,
+    units: summary.units,
+    settled: summary.settledUnits,
+    tokensSpent: summary.tokensSpent,
+    startedAt: summary.startedAt,
+    endedAt: summary.endedAt,
+    live: false,
+    // A journaled interaction is settled by definition — nothing is left waiting on an engine that has gone.
+    pendingQuestions: 0,
+  }
+}
+
+/**
+ * A run browser's list: this session's runs, newest first with live ones ahead, then journal history.
+ *
+ * History rows are placed AFTER every live-store row rather than interleaved by start time, so the `History`
+ * divider the route draws has a single well-defined place. In practice the two orderings agree — a journal-only
+ * run is one an earlier host produced — and where they disagree, "this session, then what came before" is the
+ * more useful reading anyway.
+ *
+ * A run present in both wins as the live one: the store has a snapshot, the journal has a summary, and the
+ * snapshot is the more recent of the two by construction.
+ */
+export function listRows(
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[],
+  filter: RunStatusFilter,
+): ListRow[] {
   const now = Date.now()
-  return runs
-    .filter((run) => matchesFilter(run, filter))
+  const live = runs
+    .filter((run) => matchesFilter(run.status, filter))
     .slice()
     .sort((a, b) => {
       if (a.status === "running" && b.status !== "running") return -1
       if (a.status !== "running" && b.status === "running") return 1
       return b.startedAt - a.startedAt || a.runId.localeCompare(b.runId)
     })
-    .map((run) => {
-      const settled = settledUnits(run)
-      const progress = phaseProgress(run)
-      // Where a run STOPPED is worth a column only when it stopped early. On a success the phase position is
-      // noise ("done · phase 3/3" says nothing "done" did not); on a failure it is the first thing asked.
-      const stoppedEarly = run.status === "failed" || run.status === "aborted"
-      return {
-        runId: run.runId,
-        glyph: run.status,
-        workflow: run.workflow,
-        position: run.status === "running" || stoppedEarly ? phasePosition(run) : "",
-        // A settled run's phase title is stale news; its outcome is the thing worth the column.
-        phase: run.status === "running" ? (run.currentPhase ?? "starting") : run.status,
-        phaseRatio: run.status === "done" ? 1 : progress ? progress.index / progress.total : null,
-        units: `${settled}/${run.units.length}`,
-        unitRatio: run.units.length > 0 ? settled / run.units.length : null,
-        tokens: run.tokensSpent > 0 ? formatTokens(run.tokensSpent) : "",
-        elapsed: formatElapsed((run.endedAt ?? now) - run.startedAt),
-        startedAt: formatClock(run.startedAt),
-        live: true,
-        pendingQuestions: pendingInteractions(run),
-      }
-    })
+    .map((run) => toListRow(fromRun(run), now))
+
+  const known = new Set(runs.map((run) => run.runId))
+  const past = history
+    .filter((summary) => !known.has(summary.runId))
+    .map(fromSummary)
+    .filter((source) => matchesFilter(source.status, filter))
+    .sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
+    .map((source) => toListRow(source, now))
+
+  return [...live, ...past]
 }
 
 function unitElapsed(unit: UnitSnapshot, now: number): string {
@@ -290,8 +376,13 @@ export function unitDetail(run: RunSnapshot, unitId: string): UnitDetail | null 
   }
 }
 
-function rowCount(level: RouteLevel, runs: readonly RunSnapshot[], filter: RunStatusFilter): number {
-  if (level.kind === "list") return listRows(runs, filter).length
+function rowCount(
+  level: RouteLevel,
+  runs: readonly RunSnapshot[],
+  filter: RunStatusFilter,
+  history: readonly RunSummary[],
+): number {
+  if (level.kind === "list") return listRows(runs, history, filter).length
   if (level.kind === "run") {
     const run = runs.find((candidate) => candidate.runId === level.runId)
     return run ? runRows(run).length : 0
@@ -311,18 +402,30 @@ function clamp(value: number, count: number): number {
  * runs on every transition rather than being something each action has to remember. Exported because the view
  * must also apply it when run state changes with no keypress at all: a run settling out of the active filter
  * moves the list under a cursor that never moved.
+ *
+ * `history` defaults to none because only the LIST level counts it; every deeper level addresses a live run.
+ * A caller that renders history and omits it here would clamp the cursor off its own rows, so the view passes
+ * it on every call.
  */
-export function normalizeRoute(state: RouteState, runs: readonly RunSnapshot[]): RouteState {
+export function normalizeRoute(
+  state: RouteState,
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[] = [],
+): RouteState {
   const stack: RouteLevel[] = [{ kind: "list", selected: 0 }]
   for (const level of state.stack) {
     if (level.kind === "list") {
-      stack[0] = { kind: "list", selected: clamp(level.selected, rowCount(level, runs, state.filter)) }
+      stack[0] = { kind: "list", selected: clamp(level.selected, rowCount(level, runs, state.filter, history)) }
       continue
     }
     const run = runs.find((candidate) => candidate.runId === level.runId)
     if (!run) break
     if (level.kind === "run") {
-      stack.push({ kind: "run", runId: level.runId, selected: clamp(level.selected, rowCount(level, runs, state.filter)) })
+      stack.push({
+        kind: "run",
+        runId: level.runId,
+        selected: clamp(level.selected, rowCount(level, runs, state.filter, history)),
+      })
       continue
     }
     if (!run.units.some((unit) => unit.unitId === level.unitId)) break
@@ -369,7 +472,12 @@ function sameStack(a: readonly RouteLevel[], b: readonly RouteLevel[]): boolean 
   })
 }
 
-function move(state: RouteState, delta: number, runs: readonly RunSnapshot[]): RouteState {
+function move(
+  state: RouteState,
+  delta: number,
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[],
+): RouteState {
   const stack = [...state.stack]
   const top = stack[stack.length - 1]
   if (!top) return state
@@ -377,17 +485,19 @@ function move(state: RouteState, delta: number, runs: readonly RunSnapshot[]): R
     stack[stack.length - 1] = { ...top, scroll: Math.max(0, top.scroll + delta) }
     return { ...state, stack }
   }
-  const count = rowCount(top, runs, state.filter)
+  const count = rowCount(top, runs, state.filter, history)
   stack[stack.length - 1] = { ...top, selected: clamp(top.selected + delta, count) }
   return { ...state, stack }
 }
 
-function drill(state: RouteState, runs: readonly RunSnapshot[]): RouteState {
+function drill(state: RouteState, runs: readonly RunSnapshot[], history: readonly RunSummary[]): RouteState {
   const top = state.stack[state.stack.length - 1]
   if (!top) return state
   if (top.kind === "list") {
-    const row = listRows(runs, state.filter)[top.selected]
-    if (!row) return state
+    const row = listRows(runs, history, state.filter)[top.selected]
+    // A history row has a summary, not a snapshot — there are no phases or units in memory to open. Drilling
+    // one is a deliberate no-op rather than a level rendered from figures the model does not have.
+    if (!row || !row.live) return state
     return { ...state, stack: [...state.stack, { kind: "run", runId: row.runId, selected: 0 }] }
   }
   if (top.kind === "run") {
@@ -402,24 +512,29 @@ function drill(state: RouteState, runs: readonly RunSnapshot[]): RouteState {
   return state
 }
 
-export function reduceRoute(state: RouteState, action: RouteAction, runs: readonly RunSnapshot[]): RouteState {
-  if (action === "up") return normalizeRoute(move(state, -1, runs), runs)
-  if (action === "down") return normalizeRoute(move(state, 1, runs), runs)
-  if (action === "drill") return normalizeRoute(drill(state, runs), runs)
+export function reduceRoute(
+  state: RouteState,
+  action: RouteAction,
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[] = [],
+): RouteState {
+  if (action === "up") return normalizeRoute(move(state, -1, runs, history), runs, history)
+  if (action === "down") return normalizeRoute(move(state, 1, runs, history), runs, history)
+  if (action === "drill") return normalizeRoute(drill(state, runs, history), runs, history)
   if (action === "back") {
     // The list level is the floor; closing the route from there is the caller's decision, not the reducer's.
-    if (state.stack.length <= 1) return normalizeRoute(state, runs)
-    return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs)
+    if (state.stack.length <= 1) return normalizeRoute(state, runs, history)
+    return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history)
   }
   if (action === "filter") {
     const next = FILTER_ORDER[(FILTER_ORDER.indexOf(state.filter) + 1) % FILTER_ORDER.length] as RunStatusFilter
     // Filtering re-bases the list: keeping an index that pointed into the old set would land the cursor on an
     // arbitrary run. Deeper levels survive, because a filter is about the LIST, not about what you drilled into.
     const stack = state.stack.map((level) => (level.kind === "list" ? { kind: "list" as const, selected: 0 } : level))
-    return normalizeRoute({ stack, filter: next }, runs)
+    return normalizeRoute({ stack, filter: next }, runs, history)
   }
-  // `stop`, and Phases 3/6's `save`/`restart`/`resume`, act on the world rather than on navigation.
-  return normalizeRoute(state, runs)
+  // `stop` and `save`, and Phase 6's `restart`/`resume`, act on the world rather than on navigation.
+  return normalizeRoute(state, runs, history)
 }
 
 export function breadcrumb(state: RouteState, runs: readonly RunSnapshot[]): string {
@@ -443,19 +558,26 @@ export function breadcrumb(state: RouteState, runs: readonly RunSnapshot[]): str
  * `stop` is contextual by design: on the list and on a phase row it means the run, on a unit row it means that
  * unit. Whether the target is actually stoppable is the registry's answer, not this function's — returning the
  * action for a settled run is what lets the surface say "that run already finished" instead of nothing at all.
+ *
+ * `save` is never contextual: it always addresses the RUN, because what it promotes is the run's script, and a
+ * unit does not have one of its own.
  */
 export function selectedControl(
   state: RouteState,
   runs: readonly RunSnapshot[],
   action: RouteAction,
+  history: readonly RunSummary[] = [],
 ): ControlAction | null {
-  if (action !== "stop") return null
+  if (action !== "stop" && action !== "save") return null
   const top = state.stack[state.stack.length - 1]
   if (!top) return null
-  if (top.kind === "list") {
-    const row = listRows(runs, state.filter)[top.selected]
-    return row ? { action: "stop.run", runId: row.runId } : null
-  }
+  const selectedRunId =
+    top.kind === "list" ? listRows(runs, history, state.filter)[top.selected]?.runId : top.runId
+  if (!selectedRunId) return null
+  // Deliberately reachable for a history row: saving a run whose engine is long gone is the case the journal
+  // exists for.
+  if (action === "save") return { action: "save.run", runId: selectedRunId }
+  if (top.kind === "list") return { action: "stop.run", runId: selectedRunId }
   if (top.kind === "unit") return { action: "stop.unit", runId: top.runId, unitId: top.unitId }
   const run = runs.find((candidate) => candidate.runId === top.runId)
   if (!run) return null

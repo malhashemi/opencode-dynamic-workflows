@@ -124,6 +124,21 @@ describe("scanWorkflowFiles (recursive glob, symlinks)", () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it("skips the run journal, which lives under workflows/ but is a record rather than a workflow", async () => {
+    // Without this, every journaled run would register itself as `runs:<runId>:<meta.name>` — one bogus entry
+    // per run forever, and a startup scan that imports every script the project has ever executed.
+    const dir = await tmp("wf-scan-journal-")
+    try {
+      await write(dir, "workflows/top.ts", wf("top"))
+      await write(dir, "workflows/runs/0f1e2d3c/script.ts", wf("top"))
+      await write(dir, "workflow/runs/9a8b7c6d/script.ts", wf("top"))
+      const rels = (await scanWorkflowFiles(dir)).map((f) => f.relMatch)
+      expect(rels).toEqual(["workflows/top.ts"])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe("buildRegistry (discovery → keying → precedence)", () => {

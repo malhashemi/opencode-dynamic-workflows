@@ -13,6 +13,7 @@
 import { createSignal } from "solid-js"
 import { describe, expect, it } from "bun:test"
 import type { ControlAction, ControlResult } from "../../src/control"
+import { toRunSummary, type RunSummary } from "../../src/journal"
 import type { RunSnapshot, UnitSnapshot } from "../../src/runs"
 import type { RunControlClient } from "../../src/tui/control"
 import {
@@ -76,10 +77,17 @@ interface Harness {
 
 async function mountRoute(
   initial: readonly RunSnapshot[],
-  options: { params?: Record<string, unknown>; result?: ControlResult; width?: number; height?: number } = {},
+  options: {
+    params?: Record<string, unknown>
+    result?: ControlResult
+    width?: number
+    height?: number
+    history?: readonly RunSummary[]
+  } = {},
 ): Promise<Harness> {
   const fake = createFakeTuiApi()
   const [runs, setRuns] = createSignal<readonly RunSnapshot[]>(initial)
+  const [history] = createSignal<readonly RunSummary[]>(options.history ?? [])
   const sent: ControlAction[] = []
   const control: RunControlClient = {
     async send(action) {
@@ -88,7 +96,9 @@ async function mountRoute(
     },
   }
   const view = await mountView(
-    () => <WorkflowRoute api={fake.api} runs={runs} control={control} params={options.params} />,
+    () => (
+      <WorkflowRoute api={fake.api} runs={runs} history={history} control={control} params={options.params} />
+    ),
     { width: options.width ?? 100, height: options.height ?? 24 },
   )
   return {
@@ -119,10 +129,12 @@ describe("workflow keymap", () => {
       "escape,left,h",
       "f",
       "x",
+      "s",
       "q",
     ])
-    // `r` and `s` are declared but not wired — the vocabulary is fixed now so Phases 3 and 6 add behavior, not keys.
-    expect(layer?.bindings?.some((binding) => binding.key === "r" || binding.key === "s")).toBe(false)
+    // `r` is declared but not wired — the vocabulary was fixed up front so Phase 6 adds behavior, not keys.
+    // `s` made exactly that transition in Phase 3: same key, same footer position, now live.
+    expect(layer?.bindings?.some((binding) => binding.key === "r")).toBe(false)
 
     fake.runCommand(commandName("stop"))
     expect(seen).toEqual(["stop"])
@@ -132,7 +144,7 @@ describe("workflow keymap", () => {
   })
 
   it("shows the unwired keys in the footer as parenthesised rather than absent", () => {
-    expect(footerHint()).toBe("↑↓ select · ⏎ open · esc back · f filter · x stop · (r restart) · (s save) · q close")
+    expect(footerHint()).toBe("↑↓ select · ⏎ open · esc back · f filter · x stop · (r restart) · s save · q close")
   })
 
   it("registers a palette/slash way in, because the sidebar shows nothing until a run starts", () => {
@@ -466,6 +478,73 @@ describe("workflow route render", () => {
       expect(selected).toContain("0/1 units")
     } finally {
       view.unmount()
+    }
+  })
+
+  it("lists journal history under its own heading, filling the same columns as a live row", async () => {
+    const past = toRunSummary(
+      run({
+        runId: "run-past",
+        workflow: "summarize",
+        status: "done",
+        endedAt: Date.now() - 60_000,
+        startedAt: Date.now() - 120_000,
+        tokensSpent: 9_000,
+        units: [unit({ status: "ok", endedAt: Date.now() - 61_000 })],
+      }),
+    )
+    const harness = await mountRoute([run()], { history: [past], width: 130, height: 24 })
+    try {
+      const frame = harness.view.text()
+      expect(frame).toContain("History")
+      expect(frame).toContain("earlier sessions")
+      const row = frame.split("\n").find((line) => line.includes("summarize"))
+      // Every column a live row carries: outcome, units, tokens, elapsed, start clock. A history row that
+      // could only fill half of them would read as broken rather than as older.
+      expect(row).toContain("done")
+      expect(row).toContain("1/1 units")
+      expect(row).toContain("9.0k tok")
+      expect(row).toMatch(/\d{2}:\d{2}/)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says why `⏎` does nothing on a history row, instead of looking broken", async () => {
+    const harness = await mountRoute([], { history: [toRunSummary(run({ runId: "run-past", status: "done", endedAt: Date.now() }))] })
+    try {
+      await harness.press("drill")
+      await harness.view.flush()
+      expect(harness.view.text()).toContain("earlier session")
+      // Still on the list: no level was pushed for a run that has no snapshot behind it.
+      expect(harness.view.text()).toContain("filter all")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("saves the selected run's script, and reports where it landed", async () => {
+    const harness = await mountRoute([run()], { result: { ok: true, detail: 'saved as "deep-research" — run it by name' } })
+    try {
+      await harness.press("save")
+      expect(harness.sent).toEqual([{ action: "save.run", runId: "run-1" }])
+      await harness.view.flush()
+      expect(harness.view.text()).toContain('saved as "deep-research"')
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says why a save did nothing rather than swallowing it", async () => {
+    const harness = await mountRoute([run()], {
+      result: { ok: false, reason: "conflict", detail: "deep-research is already a durable workflow" },
+    })
+    try {
+      await harness.press("save")
+      await harness.view.flush()
+      expect(harness.view.text()).toContain("already a durable workflow")
+    } finally {
+      harness.view.unmount()
     }
   })
 

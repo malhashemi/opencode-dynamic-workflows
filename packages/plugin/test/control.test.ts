@@ -107,6 +107,46 @@ describe("control registry", () => {
   })
 })
 
+/**
+ * `save.run` addresses the JOURNAL, not the live run table — which is the whole point of it. Every other action
+ * refuses an id the registry has never registered; this one has to work precisely for the run that ended in a
+ * session that is over.
+ */
+describe("control registry: save.run", () => {
+  it("routes to the injected saver without consulting the run table", async () => {
+    const asked: string[] = []
+    const control = createControlRegistry({
+      async save(runId) {
+        asked.push(runId)
+        return { ok: true, detail: `saved as "${runId}"` }
+      },
+    })
+    expect(await control.dispatch({ action: "save.run", runId: "long-gone" })).toEqual({
+      ok: true,
+      detail: 'saved as "long-gone"',
+    })
+    expect(asked).toEqual(["long-gone"])
+  })
+
+  it("answers `unsupported` when the engine has no journal to save from", async () => {
+    const control = createControlRegistry()
+    expect(await control.dispatch({ action: "save.run", runId: "r" })).toEqual({ ok: false, reason: "unsupported" })
+  })
+
+  it("turns a throwing saver into an answer rather than a rejected control request", async () => {
+    const control = createControlRegistry({
+      async save() {
+        throw new Error("disk is full")
+      },
+    })
+    expect(await control.dispatch({ action: "save.run", runId: "r" })).toEqual({
+      ok: false,
+      reason: "unsupported",
+      detail: "disk is full",
+    })
+  })
+})
+
 describe("parseControlAction", () => {
   it("accepts the two Phase 2 shapes", () => {
     expect(parseControlAction({ action: "stop.run", runId: "r" })).toEqual({ action: "stop.run", runId: "r" })
@@ -115,6 +155,11 @@ describe("parseControlAction", () => {
       runId: "r",
       unitId: "u",
     })
+  })
+
+  it("accepts Phase 3's save", () => {
+    expect(parseControlAction({ action: "save.run", runId: "r" })).toEqual({ action: "save.run", runId: "r" })
+    expect(parseControlAction({ action: "save.run", runId: "" })).toBeNull()
   })
 
   it("rejects everything else, including a well-formed action with a missing field", () => {

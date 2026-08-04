@@ -23,7 +23,15 @@ const tui: TuiPlugin = async (api, options) => {
   api.route.register([
     {
       name: WORKFLOW_ROUTE,
-      render: ({ params }) => <WorkflowRoute api={api} runs={client.runs} control={control} params={params} />,
+      render: ({ params }) => (
+        <WorkflowRoute
+          api={api}
+          runs={client.runs}
+          history={client.history}
+          control={control}
+          params={params}
+        />
+      ),
     },
   ])
   // The always-available way in. The sidebar strip renders nothing until a run starts, so without a palette

@@ -1,10 +1,11 @@
 /**
  * The run browser's keyboard vocabulary — declared once, in full, including the keys that do not work yet.
  *
- * `restart` and `save` are in the table from the first release with `enabled: false`. That is a deliberate
- * cost: two rows in the footer that answer "not yet" instead of doing something. The alternative is worse — a
- * user who learns the browser in Phase 2 and finds two NEW keys in Phase 6 has to relearn it, and cannot tell
- * whether `r` was always there and they missed it. A visible-but-inert key teaches the shape of the tool.
+ * `restart` is in the table with `enabled: false`. That is a deliberate cost: a footer row that answers "not
+ * yet" instead of doing something. The alternative is worse — a user who learns the browser in one release and
+ * finds a NEW key in the next has to relearn it, and cannot tell whether `r` was always there and they missed
+ * it. A visible-but-inert key teaches the shape of the tool; when it is wired, nothing about the vocabulary
+ * moves. `s` (save) made exactly that transition in Phase 3, in place.
  */
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { RouteAction } from "./route-model"
@@ -31,7 +32,7 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
   { key: "f", action: "filter", label: "filter", enabled: true },
   { key: "x", action: "stop", label: "stop", enabled: true },
   { key: "r", action: "restart", label: "restart", enabled: false }, // Phase 6
-  { key: "s", action: "save", label: "save", enabled: false }, // Phase 3
+  { key: "s", action: "save", label: "save", enabled: true },
   { key: "q", action: "close", label: "close", enabled: true },
 ]
 

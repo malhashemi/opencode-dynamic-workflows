@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { readDescriptors } from "../src/discovery"
+import { createJournal, journalRoot } from "../src/journal"
 import { WorkflowPlugin, normalizeArgs } from "../src/index"
 import pluginDefault from "../src/index"
 import { makeFakeClient } from "./fake-client"
@@ -29,14 +30,18 @@ function fakePluginInput(
 type Hooks = Awaited<ReturnType<typeof WorkflowPlugin>>
 type WorkflowTool = NonNullable<NonNullable<Hooks["tool"]>[string]>
 
-function fakeToolCtx(sessionID: string, onMetadata: (input: { title?: string; metadata?: Record<string, unknown> }) => void = () => {}) {
+function fakeToolCtx(
+  sessionID: string,
+  onMetadata: (input: { title?: string; metadata?: Record<string, unknown> }) => void = () => {},
+  abort: AbortSignal = new AbortController().signal,
+) {
   return {
     sessionID,
     messageID: "m1",
     agent: "build",
     directory: "/tmp",
     worktree: "/tmp",
-    abort: new AbortController().signal,
+    abort,
     metadata: onMetadata,
     ask: async () => {},
   } as unknown as Parameters<WorkflowTool["execute"]>[1]
@@ -239,10 +244,14 @@ export default defineWorkflow({
     const out = (await workflowTool(hooks).execute(
       { source: SIMPLE_WORKFLOW, args: { name: "Sam" } },
       fakeToolCtx("session-summary"),
-    )) as { output: string }
+    )) as { output: string; metadata?: Record<string, unknown> }
 
     const summary = out.output.split("\n").find((line) => line.startsWith("greet · "))
     expect(summary).toMatch(/^greet · done · 1\/1 units · \d+s/)
+    // The id has to be in the TEXT: the model reads the text, and without it `status`/`result` are unreachable
+    // for the run that just happened.
+    expect(out.output).toContain(`run ${out.metadata?.runId as string}`)
+    expect(out.output).toContain('workflow({ result: "')
   })
 
   it("returns a failure result (does not throw) on bad source", async () => {
@@ -551,6 +560,130 @@ describe("workflow tool: durable registry (list + run-by-name)", () => {
     expect((res.metadata?.failures ?? []).some((f) => f.absPath.endsWith("broken.ts"))).toBe(true)
     expect(res.output).toContain("collision")
     expect(res.output).toContain("failed to load")
+  })
+})
+
+/**
+ * Retrieval, which is the whole reason the journal exists.
+ *
+ * The load-bearing case is the one no in-process test can reach by accident: a SECOND plugin instance, with an
+ * empty store, answering for a run the first one finished. That is what "across sessions and process restarts"
+ * means, and it works only if the record on disk is complete before the tool returns.
+ */
+describe("workflow tool: status and result", () => {
+  let project = ""
+
+  beforeEach(async () => {
+    project = await mkdtemp(path.join(os.tmpdir(), "wf-journal-plugin-"))
+  })
+  afterEach(async () => {
+    await rm(project, { recursive: true, force: true })
+  })
+
+  /** Run `SIMPLE_WORKFLOW` to completion and return the runId the tool reported. */
+  async function runOnce(hooks: Hooks): Promise<string> {
+    const out = (await workflowTool(hooks).execute(
+      { source: SIMPLE_WORKFLOW, args: { name: "Sam" } },
+      fakeToolCtx("session-journal"),
+    )) as { metadata?: { runId?: string } }
+    const runId = out.metadata?.runId
+    if (!runId) throw new Error("expected the run to report its id")
+    return runId
+  }
+
+  function plugin() {
+    return WorkflowPlugin(fakePluginInput(makeFakeClient({ reply: "Hi, Sam!" }), { directory: project, worktree: project }))
+  }
+
+  it("writes a journal record under the project and answers `result` from a FRESH instance", async () => {
+    const runId = await runOnce(await plugin())
+    expect(existsSync(path.join(project, ".opencode", "workflows", "runs", runId, "run.json"))).toBe(true)
+    expect(existsSync(path.join(project, ".opencode", "workflows", "runs", runId, "script.ts"))).toBe(true)
+
+    // A second instance: empty store, same disk — the shape of a restart.
+    const restarted = await plugin()
+    const out = (await workflowTool(restarted).execute({ result: runId }, fakeToolCtx("s"))) as {
+      title: string
+      output: string
+      metadata?: Record<string, unknown>
+    }
+    expect(out.title).toBe("greet: result")
+    expect(out.output).toContain("Hi, Sam!")
+    expect(out.output).toContain("from the journal")
+    expect(out.metadata).toMatchObject({ runId, status: "done", units: 1, settledUnits: 1 })
+  })
+
+  it("answers `status` from the live store while the run is in memory, and from the journal after", async () => {
+    const hooks = await plugin()
+    const runId = await runOnce(hooks)
+
+    const live = (await workflowTool(hooks).execute({ status: runId }, fakeToolCtx("s"))) as {
+      title: string
+      output: string
+      metadata?: Record<string, unknown>
+    }
+    expect(live.title).toBe("greet: done")
+    expect(live.output).toMatch(/^greet · done · 1\/1 units · \d+s/)
+    expect(live.output).toContain("live")
+    expect(live.metadata).toMatchObject({ live: true, status: "done" })
+
+    const restarted = await plugin()
+    const journaled = (await workflowTool(restarted).execute({ status: runId }, fakeToolCtx("s"))) as {
+      output: string
+      metadata?: Record<string, unknown>
+    }
+    expect(journaled.output).toContain("from the journal")
+    expect(journaled.metadata).toMatchObject({ live: false, status: "done" })
+  })
+
+  it("answers a still-running run's `result` with its status rather than an error", async () => {
+    // `result` is safe to call at any time; "not yet" is a real answer and one the caller can act on.
+    const hooks = await plugin()
+    const held = new AbortController()
+    const running = workflowTool(hooks).execute(
+      {
+        source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "waits", description: "held open", phases: [{ title: "hold" }] },
+  async run({ phase, signal }) {
+    phase("hold")
+    await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }))
+    return "released"
+  },
+})`,
+      },
+      fakeToolCtx("session-held", () => {}, held.signal),
+    )
+
+    // The run is registered as soon as it starts; poll the journal for the id it wrote.
+    const journal = createJournal(journalRoot(project))
+    let runId: string | undefined
+    for (let attempt = 0; attempt < 100 && !runId; attempt++) {
+      runId = (await journal.list())[0]?.runId
+      if (!runId) await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    if (!runId) throw new Error("expected the running workflow to have opened a journal record")
+
+    const pending = (await workflowTool(hooks).execute({ result: runId }, fakeToolCtx("s"))) as {
+      title: string
+      output: string
+    }
+    expect(pending.output).toContain("has not finished yet")
+    expect(pending.output).toContain("waits · running")
+    expect(pending.output).toContain("phase 1/1 hold")
+
+    held.abort()
+    await running
+  })
+
+  it("says so — naming where it looked — for a runId that exists nowhere", async () => {
+    const hooks = await plugin()
+    for (const mode of [{ status: "ghost" }, { result: "ghost" }]) {
+      const out = (await workflowTool(hooks).execute(mode, fakeToolCtx("s"))) as { title: string; output: string }
+      expect(out.title).toContain("unknown run")
+      expect(out.output).toContain("ghost")
+      expect(out.output).toContain(".opencode/workflows/runs")
+    }
   })
 })
 

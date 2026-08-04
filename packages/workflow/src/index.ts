@@ -33,9 +33,12 @@ export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
   /** Per-workflow concurrency override (default: plugin config). */
   concurrency?: number
   /**
-   * Default per-Unit prompt timeout (ms) for this Workflow's Units (a Unit's own `agent({ timeoutMs })`
-   * overrides it). On expiry the Unit fails `null` instead of hanging the Run. Omit to inherit the engine
-   * default. Raise it for legitimately long Units, or set a small value to fail fast.
+   * Optional per-Unit prompt deadline (ms) for this Workflow's Units (a Unit's own `agent({ timeoutMs })`
+   * overrides it). On expiry the Unit is cancelled and fails `null` rather than hanging the Run.
+   *
+   * **Omit it and Units run for as long as they take** — there is no engine default, because a Unit that
+   * legitimately runs for hours is the normal case here, not the pathological one. Set this only when you want
+   * a Unit to fail fast, and size it to the work rather than to your patience: a timeout is not retried.
    */
   unitTimeout?: number
   /**

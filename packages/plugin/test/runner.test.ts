@@ -222,7 +222,9 @@ describe("runAgent — timeout + abort (a hung prompt never blocks forever)", ()
     const client = makeFakeClient({ hang: true })
     const result = await runAgent(client, "p", "will hang", { timeoutMs: 30 })
     expect(result.ok).toBe(false)
-    expect((result as { error: string }).error).toMatch(/timed out/)
+    expect((result as { error: string }).error).toMatch(/exceeded its 30ms timeout/)
+    // Reports the event and the knob, never a cause the engine cannot observe — see orchestrator.test.ts.
+    expect((result as { error: string }).error).not.toMatch(/hung|unanswered permission/)
     expect(client.abortCalls).toEqual([{ sessionID: "child-1" }]) // the child prompt was cancelled, not leaked
   })
 

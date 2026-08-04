@@ -1,5 +1,6 @@
 import { createSignal, type Accessor } from "solid-js"
 import { readDescriptors, type EndpointDescriptor } from "../discovery"
+import type { RunSummary } from "../journal"
 import { cloneRunSnapshot, cloneUnitSnapshot, type RunEvent, type RunSnapshot } from "../runs"
 
 export type RunClientFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -11,18 +12,24 @@ export interface RunClientOptions {
   rescanMs?: number
   reconnectMinMs?: number
   reconnectMaxMs?: number
+  /** How many journaled runs to ask each endpoint for. History is paged precisely so it cannot grow unbounded. */
+  historyLimit?: number
 }
 
 export interface TuiRunClient {
   runs: Accessor<readonly RunSnapshot[]>
+  /** Journaled runs from every endpoint, newest first — this project's history beyond the live process. */
+  history: Accessor<readonly RunSummary[]>
   rescan(): Promise<void>
+  refreshHistory(): Promise<void>
   stop(): void
   /**
    * The endpoint that owns a run, for addressing a write to it.
    *
-   * Derived from the same merge that produces `runs()`, so the endpoint a control action is sent to is by
-   * construction the one whose snapshot the user is looking at — rather than a second lookup that could pick a
-   * different host for the same id.
+   * Derived from the same merge that produces `runs()` and `history()`, so the endpoint a control action is
+   * sent to is by construction the one whose record the user is looking at — rather than a second lookup that
+   * could pick a different host for the same id. History counts here too: `save` addresses a run whose engine
+   * may have exited sessions ago, and the endpoint holding it in its journal is the one that can promote it.
    */
   endpointFor(runId: string): EndpointDescriptor | undefined
 }
@@ -31,6 +38,7 @@ interface LiveEndpoint {
   descriptor: EndpointDescriptor
   controller: AbortController
   runs: Map<string, RunSnapshot>
+  history: RunSummary[]
 }
 
 function nullableNumber(value: unknown): value is number | null {
@@ -73,6 +81,27 @@ function isRunSnapshot(value: unknown): value is RunSnapshot {
     typeof run.tokensSpent === "number" && Number.isFinite(run.tokensSpent) &&
     typeof run.startedAt === "number" && Number.isFinite(run.startedAt) &&
     nullableNumber(run.endedAt)
+  )
+}
+
+function isRunSummary(value: unknown): value is RunSummary {
+  if (typeof value !== "object" || value === null) return false
+  const summary = value as Partial<RunSummary>
+  return (
+    typeof summary.runId === "string" &&
+    typeof summary.workflow === "string" &&
+    (summary.provenance === "durable" || summary.provenance === "inline") &&
+    ["running", "done", "failed", "aborted"].includes(summary.status ?? "") &&
+    Number.isInteger(summary.units) &&
+    Number.isInteger(summary.settledUnits) &&
+    typeof summary.tokensSpent === "number" &&
+    Array.isArray(summary.phases) &&
+    summary.phases.every((phase) => typeof phase === "string") &&
+    typeof summary.phasesDeclared === "boolean" &&
+    (summary.currentPhase === null || typeof summary.currentPhase === "string") &&
+    typeof summary.startedAt === "number" &&
+    Number.isFinite(summary.startedAt) &&
+    nullableNumber(summary.endedAt)
   )
 }
 
@@ -190,7 +219,9 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
   const reconnectMaxMs = Math.max(reconnectMinMs, options.reconnectMaxMs ?? 5_000)
   const endpoints = new Map<string, LiveEndpoint>()
   const owners = new Map<string, EndpointDescriptor>()
+  const historyOwners = new Map<string, EndpointDescriptor>()
   const [runs, setRuns] = createSignal<readonly RunSnapshot[]>([])
+  const [history, setHistory] = createSignal<readonly RunSummary[]>([])
   let stopped = false
   let rescanning: Promise<void> | null = null
 
@@ -215,6 +246,49 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
         return b.startedAt - a.startedAt || a.runId.localeCompare(b.runId)
       }),
     )
+  }
+
+  const publishHistory = () => {
+    const merged = new Map<string, RunSummary>()
+    historyOwners.clear()
+    for (const key of [...endpoints.keys()].sort()) {
+      const endpoint = endpoints.get(key)
+      if (!endpoint) continue
+      for (const summary of endpoint.history) {
+        const current = merged.get(summary.runId)
+        // Two endpoints can journal into the same project directory (two hosts, one worktree). The record that
+        // got further is the one worth keeping: a settled run beats the same run still marked `running`.
+        if (!current || (current.endedAt ?? 0) < (summary.endedAt ?? 0)) {
+          merged.set(summary.runId, { ...summary, phases: [...summary.phases] })
+          historyOwners.set(summary.runId, endpoint.descriptor)
+        }
+      }
+    }
+    setHistory(
+      [...merged.values()].sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId)),
+    )
+  }
+
+  const fetchHistory = async (endpoint: LiveEndpoint): Promise<void> => {
+    const limit = options.historyLimit
+    const query = limit !== undefined && Number.isInteger(limit) && limit >= 0 ? `?limit=${limit}` : ""
+    try {
+      const response = await fetcher(`${endpoint.descriptor.url}/history${query}`, {
+        headers: { authorization: `Bearer ${endpoint.descriptor.token}` },
+        signal: endpoint.controller.signal,
+      })
+      if (!response.ok) return
+      const body: unknown = await response.json()
+      const list =
+        typeof body === "object" && body !== null && "history" in body && Array.isArray(body.history)
+          ? body.history.filter(isRunSummary)
+          : []
+      endpoint.history = list
+      publishHistory()
+    } catch {
+      // History is a nicety compared with live state; a failed read leaves the last good list in place rather
+      // than emptying the section under the user.
+    }
   }
 
   const connect = async (endpoint: LiveEndpoint) => {
@@ -253,9 +327,13 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
         for (const run of snapshots) endpoint.runs.set(run.runId, cloneRunSnapshot(run))
         publish()
         backoff = reconnectMinMs
+        void fetchHistory(endpoint)
         await consumeEvents(eventsResponse, snapshotRevision, (event) => {
           reduceRunEvent(endpoint.runs, event)
           publish()
+          // A run that just ended is a run the journal has just finished writing. Refreshing here is what makes
+          // history current without polling for it.
+          if (event.type === "run.ended") void fetchHistory(endpoint)
         })
       } catch {
         if (stopped || endpoint.controller.signal.aborted) return
@@ -283,11 +361,17 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
     }
     for (const [key, descriptor] of discovered) {
       if (endpoints.has(key)) continue
-      const endpoint: LiveEndpoint = { descriptor: { ...descriptor }, controller: new AbortController(), runs: new Map() }
+      const endpoint: LiveEndpoint = {
+        descriptor: { ...descriptor },
+        controller: new AbortController(),
+        runs: new Map(),
+        history: [],
+      }
       endpoints.set(key, endpoint)
       void connect(endpoint)
     }
     publish()
+    publishHistory()
   }
 
   const rescan = (): Promise<void> => {
@@ -296,6 +380,11 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
       rescanning = null
     })
     return rescanning
+  }
+
+  const refreshHistory = async (): Promise<void> => {
+    if (stopped) return
+    await Promise.all([...endpoints.values()].map((endpoint) => fetchHistory(endpoint)))
   }
 
   const interval = setInterval(() => void rescan(), Math.max(250, options.rescanMs ?? 2_000))
@@ -307,6 +396,7 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
     for (const endpoint of endpoints.values()) endpoint.controller.abort()
     endpoints.clear()
     publish()
+    publishHistory()
   }
   options.signal?.addEventListener("abort", stop, { once: true })
   if (options.signal?.aborted) stop()
@@ -314,10 +404,12 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
 
   return {
     runs,
+    history,
     rescan,
+    refreshHistory,
     stop,
     endpointFor(runId) {
-      const descriptor = owners.get(runId)
+      const descriptor = owners.get(runId) ?? historyOwners.get(runId)
       return descriptor ? { ...descriptor } : undefined
     },
   }

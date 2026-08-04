@@ -16,6 +16,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Accessor } from "solid-js"
 import type { ControlAction, ControlResult } from "../control"
+import type { RunSummary } from "../journal"
 import { formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { RunSnapshot } from "../runs"
 import type { RunControlClient } from "./control"
@@ -77,6 +78,14 @@ function statusGlyph(status: RunSnapshot["status"]): string {
 export interface WorkflowRouteProps {
   api: TuiPluginApi
   runs: Accessor<readonly RunSnapshot[]>
+  /**
+   * Journaled runs, from every endpoint the client can see.
+   *
+   * A separate accessor rather than pre-merged rows: history and live state arrive on different schedules (one
+   * is a paged read, the other a stream), and merging them here keeps the ROW model the single place that
+   * decides how a past run is presented next to a present one.
+   */
+  history?: Accessor<readonly RunSummary[]>
   control: RunControlClient
   /** `{ runId }` when entered from the sidebar; `{ returnTo }` carries the session to go back to. */
   params?: Record<string, unknown>
@@ -125,6 +134,12 @@ function runStats(run: RunSnapshot, now: number): Stat[] {
 
 /** What a control action did, in the words the user needs — never a bare `ok: false`. */
 function controlNotice(action: ControlAction, result: ControlResult): string {
+  if (action.action === "save.run") {
+    if (result.ok) return result.detail ?? "saved to .opencode/workflows"
+    if (result.reason === "conflict") return result.detail ?? "that workflow is already saved"
+    if (result.reason === "unknown-run") return "that run is not in the journal — there is no script to save"
+    return result.detail ?? "could not save that run"
+  }
   const target = action.action === "stop.run" ? "run" : "unit"
   if (result.ok) return `stopping ${target}…`
   if (result.reason === "not-running") return `that ${target} has already finished`
@@ -148,6 +163,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
 
   const theme = () => props.api.theme.current
   const spinner = () => SPINNER_FRAMES[frame()] as string
+  const history = (): readonly RunSummary[] => props.history?.() ?? []
 
   const close = () => {
     const returnTo = stringParam(props.params, "returnTo")
@@ -169,13 +185,19 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       close()
       return
     }
-    if (action === "stop") {
-      const target = selectedControl(state(), props.runs(), "stop")
+    if (action === "stop" || action === "save") {
+      const target = selectedControl(state(), props.runs(), action, history())
       if (!target) return
       void props.control.send(target).then((result) => setNotice(controlNotice(target, result)))
       return
     }
-    setState((current) => reduceRoute(current, action, props.runs()))
+    // A history row has a summary and no snapshot, so there is nothing to open. Saying so beats a key that
+    // silently does nothing, which reads as broken rather than as unfinished.
+    if (action === "drill" && level()?.kind === "list" && rows()[selectedIndex()]?.live === false) {
+      setNotice("nothing live to open — this run is from an earlier session")
+      return
+    }
+    setState((current) => reduceRoute(current, action, props.runs(), history()))
   }
 
   onMount(() => {
@@ -189,15 +211,18 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   // (and a drilled-into level) from pointing at something that is no longer there — with no keypress involved.
   createEffect(() => {
     const runs = props.runs()
-    setState((current) => normalizeRoute(current, runs))
+    const past = history()
+    setState((current) => normalizeRoute(current, runs, past))
   })
 
   const level = createMemo(() => state().stack[state().stack.length - 1])
   const crumb = createMemo(() => breadcrumb(state(), props.runs()))
   const rows = createMemo<ListRow[]>(() => {
     now() // re-render elapsed on the tick
-    return listRows(props.runs(), state().filter)
+    return listRows(props.runs(), history(), state().filter)
   })
+  /** Index of the first journal-only row, so the `History` divider is drawn exactly once and in one place. */
+  const firstHistoryRow = createMemo(() => rows().findIndex((row) => !row.live))
   const activeRun = createMemo<RunSnapshot | undefined>(() => {
     const current = level()
     if (!current || current.kind === "list") return undefined
@@ -314,6 +339,15 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   const rowBackground = (index: number) => (index === selectedIndex() ? theme().backgroundElement : undefined)
   const rowText = (index: number) => (index === selectedIndex() ? theme().accent : theme().text)
   const rowMuted = (_index: number) => theme().textMuted
+  /**
+   * A history row is dimmed, never abbreviated.
+   *
+   * It fills every column a live row does — meter, units, tokens, elapsed, start clock — because a row that
+   * could only fill half of them reads as a broken version of the row above it rather than as an older one.
+   * Only the NAME changes weight, which is enough to separate the two without taking anything away.
+   */
+  const rowName = (row: ListRow, index: number) =>
+    index === selectedIndex() ? theme().accent : row.live ? theme().text : theme().textMuted
 
   /** Click to select; click the selected row again to open it — the same two steps the keyboard takes. */
   const clickRow = (index: number) => {
@@ -402,45 +436,56 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             </Show>
             <For each={rows()}>
               {(row: ListRow, index) => (
-                <box
-                  flexDirection="row"
-                  justifyContent="space-between"
-                  backgroundColor={rowBackground(index())}
-                  onMouseUp={() => clickRow(index())}
-                >
-                  <box flexDirection="row" gap={1} flexShrink={1}>
-                    <text flexShrink={0} fg={listGlyphColor(row)}>
-                      {` ${listGlyph(row)}`}
-                    </text>
-                    <text flexShrink={0} fg={rowText(index())}>
-                      <b>{row.workflow.padEnd(nameColumn())}</b>
-                    </text>
-                    <Show when={density() !== "minimal" && row.phaseRatio !== null}>
-                      <text flexShrink={0} fg={theme().accent}>
-                        {meter(row.phaseRatio ?? 0, METER_WIDTH)}
+                <box flexDirection="column">
+                  {/* Drawn once, above the first journal-only row: everything below it outlived its engine. */}
+                  <Show when={index() === firstHistoryRow()}>
+                    <box flexDirection="row" gap={1} marginTop={index() === 0 ? 0 : 1}>
+                      <text fg={theme().textMuted}>
+                        <b>History</b>
                       </text>
-                    </Show>
-                    <text flexShrink={1} fg={rowMuted(index())}>
-                      {[row.position, row.phase].filter(Boolean).join(" ")}
-                    </text>
-                  </box>
-                  <box flexDirection="row" gap={2} flexShrink={0}>
-                    <text flexShrink={0} fg={rowMuted(index())}>
-                      {rightAlign(`${row.units} units`, 12)}
-                    </text>
-                    <Show when={density() === "full"}>
+                      <text fg={theme().borderSubtle}>earlier sessions</text>
+                    </box>
+                  </Show>
+                  <box
+                    flexDirection="row"
+                    justifyContent="space-between"
+                    backgroundColor={rowBackground(index())}
+                    onMouseUp={() => clickRow(index())}
+                  >
+                    <box flexDirection="row" gap={1} flexShrink={1}>
+                      <text flexShrink={0} fg={listGlyphColor(row)}>
+                        {` ${listGlyph(row)}`}
+                      </text>
+                      <text flexShrink={0} fg={rowName(row, index())}>
+                        <b>{row.workflow.padEnd(nameColumn())}</b>
+                      </text>
+                      <Show when={density() !== "minimal" && row.phaseRatio !== null}>
+                        <text flexShrink={0} fg={theme().accent}>
+                          {meter(row.phaseRatio ?? 0, METER_WIDTH)}
+                        </text>
+                      </Show>
+                      <text flexShrink={1} fg={rowMuted(index())}>
+                        {[row.position, row.phase].filter(Boolean).join(" ")}
+                      </text>
+                    </box>
+                    <box flexDirection="row" gap={2} flexShrink={0}>
                       <text flexShrink={0} fg={rowMuted(index())}>
-                        {rightAlign(row.tokens ? `${row.tokens} tok` : "", 9)}
+                        {rightAlign(`${row.units} units`, 12)}
                       </text>
-                    </Show>
-                    <text flexShrink={0} fg={rowMuted(index())}>
-                      {rightAlign(row.elapsed, 7)}
-                    </text>
-                    <Show when={density() !== "minimal"}>
-                      <text flexShrink={0} fg={theme().borderSubtle}>
-                        {rightAlign(row.startedAt, 5)}
+                      <Show when={density() === "full"}>
+                        <text flexShrink={0} fg={rowMuted(index())}>
+                          {rightAlign(row.tokens ? `${row.tokens} tok` : "", 9)}
+                        </text>
+                      </Show>
+                      <text flexShrink={0} fg={rowMuted(index())}>
+                        {rightAlign(row.elapsed, 7)}
                       </text>
-                    </Show>
+                      <Show when={density() !== "minimal"}>
+                        <text flexShrink={0} fg={theme().borderSubtle}>
+                          {rightAlign(row.startedAt, 5)}
+                        </text>
+                      </Show>
+                    </box>
                   </box>
                 </box>
               )}

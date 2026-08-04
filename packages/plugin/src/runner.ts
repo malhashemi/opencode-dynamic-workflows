@@ -221,7 +221,14 @@ export async function runAgent(
         }
       }
       if (settled === "timeout") {
-        return { ok: false, error: `unit timed out after ${opts.timeoutMs}ms with no response — a subagent prompt hung (commonly an unanswered permission ask in the child session)`, childSessionID }
+        // State what happened, not why. The engine cannot tell a hung prompt from one still working, and the
+        // old message asserted the former — which read as a diagnosis and sent a real investigation after a
+        // session that was fine. The deadline is opt-in, so whoever sees this set it: name the knob instead.
+        return {
+          ok: false,
+          error: `unit exceeded its ${opts.timeoutMs}ms timeout and was cancelled — it may have been working or stuck; raise or remove the deadline with meta.unitTimeout, or agent({ timeoutMs })`,
+          childSessionID,
+        }
       }
       const res = settled
 

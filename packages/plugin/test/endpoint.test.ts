@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { createControlRegistry } from "../src/control"
 import { startEndpoint } from "../src/endpoint"
+import type { Journal, JournalListOptions, RunSummary } from "../src/journal"
 import { createRunStore, type RunSnapshot } from "../src/runs"
 
 function snapshot(): RunSnapshot {
@@ -185,6 +186,116 @@ describe("workflow endpoint: POST /control", () => {
       const response = await control({ action: "stop.run", runId: "r" }, { url: endpoint.url, token: endpoint.token })
       expect(response.status).toBe(400)
       expect(await response.json()).toEqual({ ok: false, reason: "unsupported" })
+    } finally {
+      await endpoint.stop()
+    }
+  })
+})
+
+/**
+ * History is a separate read from `/state` on purpose: `/state` is re-sent on every reconnect, and a project
+ * accumulates runs forever. These assert the paging contract that makes that separation worth having.
+ */
+describe("workflow endpoint: GET /history", () => {
+  function summary(runId: string, status: RunSnapshot["status"], startedAt: number): RunSummary {
+    return {
+      runId,
+      workflow: "greet",
+      provenance: "inline",
+      status,
+      units: 1,
+      settledUnits: 1,
+      tokensSpent: 10,
+      phases: ["plan"],
+      phasesDeclared: true,
+      currentPhase: "plan",
+      startedAt,
+      endedAt: startedAt + 1_000,
+    }
+  }
+
+  const stored = [summary("a", "done", 3_000), summary("b", "failed", 2_000), summary("c", "done", 1_000)]
+
+  /** A structural `Journal` reader: the endpoint's only contract with the journal is `list` and `read`. */
+  function history(): Pick<Journal, "list" | "read"> & { calls: JournalListOptions[] } {
+    const calls: JournalListOptions[] = []
+    return {
+      calls,
+      async list(options = {}) {
+        calls.push(options)
+        const filtered = options.status ? stored.filter((s) => options.status?.includes(s.status)) : stored
+        return options.limit === undefined ? filtered : filtered.slice(0, options.limit)
+      },
+      async read(runId) {
+        const found = stored.find((s) => s.runId === runId)
+        if (!found) return null
+        return { run: { runId } as never, source: "SOURCE", args: null, result: "value", transitions: [] }
+      },
+    }
+  }
+
+  it("serves history to an authenticated reader and refuses an anonymous one", async () => {
+    const endpoint = await startEndpoint(createRunStore(), {}, { history: history() })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      expect((await fetch(`${endpoint.url}/history`)).status).toBe(401)
+      const response = await fetch(`${endpoint.url}/history`, {
+        headers: { authorization: `Bearer ${endpoint.token}` },
+      })
+      expect(response.status).toBe(200)
+      expect(((await response.json()) as { history: RunSummary[] }).history.map((s) => s.runId)).toEqual([
+        "a",
+        "b",
+        "c",
+      ])
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("passes limit and status through, accepting repeated and comma-joined statuses alike", async () => {
+    const reader = history()
+    const endpoint = await startEndpoint(createRunStore(), {}, { history: reader })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const limited = await fetch(`${endpoint.url}/history?limit=2&token=${endpoint.token}`)
+      expect(((await limited.json()) as { history: RunSummary[] }).history).toHaveLength(2)
+
+      await fetch(`${endpoint.url}/history?status=done&status=failed&token=${endpoint.token}`)
+      await fetch(`${endpoint.url}/history?status=done,failed&token=${endpoint.token}`)
+      expect(reader.calls.at(-1)).toEqual(reader.calls.at(-2) as JournalListOptions)
+      expect(reader.calls.at(-1)?.status).toEqual(["done", "failed"])
+
+      // Nonsense is ignored rather than 400-ing: a filter the server does not know is a filter it does not apply.
+      await fetch(`${endpoint.url}/history?limit=nope&status=sideways&token=${endpoint.token}`)
+      expect(reader.calls.at(-1)).toEqual({})
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("serves one journaled record by id, and 404s an id it has never recorded", async () => {
+    const endpoint = await startEndpoint(createRunStore(), {}, { history: history() })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const found = await fetch(`${endpoint.url}/history/a?token=${endpoint.token}`)
+      expect(found.status).toBe(200)
+      expect((await found.json()) as { record: { source: string } }).toMatchObject({ record: { source: "SOURCE" } })
+      expect((await fetch(`${endpoint.url}/history/ghost?token=${endpoint.token}`)).status).toBe(404)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("answers with an empty history when the engine has no journal at all", async () => {
+    // A host with no resolvable project root has nowhere to write runs. Empty is the honest answer; an error
+    // would make the client's history section look broken rather than unused.
+    const endpoint = await startEndpoint(createRunStore())
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const response = await fetch(`${endpoint.url}/history?token=${endpoint.token}`)
+      expect(await response.json()).toEqual({ history: [] })
+      expect((await fetch(`${endpoint.url}/history/a?token=${endpoint.token}`)).status).toBe(404)
     } finally {
       await endpoint.stop()
     }

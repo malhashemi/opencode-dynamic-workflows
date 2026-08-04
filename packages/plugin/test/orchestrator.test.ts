@@ -2,8 +2,9 @@ import { describe, expect, it } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import type { SessionMessage } from "../src/client"
-import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile } from "../src/orchestrator"
-import { createRunStore } from "../src/runs"
+import type { Journal } from "../src/journal"
+import { loadWorkflowConfig, resolveUnitTimeout, runWorkflow, runWorkflowFromFile } from "../src/orchestrator"
+import { createRunStore, type RunSnapshot } from "../src/runs"
 import { makeFakeClient } from "./fake-client"
 
 const ECHO_WORKFLOW = `
@@ -424,6 +425,22 @@ describe("durable file loading (runWorkflowFromFile / loadWorkflowConfig)", () =
   })
 })
 
+describe("resolveUnitTimeout — a deadline is opt-in", () => {
+  // Guarding a decision, not a computation. A Unit that runs for hours is this engine's normal case: it waits
+  // on models, on humans, and across restarts. Reintroducing a default here silently caps all of that, and the
+  // failure it produces (fail-fast, no retry, whole fan-out dying on the same second) looks like a model fault
+  // rather than a policy — which is exactly how the last one survived as long as it did.
+  it("is undefined when neither the Run nor the Workflow sets one", () => {
+    expect(resolveUnitTimeout(undefined, undefined)).toBeUndefined()
+  })
+
+  it("prefers the Run's override, then the Workflow's", () => {
+    expect(resolveUnitTimeout(10, 20)).toBe(10)
+    expect(resolveUnitTimeout(undefined, 20)).toBe(20)
+    expect(resolveUnitTimeout(10, undefined)).toBe(10)
+  })
+})
+
 describe("runWorkflow — hung Unit recovery (timeout + abort, no infinite hang)", () => {
   it("times out a hung Unit (meta.unitTimeout) → null + recorded error; the Run still completes", async () => {
     const client = makeFakeClient({ hang: true })
@@ -434,7 +451,12 @@ export default defineWorkflow({ meta: { name: "hang", description: "x", unitTime
       parentSessionID: "p",
     })
     expect(out.result).toEqual({ r: null }) // the hung Unit resolved to null instead of blocking
-    expect(out.state.errors[0]?.error).toMatch(/timed out/)
+    expect(out.state.errors[0]?.error).toMatch(/exceeded its 30ms timeout/)
+    // The message reports what happened and names the knob; it must NOT diagnose a cause the engine cannot
+    // observe. Asserting the absence, because the old wording ("a subagent prompt hung") read as a finding and
+    // sent a real investigation after a session that was healthy.
+    expect(out.state.errors[0]?.error).toMatch(/meta\.unitTimeout/)
+    expect(out.state.errors[0]?.error).not.toMatch(/hung|unanswered permission/)
     expect(client.abortCalls.length).toBeGreaterThan(0) // the child prompt was cancelled, not leaked
   })
 
@@ -459,6 +481,129 @@ export default defineWorkflow({ meta: { name: "hang2", description: "x" }, async
     expect(out.state.errors[0]?.error).toMatch(/aborted/)
     expect(client.abortCalls.length).toBeGreaterThan(0)
     expect(store.get("run-aborted")).toMatchObject({ status: "aborted", endedAt: expect.any(Number) })
+  })
+})
+
+/**
+ * The two ends of a journaled run.
+ *
+ * The engine writes exactly two records itself — `begin` when the run exists, `finish` when it is terminal —
+ * and the shape of both is what the retrieval modes and Phase 6's replay read back. The third property here is
+ * the one that matters most: a journal that throws is a journal that gets ignored, not a run that fails.
+ */
+describe("runWorkflow (journal)", () => {
+  interface Recorded {
+    begin: { run: RunSnapshot; source: string; args: unknown }[]
+    finish: { run: RunSnapshot; result: unknown }[]
+    appended: string[]
+  }
+
+  function recorder(overrides: Partial<Journal> = {}): Journal & { recorded: Recorded } {
+    const recorded: Recorded = { begin: [], finish: [], appended: [] }
+    return {
+      recorded,
+      root: "/tmp/journal",
+      async begin(run, input) {
+        recorded.begin.push({ run, source: input.source, args: input.args })
+      },
+      async append(event) {
+        recorded.appended.push(event.type)
+      },
+      async finish(run, result) {
+        recorded.finish.push({ run, result })
+      },
+      async read() {
+        return null
+      },
+      async list() {
+        return []
+      },
+      ...overrides,
+    }
+  }
+
+  it("opens the record with the run as registered and closes it with the terminal snapshot plus the result", async () => {
+    const journal = recorder()
+    const store = createRunStore()
+    await runWorkflow({
+      source: ECHO_WORKFLOW,
+      args: { word: "hi" },
+      client: makeFakeClient({ reply: "HELLO" }),
+      parentSessionID: "p",
+      runId: "run-journaled",
+      store,
+      journal,
+    })
+
+    expect(journal.recorded.begin).toHaveLength(1)
+    expect(journal.recorded.begin[0]?.source).toBe(ECHO_WORKFLOW)
+    expect(journal.recorded.begin[0]?.args).toEqual({ word: "hi" })
+    expect(journal.recorded.begin[0]?.run).toMatchObject({ runId: "run-journaled", status: "running", units: [] })
+
+    expect(journal.recorded.finish).toHaveLength(1)
+    const closed = journal.recorded.finish[0]
+    expect(closed?.result).toEqual({ out: "HELLO", word: "hi" })
+    // The terminal snapshot, not the one `begin` saw: status, timing, units, and logs are all settled by now.
+    expect(closed?.run).toMatchObject({ runId: "run-journaled", status: "done", logs: ["starting"] })
+    expect(closed?.run.units).toHaveLength(1)
+    expect(closed?.run.endedAt).toEqual(expect.any(Number))
+    // Unit transitions are the store subscriber's job; the engine writes only the two ends.
+    expect(journal.recorded.appended).toEqual([])
+  })
+
+  it("records the VALIDATED args, so a replay reproduces this run rather than a similar one", async () => {
+    const journal = recorder()
+    await runWorkflow({
+      source: TYPED_WORKFLOW,
+      args: { count: 3 },
+      client: makeFakeClient(),
+      parentSessionID: "p",
+      journal,
+    })
+    expect(journal.recorded.begin[0]?.args).toEqual({ count: 3 })
+  })
+
+  it("records a failed run as failed, with no result", async () => {
+    const journal = recorder()
+    await expect(
+      runWorkflow({
+        source: `import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({ meta: { name: "boom", description: "x" }, async run() { throw new Error("nope") } })`,
+        client: makeFakeClient(),
+        parentSessionID: "p",
+        journal,
+      }),
+    ).rejects.toThrow("nope")
+    expect(journal.recorded.finish[0]?.run.status).toBe("failed")
+    expect(journal.recorded.finish[0]?.result).toBeUndefined()
+  })
+
+  it("never lets a throwing journal fail the run", async () => {
+    const journal = recorder({
+      begin() {
+        throw new Error("disk is on fire")
+      },
+      async finish() {
+        throw new Error("still on fire")
+      },
+    })
+    const out = await runWorkflow({
+      source: ECHO_WORKFLOW,
+      args: { word: "hi" },
+      client: makeFakeClient({ reply: "HELLO" }),
+      parentSessionID: "p",
+      journal,
+    })
+    expect(out.result).toEqual({ out: "HELLO", word: "hi" })
+  })
+
+  it("writes nothing for a run that never registered — a rejected args set is not a run", async () => {
+    const journal = recorder()
+    await expect(
+      runWorkflow({ source: TYPED_WORKFLOW, args: { count: "three" }, client: makeFakeClient(), parentSessionID: "p", journal }),
+    ).rejects.toThrow(/invalid args/)
+    expect(journal.recorded.begin).toEqual([])
+    expect(journal.recorded.finish).toEqual([])
   })
 })
 

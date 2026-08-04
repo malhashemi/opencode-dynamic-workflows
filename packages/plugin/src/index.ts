@@ -13,9 +13,10 @@ import { tool } from "@opencode-ai/plugin"
 import type { Plugin, PluginOptions, ToolContext } from "@opencode-ai/plugin"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "./client"
-import { createControlRegistry } from "./control"
+import { createControlRegistry, type ControlResult } from "./control"
 import { removeDescriptor, writeDescriptor } from "./discovery"
 import { startEndpoint, type EndpointOptions } from "./endpoint"
+import { createJournal, journalRoot, subscribeJournal, type Journal } from "./journal"
 import { loadWorkflowConfig, runWorkflow, runWorkflowFromFile, type RunWorkflowOutput } from "./orchestrator"
 import { formatElapsed, formatTokens, phasePosition, settledUnits } from "./progress"
 import { buildRegistry, type Registry, type RegistryEntry } from "./registry"
@@ -41,6 +42,11 @@ MODES (pick one):
     \`<project>/.opencode/workflows/<save>.ts\` (a \`/\` in \`save\` becomes a namespace). Validates the source
     first, won't overwrite an existing file, and returns the resolved registry key (which may differ from the
     filename — the key is the path namespace + \`meta.name\`). Runnable by name immediately, no restart.
+  - \`status: "<runId>"\`: report where a Run is (or was) — phase, settled/total Units, failures, elapsed. Answers
+    for a LIVE Run from memory and for a finished one from the on-disk journal, so it works across sessions and
+    after a restart. Every completed Run's output names its own runId.
+  - \`result: "<runId>"\`: return the consolidated result of a completed Run from the journal. If it is still
+    running you get its status instead, so this is safe to call at any time.
 
 \`source\` is a TypeScript module that default-exports defineWorkflow({ meta, run }) from
 "@opencode-ai/workflow". The \`run\` function receives a context with:
@@ -189,6 +195,9 @@ function formatOutput(out: RunWorkflowOutput, run?: RunSnapshot): string {
   const lines: string[] = []
   lines.push(typeof out.result === "string" ? out.result : JSON.stringify(out.result, null, 2))
   lines.push("", runSummaryLine(out, run))
+  // The id, in the text rather than only in metadata, because the model reads the text — and without it the
+  // `status`/`result` modes are unreachable for the run that just happened.
+  if (run) lines.push(`run ${run.runId} — later: workflow({ result: "${run.runId}" })`)
 
   if (out.state.errors.length > 0) {
     lines.push("", `⚠ ${out.state.errors.length} unit(s) failed:`)
@@ -213,12 +222,113 @@ function runResult(out: RunWorkflowOutput, run?: RunSnapshot): WorkflowToolResul
     title: out.meta.name,
     output: formatOutput(out, run),
     metadata: {
+      ...(run ? { runId: run.runId } : {}),
       workflow: out.meta.name,
       units: out.state.unitCount,
       phases: out.state.phases,
       logs: out.state.logs,
       errors: out.state.errors,
       childSessions: out.state.units,
+    },
+  }
+}
+
+/**
+ * A run's state, in one line, from a snapshot of any age: `deep-research · done · 14/14 units · 2m10s · 41k tok`.
+ *
+ * Shared by the live and journaled paths on purpose — a user asking `status` should not be able to tell which
+ * one answered, because the answer is the same fact either way.
+ */
+function snapshotSummaryLine(run: RunSnapshot): string {
+  const parts = [run.workflow, run.status, `${settledUnits(run)}/${run.units.length} units`]
+  parts.push(formatElapsed((run.endedAt ?? Date.now()) - run.startedAt))
+  if (run.tokensSpent > 0) parts.push(`${formatTokens(run.tokensSpent)} tok`)
+  return parts.join(" · ")
+}
+
+function statusLines(run: RunSnapshot, live: boolean): string[] {
+  const lines = [snapshotSummaryLine(run)]
+  const position = [phasePosition(run), run.currentPhase ?? (run.status === "running" ? "starting" : "")]
+    .filter(Boolean)
+    .join(" ")
+  if (position) lines.push(position)
+  lines.push(`run ${run.runId} · ${run.provenance} · ${live ? "live" : "from the journal"}`)
+  if (run.errors.length > 0) {
+    lines.push("", `⚠ ${run.errors.length} unit(s) failed:`)
+    for (const error of run.errors) lines.push(`  - [${error.subagent}] ${error.error}`)
+  }
+  return lines
+}
+
+function unknownRunResult(runId: string): WorkflowToolResult {
+  return {
+    title: "workflow: unknown run",
+    output:
+      `No Run with id "${runId}" is running, and none is recorded in this project's journal ` +
+      "(`.opencode/workflows/runs/`). Check the id from the Run's own output, or start a new Run.",
+  }
+}
+
+/**
+ * `status` — where a Run is, live or long finished.
+ *
+ * The live store is consulted FIRST because it is the only source that is current to the millisecond; the
+ * journal answers for everything the process no longer holds, which after a restart is everything.
+ */
+async function statusResult(runId: string, store: RunStore, journal: Journal | null): Promise<WorkflowToolResult> {
+  const live = store.get(runId)
+  const run = live ?? (await journal?.read(runId))?.run
+  if (!run) return unknownRunResult(runId)
+  return {
+    title: `${run.workflow}: ${run.status}`,
+    output: statusLines(run, live !== undefined).join("\n"),
+    metadata: {
+      runId: run.runId,
+      workflow: run.workflow,
+      status: run.status,
+      phase: run.currentPhase,
+      units: run.units.length,
+      settledUnits: settledUnits(run),
+      errors: run.errors,
+      live: live !== undefined,
+    },
+  }
+}
+
+/**
+ * `result` — what a Run produced.
+ *
+ * A still-running Run answers with its status rather than with an error: "not yet" is a real answer, and one
+ * the caller can act on without having to know to ask a different question.
+ */
+async function resultResult(runId: string, store: RunStore, journal: Journal | null): Promise<WorkflowToolResult> {
+  const record = await journal?.read(runId)
+  const live = store.get(runId)
+  if (!record && !live) return unknownRunResult(runId)
+
+  const run = live ?? record?.run
+  if (!record?.run || run?.status === "running") {
+    const status = await statusResult(runId, store, journal)
+    return { ...status, output: `That Run has not finished yet.\n\n${status.output}` }
+  }
+
+  const result = record.result
+  const body =
+    result === null || result === undefined
+      ? `That Run ended \`${record.run.status}\` without a result.`
+      : typeof result === "string"
+        ? result
+        : JSON.stringify(result, null, 2)
+  return {
+    title: `${record.run.workflow}: result`,
+    output: [body, "", ...statusLines(live ?? record.run, live !== undefined)].join("\n"),
+    metadata: {
+      runId: record.run.runId,
+      workflow: record.run.workflow,
+      status: record.run.status,
+      units: record.run.units.length,
+      settledUnits: settledUnits(record.run),
+      errors: record.run.errors,
     },
   }
 }
@@ -511,22 +621,38 @@ function createNativeProgressMirror(ctx: ToolContext, store: RunStore, runId: st
 }
 
 /**
+ * The outcome of a promotion, as data.
+ *
+ * Structured rather than pre-rendered, because promotion now has two callers with different vocabularies: the
+ * tool answers a model in prose, and `save.run` answers the run browser with a {@link ControlResult}. Reading
+ * a `ControlFailure` back out of a formatted title string is exactly the coupling that breaks silently.
+ */
+type PromoteOutcome =
+  | { ok: true; key: string; path: string }
+  | { ok: false; kind: "no-root" | "invalid-source" | "invalid-name" | "conflict"; message: string }
+
+/**
  * Promote inline ad-hoc `source` to a DURABLE Workflow: a verbatim save into `<project>/.opencode/workflows/`.
  * `save` is the target name/path under that dir (may contain `/` for a namespace). The source is validated
  * (so we never persist a non-Workflow) but written byte-for-byte. Won't overwrite an existing file. Re-scans
  * to report the resolved registry key (key = path namespace + meta.name, not the filename). The file is
  * immediately runnable by name via the tool; its own `/command` appears after the next opencode reload.
  */
-async function promote(input: { source: string; save: string; directory?: string; worktree?: string }) {
+async function promoteSource(input: {
+  source: string
+  save: string
+  directory?: string
+  worktree?: string
+}): Promise<PromoteOutcome> {
   const root = input.worktree || input.directory
-  if (!root) return failResult(new Error("cannot resolve a project directory to save into"))
+  if (!root) return { ok: false, kind: "no-root", message: "cannot resolve a project directory to save into" }
 
   // Validate the source is a real Workflow BEFORE persisting (don't write garbage into the workflows dir).
   let meta: RegistryEntry["meta"]
   try {
     meta = (await loadWorkflowConfig(input.source)).meta
   } catch (error) {
-    return failResult(error)
+    return { ok: false, kind: "invalid-source", message: error instanceof Error ? error.message : String(error) }
   }
 
   const rel = input.save.replace(/\.ts$/, "") // tolerate a trailing .ts in the requested name
@@ -535,10 +661,18 @@ async function promote(input: { source: string; save: string; directory?: string
   // Containment: `save` is model-supplied — reject any name that escapes the workflows dir (e.g. "../../x").
   const rootResolved = path.resolve(workflowsRoot)
   if (path.resolve(target) !== rootResolved && !path.resolve(target).startsWith(rootResolved + path.sep)) {
-    return { title: "workflow: invalid save name", output: `\`save\` must stay within .opencode/workflows (got ${JSON.stringify(input.save)}).` }
+    return {
+      ok: false,
+      kind: "invalid-name",
+      message: `\`save\` must stay within .opencode/workflows (got ${JSON.stringify(input.save)}).`,
+    }
   }
   if (existsSync(target)) {
-    return { title: "workflow: save conflict", output: `A workflow file already exists at ${target}. Choose another \`save\` name or remove it first.` }
+    return {
+      ok: false,
+      kind: "conflict",
+      message: `A workflow file already exists at ${target}. Choose another \`save\` name or remove it first.`,
+    }
   }
   await mkdir(path.dirname(target), { recursive: true })
   await writeFile(target, input.source, "utf8") // verbatim — byte-for-byte the same defineWorkflow module
@@ -554,23 +688,73 @@ async function promote(input: { source: string; save: string; directory?: string
       // fall back to meta.name for the reported key
     }
   }
-  return {
-    title: "workflow: promoted",
-    output: `Promoted to durable Workflow "${key}" at ${target}.\nRun it now with workflow({ name: "${key}", args }). Its /${commandNameForKey(key)} command appears after the next opencode reload.`,
-    metadata: { key, path: target },
+  return { ok: true, key, path: target }
+}
+
+/** The tool's rendering of {@link promoteSource} — the wording is unchanged by the split. */
+async function promote(input: { source: string; save: string; directory?: string; worktree?: string }) {
+  const outcome = await promoteSource(input)
+  if (outcome.ok) {
+    return {
+      title: "workflow: promoted",
+      output: `Promoted to durable Workflow "${outcome.key}" at ${outcome.path}.\nRun it now with workflow({ name: "${outcome.key}", args }). Its /${commandNameForKey(outcome.key)} command appears after the next opencode reload.`,
+      metadata: { key: outcome.key, path: outcome.path },
+    }
   }
+  if (outcome.kind === "conflict") return { title: "workflow: save conflict", output: outcome.message }
+  if (outcome.kind === "invalid-name") return { title: "workflow: invalid save name", output: outcome.message }
+  return failResult(new Error(outcome.message))
+}
+
+/**
+ * `save.run` — promote a JOURNALED run's script to a durable workflow, from the run browser.
+ *
+ * The interesting case is a run that ended in an earlier session: inline source a model wrote, which worked,
+ * and which would otherwise exist only inside a finished tool call. The journal kept it verbatim, so keeping
+ * it is a copy rather than a reconstruction.
+ *
+ * The save name is the run's own `meta.name`, not a prompt: the registry key is derived from `meta.name`
+ * regardless, so offering a choice here would only let a user file a workflow under a name it does not answer
+ * to.
+ */
+async function saveJournaledRun(
+  runId: string,
+  journal: Journal,
+  paths: { directory?: string; worktree?: string },
+): Promise<ControlResult> {
+  const record = await journal.read(runId)
+  if (!record) return { ok: false, reason: "unknown-run" }
+  if (record.run.provenance === "durable") {
+    return { ok: false, reason: "conflict", detail: `${record.run.workflow} is already a durable workflow` }
+  }
+  if (!record.source) {
+    return { ok: false, reason: "unknown-run", detail: "the journal kept no script for that run" }
+  }
+  const outcome = await promoteSource({ source: record.source, save: record.run.workflow, ...paths })
+  if (outcome.ok) return { ok: true, detail: `saved as "${outcome.key}" — run it by name` }
+  return { ok: false, reason: outcome.kind === "conflict" ? "conflict" : "unsupported", detail: outcome.message }
 }
 
 export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serverUrl }, options) => {
   const workflowClient = createWorkflowClient({ client, directory, serverUrl })
   const store = createRunStore()
+  // The journal lives in the PROJECT, not in the state directory: a run's record belongs beside the workflows
+  // that produced it, so it moves with the repository, is visible to `git status`, and is trivially deletable.
+  // Without a resolved root there is nowhere honest to put it, so history is simply absent.
+  const journalDirectory = worktree || directory
+  const journal = journalDirectory ? createJournal(journalRoot(journalDirectory)) : null
+  const unsubscribeJournal = journal ? subscribeJournal(store, journal) : null
   // One registry per plugin instance, shared by every run it starts and by the endpoint that exposes them.
   // Built unconditionally — it is the runs' cancellation bookkeeping, not a transport concern, so a host with
   // no endpoint still gets units whose in-flight prompts are addressable.
-  const control = createControlRegistry()
+  const control = createControlRegistry({
+    ...(journal ? { save: (runId: string) => saveJournaledRun(runId, journal, { directory, worktree }) } : {}),
+  })
   // A real host always supplies serverUrl. Partial structural PluginInput doubles deliberately do not; avoid
   // opening an orphan server for those initialization-only tests while retaining default-on production.
-  const endpoint = serverUrl ? await startEndpoint(store, dashboardOptions(options), { control }) : null
+  const endpoint = serverUrl
+    ? await startEndpoint(store, dashboardOptions(options), { control, ...(journal ? { history: journal } : {}) })
+    : null
   let descriptorStatePath: string | null = null
   if (endpoint) {
     descriptorStatePath = opencodeStatePath()
@@ -592,6 +776,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
   }
   return {
     dispose: async () => {
+      unsubscribeJournal?.()
       if (descriptorStatePath) await removeDescriptor(descriptorStatePath)
       await endpoint?.stop()
     },
@@ -637,6 +822,8 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
           args: tool.schema.any().optional().describe("JSON value exposed to the Workflow as `args` (validated against meta.args)."),
           list: tool.schema.boolean().optional().describe("List available durable Workflows (keys + descriptions + args schema) and return without running."),
           save: tool.schema.string().optional().describe("Promote: save the inline `source` verbatim to <project>/.opencode/workflows/<save>.ts (may include `/` for a namespace) and return its registry key."),
+          status: tool.schema.string().optional().describe("Report a Run's state by its runId — live from memory, or from the on-disk journal after a restart."),
+          result: tool.schema.string().optional().describe("Return a completed Run's consolidated result by its runId (from the journal); its status if it is still running."),
         },
         async execute(input, ctx) {
           // LIST mode — discover durable Workflows across scopes; no Run. Rebuilt per call so a just-written
@@ -645,6 +832,23 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
           if (input.list) {
             try {
               return listResult(await buildRegistry({ directory, worktree }))
+            } catch (error) {
+              return failResult(error)
+            }
+          }
+
+          // RETRIEVAL modes — read a Run that is running elsewhere, or that finished in another session. Both
+          // are answered before the run modes because they never start anything: they are the safe questions.
+          if (input.status) {
+            try {
+              return await statusResult(input.status, store, journal)
+            } catch (error) {
+              return failResult(error)
+            }
+          }
+          if (input.result) {
+            try {
+              return await resultResult(input.result, store, journal)
             } catch (error) {
               return failResult(error)
             }
@@ -669,6 +873,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
             signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
             store,
             control, // …and let a surface outside this session stop the run or one of its units
+            ...(journal ? { journal } : {}), // …and let it outlive this process as a record
           }
 
           try {

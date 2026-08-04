@@ -13,6 +13,7 @@ import type { DefineWorkflowConfig } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { createEngineState, createWorkflowContext, runOwnedRoots, type EngineEvents, type EngineState } from "./context"
 import type { ControlRegistry } from "./control"
+import type { Journal } from "./journal"
 import { createRunStore, type RunSnapshot, type RunStore } from "./runs"
 import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type Watcher } from "./watcher"
 
@@ -20,12 +21,28 @@ import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type Watcher } from "./watch
 const DEFAULT_TMP_DIR = path.join(import.meta.dir, "..", ".wf-tmp")
 
 /**
- * Default per-Unit prompt timeout (ms). Generous (a Unit may legitimately run minutes) but finite, so a hung
- * subagent prompt — e.g. an unanswered permission ask in a headless child — fails the Unit instead of blocking
- * the whole Run forever. Overridable per-Workflow (`meta.unitTimeout`), per-Run (`input.unitTimeout`), or
- * per-Unit (`agent({ timeoutMs })`). The Run's abort signal also cancels in-flight Units regardless of this.
+ * There is deliberately NO default per-Unit timeout: a deadline is opt-in, set per-Workflow
+ * (`meta.unitTimeout`), per-Run (`input.unitTimeout`), or per-Unit (`agent({ timeoutMs })`).
+ *
+ * This used to default to five minutes, on the reasoning that a hung subagent prompt should fail its Unit
+ * rather than block the Run forever. Two things were wrong with it. The narrow one: five minutes is not a
+ * generous ceiling for agent work — a fan-out of web researchers exceeds it routinely, and because a timeout
+ * is fail-fast with no retry, the whole fan-out died together at the same wall-clock second, having done
+ * nothing wrong but take the time the task takes. The broad one: this engine exists to run work that lasts
+ * hours, waits on a human (`ctx.ask`), and survives process restarts, so a wall-clock deadline is the wrong
+ * shape for its default — it caps the very thing the engine is for.
+ *
+ * The hang it was guarding against already has two precise defences, neither of which existed in this form
+ * when the default was written: the watcher resolves owned permission asks and runs the tiered ladder for
+ * nested questions (the exact scenario the old comment named), and `stop.run` / `stop.unit` give a human an
+ * operable stop from the run browser. A blunt timer is not needed to cover a door with a lock on it.
+ *
+ * Exported so the rule is assertable rather than buried in a `??` chain: `undefined` here is a decision, and
+ * one that has now been made twice.
  */
-const DEFAULT_UNIT_TIMEOUT_MS = 300_000
+export function resolveUnitTimeout(fromRun: number | undefined, fromMeta: number | undefined): number | undefined {
+  return fromRun ?? fromMeta
+}
 
 export interface RunWorkflowInput {
   /** Inline Workflow source: a TS module that `export default defineWorkflow({ meta, run })`. */
@@ -39,7 +56,7 @@ export interface RunWorkflowInput {
   budget?: number
   /** The Run's abort signal (the adapter forwards opencode's tool-abort signal). */
   signal?: AbortSignal
-  /** Default per-Unit prompt timeout (ms); falls back to `meta.unitTimeout`, then {@link DEFAULT_UNIT_TIMEOUT_MS}. */
+  /** Default per-Unit prompt timeout (ms); falls back to `meta.unitTimeout`, then to no timeout at all. */
   unitTimeout?: number
   /**
    * Whether a human is reachable to answer an escalated depth-1 nested Question. Defaults false
@@ -61,12 +78,36 @@ export interface RunWorkflowInput {
    * replaced by it: the tool's abort still stops the run, and now so does a keypress in the run browser.
    */
   control?: ControlRegistry
+  /**
+   * Durable record sink. A throwing journal is reported and never fails the run.
+   *
+   * Only the two ends are written from here — `begin` once the run exists in the store, `finish` once it is
+   * terminal. Unit transitions arrive through `subscribeJournal`, so no engine path grows an `await` per unit
+   * for the sake of history.
+   */
+  journal?: Journal
 }
 
 export interface RunWorkflowOutput {
   result: unknown
   meta: DefineWorkflowConfig["meta"]
   state: EngineState
+}
+
+/**
+ * Run a journal write without letting it near the run's own outcome.
+ *
+ * The journal is a record of what happened, so it can never be the reason something did not: a `begin` that
+ * throws synchronously, rejects, or hangs must leave the run exactly as it would have been with no journal at
+ * all. That is why nothing here is awaited by the caller and every path is caught.
+ */
+function journalWrite(write: (() => Promise<void>) | undefined): Promise<void> {
+  if (!write) return Promise.resolve()
+  try {
+    return write().catch(() => {})
+  } catch {
+    return Promise.resolve()
+  }
 }
 
 function isWorkflowConfig(value: unknown): value is DefineWorkflowConfig {
@@ -139,6 +180,8 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
   const signal = input.signal ? AbortSignal.any([input.signal, stopController.signal]) : stopController.signal
   let terminalStatus: Exclude<RunSnapshot["status"], "running"> = signal.aborted ? "aborted" : "failed"
   let unregisterRun: (() => void) | null = null
+  /** The author's return value, kept so the terminal journal write records what the run produced. */
+  let runResult: unknown
   /** Live per-unit cancel-handle disposers, so a settled unit stops being addressable. */
   const unitHandles = new Map<string, () => void>()
 
@@ -179,7 +222,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
 
     state = createEngineState()
     startedAt = Date.now()
-    store.create({
+    const started = store.create({
       runId,
       workflow: config.meta.name,
       provenance,
@@ -199,6 +242,12 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     // Registered only once the run EXISTS in the store: a surface can never address a run it cannot see, so
     // `stop.run` for an unregistered id is honestly `unknown-run` rather than a silent no-op.
     unregisterRun = input.control?.registerRun(runId, stopController) ?? null
+    // The record opens with the ARGS THE RUN SAW — validated and defaulted — rather than the caller's raw
+    // input, so a replay in Phase 6 reproduces this run and not a similar one. Not awaited: the journal
+    // serializes its own writes, so unit transitions cannot overtake this one.
+    void journalWrite(
+      input.journal && (() => input.journal!.begin(started, { source: input.source, args })),
+    )
     watcher = startWatcher({
       client: input.client,
       parentSessionID: input.parentSessionID,
@@ -259,10 +308,11 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       concurrency: config.meta.concurrency,
       budget: input.budget ?? config.meta.budget ?? null,
       signal,
-      unitTimeout: input.unitTimeout ?? config.meta.unitTimeout ?? DEFAULT_UNIT_TIMEOUT_MS,
+      unitTimeout: resolveUnitTimeout(input.unitTimeout, config.meta.unitTimeout),
     })
 
     const result = await config.run(ctx)
+    runResult = result
     terminalStatus = signal.aborted ? "aborted" : "done"
     return { result, meta: config.meta, state }
   } catch (error) {
@@ -271,6 +321,11 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     throw error
   } finally {
     finishRun(terminalStatus)
+    // Awaited, unlike `begin`: `workflow({ result })` and Phase 6's resume both read this from ANOTHER process,
+    // so the record has to be on disk by the time the tool answers — including when the host is killed
+    // moments later, which is precisely the case the journal exists for.
+    const terminal = registered ? store.get(runId) : undefined
+    if (terminal) await journalWrite(input.journal && (() => input.journal!.finish(terminal, runResult)))
     watcher?.stop()
     // Unregister before the temp file goes: a terminal run must stop being addressable immediately, or a
     // surface still holding a stale row would get `ok: true` for a stop that can no longer do anything.

@@ -15,19 +15,45 @@
 export type ControlAction =
   | { action: "stop.run"; runId: string }
   | { action: "stop.unit"; runId: string; unitId: string }
+  /**
+   * Promote a journaled run's source to a durable workflow file (Phase 3).
+   *
+   * A control action rather than a filesystem write from the view, because the run browser merges runs from
+   * every endpoint it can see: the engine that journaled a run is the only party that knows which project's
+   * `.opencode/workflows/` it belongs in, and the TUI knows only its own.
+   */
+  | { action: "save.run"; runId: string }
 
 /**
  * Why a control action did nothing.
  *
- * The vocabulary is wider than Phase 2 can produce (`unknown-request` arrives with Phase 4's interactions)
- * because every surface that renders a failure reason should be written against the final set once. `ok:
- * false` without a reason is never returned.
+ * The vocabulary is wider than any one phase can produce (`unknown-request` arrives with Phase 4's
+ * interactions) because every surface that renders a failure reason should be written against the final set
+ * once. `ok: false` without a reason is never returned.
  */
-export type ControlFailure = "unknown-run" | "unknown-unit" | "unknown-request" | "not-running" | "unsupported"
+export type ControlFailure =
+  | "unknown-run"
+  | "unknown-unit"
+  | "unknown-request"
+  | "not-running"
+  | "conflict"
+  | "unsupported"
 
 export interface ControlResult {
   ok: boolean
   reason?: ControlFailure
+  /**
+   * Human-readable specifics, when the reason alone is not the whole answer — the path a save landed at, the
+   * file that was already there. For display only; nothing parses it.
+   */
+  detail?: string
+}
+
+/** Promote a journaled run to a durable workflow file. Supplied by the engine; absent surfaces answer `unsupported`. */
+export type RunSaver = (runId: string) => Promise<ControlResult>
+
+export interface ControlDeps {
+  save?: RunSaver
 }
 
 export interface ControlRegistry {
@@ -58,6 +84,7 @@ export function parseControlAction(value: unknown): ControlAction | null {
   const runId = candidate.runId
   if (typeof runId !== "string" || runId.length === 0) return null
   if (candidate.action === "stop.run") return { action: "stop.run", runId }
+  if (candidate.action === "save.run") return { action: "save.run", runId }
   if (candidate.action === "stop.unit") {
     const unitId = candidate.unitId
     if (typeof unitId !== "string" || unitId.length === 0) return null
@@ -66,7 +93,7 @@ export function parseControlAction(value: unknown): ControlAction | null {
   return null
 }
 
-export function createControlRegistry(): ControlRegistry {
+export function createControlRegistry(deps: ControlDeps = {}): ControlRegistry {
   const runs = new Map<string, RunControl>()
 
   const registry: ControlRegistry = {
@@ -125,6 +152,16 @@ export function createControlRegistry(): ControlRegistry {
     async dispatch(action) {
       if (action.action === "stop.run") return registry.stopRun(action.runId)
       if (action.action === "stop.unit") return registry.stopUnit(action.runId, action.unitId)
+      if (action.action === "save.run") {
+        // Unlike a stop, a save addresses the JOURNAL rather than a live run — a run that ended three sessions
+        // ago is exactly the one worth keeping — so it never consults the registry's own run table.
+        if (!deps.save) return { ok: false, reason: "unsupported" }
+        try {
+          return await deps.save(action.runId)
+        } catch (error) {
+          return { ok: false, reason: "unsupported", detail: error instanceof Error ? error.message : String(error) }
+        }
+      }
       return { ok: false, reason: "unsupported" }
     },
   }
