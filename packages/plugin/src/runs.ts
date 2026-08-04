@@ -17,28 +17,42 @@ export interface UnitSnapshot {
    *
    * Recorded because a unit's result otherwise exists only inside the running script: the store knew a unit
    * had settled `ok` and nothing about what it produced, so the run browser could show the question and never
-   * the answer. Capped at {@link MAX_UNIT_OUTPUT} — `/state` carries every unit of every live run, and one
-   * long research answer should not be able to make that payload unbounded.
+   * the answer.
    */
   output?: string
+  /**
+   * Characters dropped from {@link output}, when it exceeded {@link MAX_UNIT_OUTPUT}. Absent means intact.
+   *
+   * A separate field rather than a marker appended to the text, because appending corrupts the very thing
+   * being reported: a structured answer with `… truncated (n more)` glued on is no longer parseable as JSON,
+   * so the surface that was meant to say "there is more" instead silently loses the syntax highlighting too.
+   */
+  outputTruncated?: number
 }
 
 /**
  * Cap on a recorded unit output, in characters.
  *
- * Generous rather than tight: this is the thing a person opened the unit level to read, so truncating it at a
- * few hundred characters would defeat the point. Truncation is marked, never silent.
+ * Sized against real answers rather than picked round: a `deep-research` synthesis runs 10–30k characters, so
+ * the first version's 12k cap truncated precisely the outputs worth opening the screen for. This is a guard
+ * against a pathological run (a wide fan-out of enormous answers making `/state` unbounded), not an editorial
+ * limit — it should essentially never fire. Phase 3's journal keeps the full text on disk regardless, so
+ * hitting it costs presentation, not data.
  */
-export const MAX_UNIT_OUTPUT = 12_000
+export const MAX_UNIT_OUTPUT = 131_072
+
+export interface UnitOutputRecord {
+  output?: string
+  outputTruncated?: number
+}
 
 /** A unit's result, as the store should carry it: JSON for structured values, verbatim for text, capped. */
-export function toUnitOutput(value: unknown): string | undefined {
-  if (value === null || value === undefined) return undefined
+export function toUnitOutput(value: unknown): UnitOutputRecord {
+  if (value === null || value === undefined) return {}
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
-  if (text.length === 0) return undefined
-  return text.length <= MAX_UNIT_OUTPUT
-    ? text
-    : `${text.slice(0, MAX_UNIT_OUTPUT)}\n… truncated (${text.length - MAX_UNIT_OUTPUT} more characters)`
+  if (text.length === 0) return {}
+  if (text.length <= MAX_UNIT_OUTPUT) return { output: text }
+  return { output: text.slice(0, MAX_UNIT_OUTPUT), outputTruncated: text.length - MAX_UNIT_OUTPUT }
 }
 
 export interface RunSnapshot {

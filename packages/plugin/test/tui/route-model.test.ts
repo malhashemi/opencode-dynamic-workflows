@@ -304,10 +304,11 @@ describe("unitDetail", () => {
       kind: "json",
       // Re-serialized with indentation: the engine stores it compact, the screen needs it readable.
       content: '{\n  "areas": [\n    "a",\n    "b"\n  ]\n}',
+      truncated: 0,
     })
 
     const text = run({ units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, output: "just prose" })] })
-    expect(unitDetail(text, "u1")?.output).toEqual({ kind: "text", content: "just prose" })
+    expect(unitDetail(text, "u1")?.output).toEqual({ kind: "text", content: "just prose", truncated: 0 })
   })
 
   it("treats a truncated structured answer as text rather than as broken JSON", () => {
@@ -319,6 +320,19 @@ describe("unitDetail", () => {
 
   it("has no answer for a unit that has not finished", () => {
     expect(unitDetail(run(), "unit-1")?.output).toBeNull()
+  })
+
+  it("reports truncation as a fact about the answer, not as text inside it", () => {
+    // The first version appended "… truncated (n more characters)" to the content. That both put words in the
+    // model's mouth and broke the JSON it was appended to, so a long structured answer silently lost its
+    // highlighting on top of being cut.
+    const cut = run({
+      units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, output: "a long answer", outputTruncated: 355 })],
+    })
+    const output = unitDetail(cut, "u1")?.output
+    expect(output?.truncated).toBe(355)
+    expect(output?.content).toBe("a long answer")
+    expect(output?.content).not.toContain("truncated")
   })
 })
 

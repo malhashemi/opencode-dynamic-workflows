@@ -105,16 +105,18 @@ export interface UnitDetail {
 export interface UnitOutput {
   kind: "json" | "text"
   content: string
+  /** Characters the engine dropped, or 0 when the answer is whole. */
+  truncated: number
 }
 
-export function unitOutput(output: string | undefined): UnitOutput | null {
+export function unitOutput(output: string | undefined, truncated = 0): UnitOutput | null {
   if (!output) return null
   try {
-    // Re-serialized rather than passed through: the engine's own capping can truncate mid-token, and a
-    // half-parsed value should render as the text it actually is instead of as broken JSON.
-    return { kind: "json", content: JSON.stringify(JSON.parse(output), null, 2) }
+    // Re-serialized rather than passed through: a capped structured value is cut mid-token, and a half-parsed
+    // value should render as the text it actually is instead of as broken JSON.
+    return { kind: "json", content: JSON.stringify(JSON.parse(output), null, 2), truncated }
   } catch {
-    return { kind: "text", content: output }
+    return { kind: "text", content: output, truncated }
   }
 }
 
@@ -287,7 +289,7 @@ export function unitDetail(run: RunSnapshot, unitId: string): UnitDetail | null 
     error: unit.error ?? null,
     elapsed: unitElapsed(unit, Date.now()),
     replayed: isReplayed(unit),
-    output: unitOutput(unit.output),
+    output: unitOutput(unit.output, unit.outputTruncated ?? 0),
   }
 }
 
