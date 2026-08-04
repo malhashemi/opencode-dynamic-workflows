@@ -20,39 +20,23 @@ export interface UnitSnapshot {
    * the answer.
    */
   output?: string
-  /**
-   * Characters dropped from {@link output}, when it exceeded {@link MAX_UNIT_OUTPUT}. Absent means intact.
-   *
-   * A separate field rather than a marker appended to the text, because appending corrupts the very thing
-   * being reported: a structured answer with `… truncated (n more)` glued on is no longer parseable as JSON,
-   * so the surface that was meant to say "there is more" instead silently loses the syntax highlighting too.
-   */
-  outputTruncated?: number
 }
 
 /**
- * Cap on a recorded unit output, in characters.
+ * A unit's result, as the store should carry it: JSON for structured values, verbatim for text — whole.
  *
- * Sized against real answers rather than picked round: a `deep-research` synthesis runs 10–30k characters, so
- * the first version's 12k cap truncated precisely the outputs worth opening the screen for. This is a guard
- * against a pathological run (a wide fan-out of enormous answers making `/state` unbounded), not an editorial
- * limit — it should essentially never fire. Phase 3's journal keeps the full text on disk regardless, so
- * hitting it costs presentation, not data.
+ * Deliberately uncapped. Two earlier versions capped it, and both were wrong for the same reason: a per-answer
+ * limit damages the common case (a real research synthesis is 10–30k characters, and the unit screen is a
+ * scrollbox that can show all of it) in order to mitigate a rare one. The rare case is real — settled runs
+ * persist for the session, so `/state` grows as a session accumulates history — but the fix for that is to
+ * stop shipping full outputs in `/state` at all, not to shorten the answer the user opened the screen to
+ * read. Phase 3 owns that: once the journal exists, outputs live on disk and the unit level fetches the one
+ * it needs.
  */
-export const MAX_UNIT_OUTPUT = 131_072
-
-export interface UnitOutputRecord {
-  output?: string
-  outputTruncated?: number
-}
-
-/** A unit's result, as the store should carry it: JSON for structured values, verbatim for text, capped. */
-export function toUnitOutput(value: unknown): UnitOutputRecord {
-  if (value === null || value === undefined) return {}
+export function toUnitOutput(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
-  if (text.length === 0) return {}
-  if (text.length <= MAX_UNIT_OUTPUT) return { output: text }
-  return { output: text.slice(0, MAX_UNIT_OUTPUT), outputTruncated: text.length - MAX_UNIT_OUTPUT }
+  return text.length > 0 ? text : undefined
 }
 
 export interface RunSnapshot {

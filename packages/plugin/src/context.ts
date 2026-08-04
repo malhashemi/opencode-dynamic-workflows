@@ -172,7 +172,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           startedAt,
           endedAt: Date.now(),
           error: result.ok ? undefined : result.error,
-          ...(result.ok ? toUnitOutput(result.kind === "structured" ? result.value : result.text) : {}),
+          output: result.ok ? toUnitOutput(result.kind === "structured" ? result.value : result.text) : undefined,
         }
         events?.onUnitSettled?.({ ...settled })
 

@@ -546,11 +546,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                         border
                         borderStyle="rounded"
                         borderColor={theme().borderSubtle}
-                        title={
-                          output().truncated > 0
-                            ? ` Answer — ${output().truncated.toLocaleString()} more characters not shown `
-                            : " Answer "
-                        }
+                        title=" Answer "
                         titleAlignment="left"
                       >
                         <Show
