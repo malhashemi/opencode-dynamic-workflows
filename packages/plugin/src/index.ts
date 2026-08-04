@@ -13,7 +13,7 @@ import { tool } from "@opencode-ai/plugin"
 import type { Plugin, PluginOptions, ToolContext } from "@opencode-ai/plugin"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { WorkflowClient } from "./client"
-import { createControlRegistry, type ControlResult } from "./control"
+import { createControlRegistry, createInteractionController, type ControlResult } from "./control"
 import { removeDescriptor, writeDescriptor } from "./discovery"
 import { startEndpoint, type EndpointOptions } from "./endpoint"
 import { createJournal, journalRoot, subscribeJournal, type Journal } from "./journal"
@@ -749,12 +749,24 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
   // no endpoint still gets units whose in-flight prompts are addressable.
   const control = createControlRegistry({
     ...(journal ? { save: (runId: string) => saveJournaledRun(runId, journal, { directory, worktree }) } : {}),
+    // Answering an AGENT-raised interaction has to leave this process; answering a SCRIPT one never does. The
+    // registry tries its own per-run sink first and falls through to here, so `POST /control` has exactly one
+    // path and a surface never has to know which kind it is settling.
+    interactions: createInteractionController(workflowClient, store),
   })
   // A real host always supplies serverUrl. Partial structural PluginInput doubles deliberately do not; avoid
   // opening an orphan server for those initialization-only tests while retaining default-on production.
   const endpoint = serverUrl
     ? await startEndpoint(store, dashboardOptions(options), { control, ...(journal ? { history: journal } : {}) })
     : null
+  /**
+   * Is anyone watching? An open SSE subscriber is the whole signal.
+   *
+   * Read per poll rather than captured once, because it changes during a run: a terminal opens, a dashboard tab
+   * closes. With no endpoint at all the answer is a flat no, which is the correct headless behaviour — and the
+   * reason `background` and `opencode serve` runs keep the watcher ladder byte-for-byte.
+   */
+  const attached = () => endpoint?.attached() ?? false
   let descriptorStatePath: string | null = null
   if (endpoint) {
     descriptorStatePath = opencodeStatePath()
@@ -873,6 +885,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
             signal: ctx.abort, // forward opencode's tool-abort signal → ctx.signal (stops launching queued Units)
             store,
             control, // …and let a surface outside this session stop the run or one of its units
+            attached, // …and give a watching human first refusal on the questions it raises
             ...(journal ? { journal } : {}), // …and let it outlive this process as a record
           }
 

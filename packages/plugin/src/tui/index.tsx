@@ -1,8 +1,10 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin } from "@opencode-ai/plugin/tui"
+import { registerAnnouncer } from "./announce"
 import { createRunClient } from "./client"
 import { createControlClient } from "./control"
 import { registerOpenCommand, WORKFLOW_ROUTE } from "./keymap"
+import { pendingInteractions, runOfInteraction } from "./route-model"
 import WorkflowRoute from "./route"
 import { registerSidebar } from "./sidebar"
 
@@ -36,8 +38,17 @@ const tui: TuiPlugin = async (api, options) => {
   ])
   // The always-available way in. The sidebar strip renders nothing until a run starts, so without a palette
   // entry the browser would be unreachable in exactly the state where a user goes looking for a past run.
-  registerOpenCommand(api)
+  registerOpenCommand(api, () => {
+    const oldest = pendingInteractions(client.runs())[0]
+    if (!oldest) return null
+    const run = runOfInteraction(client.runs(), oldest.requestID)
+    return run ? { runId: run.runId, requestID: oldest.requestID } : null
+  })
   registerSidebar(api, client.runs)
+  // Mounted in the host's root overlay rather than driven from here: an effect created outside the renderer's
+  // own reactive root is never flushed by the render loop, so an announcer built at activation time announces
+  // nothing. See `announce.tsx`.
+  registerAnnouncer(api, client.runs)
   api.lifecycle.onDispose(() => client.stop())
 }
 

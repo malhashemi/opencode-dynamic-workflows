@@ -21,6 +21,7 @@ function snapshot(): RunSnapshot {
     units: [],
     logs: ["already in snapshot"],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: 1,
     endedAt: null,

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test"
-import { createControlRegistry } from "../src/control"
+import { createControlRegistry, createInteractionController } from "../src/control"
 import { startEndpoint } from "../src/endpoint"
 import type { Journal, JournalListOptions, RunSummary } from "../src/journal"
-import { createRunStore, type RunSnapshot } from "../src/runs"
+import { createRunStore, type PendingInteraction, type RunSnapshot } from "../src/runs"
+import { makeFakeClient } from "./fake-client"
 
 function snapshot(): RunSnapshot {
   return {
@@ -17,6 +18,7 @@ function snapshot(): RunSnapshot {
     units: [],
     logs: [],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: Date.now(),
     endedAt: null,
@@ -310,3 +312,224 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
   }
   throw new Error("condition was not reached")
 }
+
+/**
+ * Interaction control — the write direction that carries a decision rather than a cancellation.
+ *
+ * ONE dispatch path for both origins is the point: a script-raised question is settled inside this process and
+ * an agent-raised one is forwarded to the host, and the caller sends the same action either way.
+ */
+describe("workflow endpoint: interaction control", () => {
+  function pending(overrides: Partial<PendingInteraction> = {}): PendingInteraction {
+    return {
+      requestID: "req-1",
+      kind: "question",
+      origin: "agent",
+      sessionID: "ses_child",
+      unitId: null,
+      depth: 2,
+      questions: [
+        {
+          header: "Region",
+          prompt: "Which region?",
+          options: [
+            { label: "US", description: "" },
+            { label: "EU", description: "" },
+          ],
+          multiple: false,
+          custom: false,
+        },
+      ],
+      raisedAt: Date.now(),
+      graceEndsAt: Date.now() + 10_000,
+      ...overrides,
+    }
+  }
+
+  function engine(interaction: PendingInteraction = pending()) {
+    const store = createRunStore()
+    store.create(snapshot())
+    store.apply({ type: "interaction.pending", runId: "run-endpoint", interaction })
+    const client = makeFakeClient()
+    const registry = createControlRegistry({ interactions: createInteractionController(client, store) })
+    registry.registerRun("run-endpoint", new AbortController())
+    return { store, client, registry }
+  }
+
+  async function post(url: string, token: string, body: unknown): Promise<Response> {
+    return fetch(`${url}/control`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it("forwards an agent question's answer to the host and takes the row off the run", async () => {
+    const { store, client, registry } = engine()
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const response = await post(endpoint.url, endpoint.token, {
+        action: "question.reply",
+        runId: "run-endpoint",
+        requestID: "req-1",
+        answers: [["EU"]],
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true })
+      expect(client.questionReplies).toEqual([{ requestID: "req-1", answers: [["EU"]] }])
+      // Cleared immediately rather than on the watcher's next poll: the surface that answered should not have
+      // to watch its own question sit there.
+      expect(store.get("run-endpoint")?.interactions).toEqual([])
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("settles a SCRIPT question locally, never touching the host", async () => {
+    const store = createRunStore()
+    store.create(snapshot())
+    const interaction = pending({ requestID: "script-1", origin: "script" })
+    store.apply({ type: "interaction.pending", runId: "run-endpoint", interaction })
+    const client = makeFakeClient()
+    const registry = createControlRegistry({ interactions: createInteractionController(client, store) })
+    registry.registerRun("run-endpoint", new AbortController())
+    const answered: string[][][] = []
+    registry.registerInteractions("run-endpoint", {
+      answer: (requestID, answers) => {
+        if (requestID !== "script-1") return false
+        answered.push(answers)
+        return true
+      },
+      handOff: () => false,
+    })
+
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const response = await post(endpoint.url, endpoint.token, {
+        action: "question.reply",
+        runId: "run-endpoint",
+        requestID: "script-1",
+        answers: [["EU"]],
+      })
+      expect(await response.json()).toEqual({ ok: true })
+      expect(answered).toEqual([[["EU"]]])
+      // The host has no such question; forwarding one would be answering somebody else's.
+      expect(client.questionReplies).toEqual([])
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("refuses a request this run never published — a surface cannot answer somebody else's question", async () => {
+    const { store, client, registry } = engine()
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const response = await post(endpoint.url, endpoint.token, {
+        action: "question.reply",
+        runId: "run-endpoint",
+        requestID: "somebody-elses",
+        answers: [["EU"]],
+      })
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({ ok: false, reason: "unknown-request" })
+      expect(client.questionReplies).toEqual([])
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("hands a question back to automation on reject, through the run's own sink", async () => {
+    const { store, client, registry } = engine()
+    const handed: string[] = []
+    registry.registerInteractions("run-endpoint", {
+      answer: () => false,
+      handOff: (requestID) => {
+        handed.push(requestID)
+        return true
+      },
+    })
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const response = await post(endpoint.url, endpoint.token, {
+        action: "question.reject",
+        runId: "run-endpoint",
+        requestID: "req-1",
+      })
+      expect(await response.json()).toEqual({ ok: true })
+      expect(handed).toEqual(["req-1"])
+      // Leaving a question for automation is NOT rejecting it at the host — the ladder may still ground it.
+      expect(client.questionRejects).toEqual([])
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("replies to a permission, and refuses a reply that is not one of the three", async () => {
+    const { store, client, registry } = engine(pending({ kind: "permission" }))
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const ok = await post(endpoint.url, endpoint.token, {
+        action: "permission.reply",
+        runId: "run-endpoint",
+        requestID: "req-1",
+        reply: "once",
+      })
+      expect(await ok.json()).toEqual({ ok: true })
+      expect(client.permissionReplies).toEqual([{ requestID: "req-1", reply: "once" }])
+
+      const bad = await post(endpoint.url, endpoint.token, {
+        action: "permission.reply",
+        runId: "run-endpoint",
+        requestID: "req-1",
+        reply: "sideways",
+      })
+      expect(bad.status).toBe(400)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("rejects a malformed answers payload before it can reach the host", async () => {
+    const { store, client, registry } = engine()
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      // `string[]` where `string[][]` belongs: the host would silently mis-read it.
+      const flat = await post(endpoint.url, endpoint.token, {
+        action: "question.reply",
+        runId: "run-endpoint",
+        requestID: "req-1",
+        answers: ["EU"],
+      })
+      expect(flat.status).toBe(400)
+      expect(client.questionReplies).toEqual([])
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("reports whether anyone is attached, which is what gives a human first refusal", async () => {
+    const endpoint = await startEndpoint(createRunStore())
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      expect(endpoint.attached()).toBe(false)
+      const stream = new AbortController()
+      const response = await fetch(`${endpoint.url}/events`, {
+        headers: { authorization: `Bearer ${endpoint.token}` },
+        signal: stream.signal,
+      })
+      await waitFor(() => endpoint.attached())
+      expect(endpoint.attached()).toBe(true)
+      await response.body?.cancel()
+      stream.abort()
+      await waitFor(() => !endpoint.attached())
+    } finally {
+      await endpoint.stop()
+    }
+  })
+})

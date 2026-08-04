@@ -37,8 +37,21 @@ export interface SidebarRunRow {
 
 export interface SidebarView {
   rows: SidebarRunRow[]
-  /** Renders the `❓ n question(s) waiting` row; 0 until Phase 4 fills `RunSnapshot.interactions`. */
+  /**
+   * Renders the `❓ n question(s) waiting` row.
+   *
+   * Counts every waiting interaction, permissions included. A permission ask only appears here when the
+   * workflow opted into `interaction.permissions: "human"` — the default allows it silently — so the wording
+   * stays true of the case that actually occurs, and a badge that under-reported what is blocking a run would
+   * be the worse error.
+   */
   pendingQuestions: number
+  /**
+   * The request that has been waiting longest, for the badge to deep-link to. `null` when nothing is waiting.
+   *
+   * Oldest first because it is the one closest to being taken back by automation.
+   */
+  oldestPending: { runId: string; requestID: string } | null
 }
 
 export interface WorkflowSidebarProps {
@@ -51,15 +64,19 @@ export interface WorkflowSidebarProps {
    * detail lives one level away. Optional so a view test can mount without a router.
    */
   onOpen?: (runId: string | null) => void
+  /**
+   * Open the answer pane directly on one waiting request.
+   *
+   * Separate from `onOpen` because the badge's destination is not a run, it is a question — and landing on the
+   * run browser's list, one drill short of the thing the badge was pointing at, is the difference between a
+   * deep link and a hint.
+   */
+  onAnswer?: (runId: string, requestID: string) => void
 }
 
-/**
- * Pending owned interactions on a run. Phase 4 adds `RunSnapshot.interactions`; until then every run reports
- * zero, so the badge slot exists in the layout from day one and lights up with no shape change.
- */
-function pendingInteractions(run: RunSnapshot): number {
-  const value = (run as RunSnapshot & { interactions?: unknown }).interactions
-  return Array.isArray(value) ? value.length : 0
+/** Tolerated as absent so a snapshot from an engine older than this reader reads as "nobody is waiting". */
+function interactionsOf(run: RunSnapshot): readonly RunSnapshot["interactions"][number][] {
+  return Array.isArray(run.interactions) ? run.interactions : []
 }
 
 /**
@@ -111,10 +128,15 @@ export function sidebarViewModel(runs: readonly RunSnapshot[], now = Date.now())
   const settled = runs
     .filter((run) => run.status !== "running")
     .sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt) || a.runId.localeCompare(b.runId))
+  // Only a live run can be waiting on an answer; a settled one's questions are already resolved.
+  const waiting = live
+    .flatMap((run) => interactionsOf(run).map((interaction) => ({ run, interaction })))
+    .sort((a, b) => a.interaction.raisedAt - b.interaction.raisedAt)
+  const oldest = waiting[0]
   return {
     rows: [...live, ...settled].map((run) => toSidebarRunRow(run, now)),
-    // Only a live run can be waiting on an answer; a settled one's questions are already resolved.
-    pendingQuestions: live.reduce((total, run) => total + pendingInteractions(run), 0),
+    pendingQuestions: waiting.length,
+    oldestPending: oldest ? { runId: oldest.run.runId, requestID: oldest.interaction.requestID } : null,
   }
 }
 
@@ -141,6 +163,7 @@ export function registerSidebar(api: TuiPluginApi, runs: Accessor<readonly RunSn
           runs,
           theme: context.theme,
           onOpen: (runId: string | null) => openWorkflowRoute(api, runId),
+          onAnswer: (runId: string, requestID: string) => openWorkflowRoute(api, runId, requestID),
         })
       },
     },

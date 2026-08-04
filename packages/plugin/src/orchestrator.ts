@@ -11,11 +11,19 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import type { DefineWorkflowConfig } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
-import { createEngineState, createWorkflowContext, runOwnedRoots, type EngineEvents, type EngineState } from "./context"
+import {
+  createAskRegistry,
+  createEngineState,
+  createWorkflowContext,
+  runOwnedRoots,
+  DEFAULT_ASK_GRACE_MS,
+  type EngineEvents,
+  type EngineState,
+} from "./context"
 import type { ControlRegistry } from "./control"
 import type { Journal } from "./journal"
 import { createRunStore, type RunSnapshot, type RunStore } from "./runs"
-import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type Watcher } from "./watcher"
+import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type QuestionResolutionPolicy, type Watcher } from "./watcher"
 
 /** Temp modules live beside the engine so `@opencode-ai/workflow` resolves from our node_modules. */
 const DEFAULT_TMP_DIR = path.join(import.meta.dir, "..", ".wf-tmp")
@@ -62,8 +70,18 @@ export interface RunWorkflowInput {
    * Whether a human is reachable to answer an escalated depth-1 nested Question. Defaults false
    * (headless-safe) per DR-005: when false, an unanswerable nested question is proxy-answered or rejected
    * without a human-escalation dispatch.
+   *
+   * Superseded by {@link RunWorkflowInput.attached} when that is supplied: a live surface is a better answer to
+   * "is a human reachable?" than a flag set at launch, because surfaces come and go during a run.
    */
   humanReachable?: boolean
+  /**
+   * Live-surface probe: is anyone actually watching right now?
+   *
+   * Read per poll rather than once, because the answer changes mid-run — a user opens a terminal, a dashboard
+   * tab closes. Absent ⇒ the run is headless and behaves exactly as it did before Phase 4.
+   */
+  attached?: () => boolean
   /** Unique id for the temp module filename (avoids Bun's import-by-URL cache colliding across Runs). */
   runId?: string
   /** Whether the source came from a durable registry entry or an inline tool argument. */
@@ -92,6 +110,48 @@ export interface RunWorkflowOutput {
   result: unknown
   meta: DefineWorkflowConfig["meta"]
   state: EngineState
+}
+
+/**
+ * The interaction policy a run actually runs under: `meta.interaction` read through whether anyone is watching.
+ *
+ * Exported and total so the routing rule is assertable rather than inferred from a nest of conditionals. Three
+ * things decide it, in this order:
+ *
+ * 1. Nobody attached ⇒ the tiered ladder, byte-for-byte the pre-Phase-4 behaviour. A `human-first` policy with
+ *    no surface would publish questions to an empty room and then wait out a grace nobody is spending.
+ * 2. `questions: "proxy"` ⇒ the same ladder even when a surface IS attached, because the author said so.
+ * 3. Otherwise `human-first`, wrapping the ladder as its fallback.
+ *
+ * `humanReachable` — whether the ladder may spend a unit escalating to a depth-1 dialog — is auto-detected from
+ * attachment rather than hardcoded false, which is the thing Phase 4 was meant to fix.
+ */
+export function resolveQuestionPolicy(
+  meta: DefineWorkflowConfig["meta"],
+  attached: (() => boolean) | undefined,
+  fallbackHumanReachable = false,
+): QuestionResolutionPolicy {
+  const interaction = meta.interaction ?? {}
+  const tiered: Extract<QuestionResolutionPolicy, { kind: "tiered" }> = {
+    kind: "tiered",
+    standInSubagent: "explore",
+    maxEscalationHops: DEFAULT_MAX_ESCALATION_HOPS,
+    // A GETTER, not a value. "Is a human reachable?" is a question about right now — a run lasting an hour will
+    // see terminals opened and closed — and the escalation rung reads it at the moment it would spend a unit.
+    get humanReachable() {
+      return attached ? attached() : fallbackHumanReachable
+    },
+  }
+  if (!attached) return tiered
+  if (interaction.questions === "proxy") return tiered
+  return {
+    kind: "human-first",
+    graceMs: Math.max(0, interaction.graceMs ?? DEFAULT_ASK_GRACE_MS),
+    attached,
+    questions: interaction.questions === "proxy-then-human" ? "proxy-then-human" : "human",
+    permissions: interaction.permissions === "human" ? "human" : "auto",
+    fallback: tiered,
+  }
 }
 
 /**
@@ -184,6 +244,14 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
   let runResult: unknown
   /** Live per-unit cancel-handle disposers, so a settled unit stops being addressable. */
   const unitHandles = new Map<string, () => void>()
+  /**
+   * Child session → unit, so an interaction raised inside a unit can name it.
+   *
+   * Filled the moment a child session exists rather than when the unit settles, because the whole point is to
+   * attribute a question that is blocking a unit RIGHT NOW.
+   */
+  const unitSessions = new Map<string, string>()
+  let unregisterInteractions: (() => void) | null = null
 
   const finishRun = (status: Exclude<RunSnapshot["status"], "running">) => {
     if (!registered || !state || startedAt === null) return
@@ -198,6 +266,10 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         logs: [...state.logs],
         errors: state.errors.map((error) => ({ ...error })),
         tokensSpent: state.tokensSpent,
+        // A terminal run has nobody waiting on it: whatever was pending has been answered, handed back, or
+        // orphaned by the run ending. Carrying it into the record would leave a question badge on a run that
+        // finished, which is the kind of thing a user only learns to distrust.
+        interactions: [],
         endedAt: Date.now(),
       },
     })
@@ -234,6 +306,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       units: [],
       logs: [],
       errors: [],
+      interactions: [],
       tokensSpent: 0,
       startedAt,
       endedAt: null,
@@ -248,18 +321,47 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     void journalWrite(
       input.journal && (() => input.journal!.begin(started, { source: input.source, args })),
     )
+    const resolutionPolicy = resolveQuestionPolicy(config.meta, input.attached, input.humanReachable ?? false)
     watcher = startWatcher({
       client: input.client,
       parentSessionID: input.parentSessionID,
       runOwnedRoots: () => runOwnedRoots(state!, input.parentSessionID),
       signal,
-      resolutionPolicy: {
-        kind: "tiered",
-        standInSubagent: "explore",
-        maxEscalationHops: DEFAULT_MAX_ESCALATION_HOPS,
-        humanReachable: input.humanReachable ?? false,
+      resolutionPolicy,
+      unitIdForSession: (sessionID) => unitSessions.get(sessionID) ?? null,
+      onInteraction: (event) => {
+        // The watcher observes; the store is where every surface reads. Bridging here keeps the watcher free of
+        // run identity, exactly as `onUnitCancelable` keeps the context free of it.
+        if (event.kind === "pending") {
+          store.apply({ type: "interaction.pending", runId, interaction: event.interaction })
+          return
+        }
+        if (event.kind === "resolved") {
+          store.apply({ type: "interaction.resolved", runId, requestID: event.requestID, by: event.by })
+          return
+        }
+        // An auto-allowed permission is news, not a decision. It lands in the run log — the `Recent` panel —
+        // rather than in the pending list, so it is visible without asking anybody for anything.
+        store.apply({
+          type: "run.log",
+          runId,
+          value: `allowed \`${event.permission}\` for a unit at depth ${event.depth}`,
+        })
       },
     })
+    const askRegistry = createAskRegistry({
+      store,
+      attached: input.attached ?? (() => false),
+      signal,
+      defaultGraceMs: Math.max(0, config.meta.interaction?.graceMs ?? DEFAULT_ASK_GRACE_MS),
+    })
+    // One sink for both origins, so `POST /control` never has to know which kind it is settling. `handOff`
+    // tries the script side first (its fallback is the author's own), then the watcher's published grace.
+    unregisterInteractions =
+      input.control?.registerInteractions(runId, {
+        answer: (requestID, answers) => askRegistry.resolve(requestID, answers),
+        handOff: (requestID) => askRegistry.reject(requestID) || (watcher?.handOff(requestID) ?? false),
+      }) ?? null
     const events: EngineEvents = {
       onLog: (message) => {
         store.apply({ type: "run.log", runId, value: message })
@@ -287,14 +389,17 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       },
       // Wired only when someone can actually use a handle. The runner builds a per-attempt AbortController the
       // moment this exists, so leaving it undefined keeps a plain `runWorkflow()` on its original prompt path.
-      ...(input.control || input.events?.onUnitCancelable
+      // Also wired under `human-first`, which needs the child-session mapping even when nothing can stop a unit:
+      // an interaction raised three sessions below a unit is attributable only through this handle.
+      ...(input.control || input.events?.onUnitCancelable || resolutionPolicy.kind === "human-first"
         ? {
-            onUnitCancelable: (unitId: string, cancel: () => void) => {
+            onUnitCancelable: (unitId: string, cancel: () => void, childSessionID: string) => {
               // A retry attempt supersedes its predecessor's handle — the previous child is already abandoned.
               unitHandles.get(unitId)?.()
+              unitSessions.set(childSessionID, unitId)
               const dispose = input.control?.registerUnit(runId, unitId, cancel)
               if (dispose) unitHandles.set(unitId, dispose)
-              input.events?.onUnitCancelable?.(unitId, cancel)
+              input.events?.onUnitCancelable?.(unitId, cancel, childSessionID)
             },
           }
         : {}),
@@ -309,6 +414,8 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       budget: input.budget ?? config.meta.budget ?? null,
       signal,
       unitTimeout: resolveUnitTimeout(input.unitTimeout, config.meta.unitTimeout),
+      ask: askRegistry,
+      runId,
     })
 
     const result = await config.run(ctx)
@@ -320,13 +427,17 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     terminalStatus = aborted ? "aborted" : "failed"
     throw error
   } finally {
+    // Stopped BEFORE the terminal snapshot, so its `interaction.resolved` events reach live subscribers while
+    // the run is still the run they are watching — a `run.ended` arriving first would leave every surface
+    // clearing a badge for a run it had already filed away.
+    watcher?.stop()
+    unregisterInteractions?.()
     finishRun(terminalStatus)
     // Awaited, unlike `begin`: `workflow({ result })` and Phase 6's resume both read this from ANOTHER process,
     // so the record has to be on disk by the time the tool answers — including when the host is killed
     // moments later, which is precisely the case the journal exists for.
     const terminal = registered ? store.get(runId) : undefined
     if (terminal) await journalWrite(input.journal && (() => input.journal!.finish(terminal, runResult)))
-    watcher?.stop()
     // Unregister before the temp file goes: a terminal run must stop being addressable immediately, or a
     // surface still holding a stale row would get `ok: true` for a stop that can no longer do anything.
     for (const dispose of unitHandles.values()) dispose()

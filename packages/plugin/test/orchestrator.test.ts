@@ -3,7 +3,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import type { SessionMessage } from "../src/client"
 import type { Journal } from "../src/journal"
-import { loadWorkflowConfig, resolveUnitTimeout, runWorkflow, runWorkflowFromFile } from "../src/orchestrator"
+import { createControlRegistry } from "../src/control"
+import {
+  loadWorkflowConfig,
+  resolveQuestionPolicy,
+  resolveUnitTimeout,
+  runWorkflow,
+  runWorkflowFromFile,
+} from "../src/orchestrator"
 import { createRunStore, type RunSnapshot } from "../src/runs"
 import { makeFakeClient } from "./fake-client"
 
@@ -631,3 +638,156 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, message: str
 function firstUserMessage(text: string): SessionMessage[] {
   return [{ info: { role: "user" }, parts: [{ type: "text", text }] }]
 }
+
+/**
+ * The routing rule, stated once and asserted rather than inferred.
+ *
+ * Three inputs decide who answers a nested question — whether anyone is watching, what the workflow declared,
+ * and the ladder underneath — and the failure this guards against is silent: a `human-first` policy resolved for
+ * a headless run publishes questions to an empty room and then waits out a grace nobody is spending.
+ */
+describe("resolveQuestionPolicy", () => {
+  const bare = { name: "w", description: "d" }
+
+  it("stays on the tiered ladder when nothing is attached — the pre-Phase-4 behaviour, unchanged", () => {
+    const policy = resolveQuestionPolicy(bare, undefined)
+    expect(policy).toMatchObject({ kind: "tiered", standInSubagent: "explore" })
+    expect(policy.kind === "tiered" && policy.humanReachable).toBe(false)
+  })
+
+  it("auto-detects `humanReachable` from attachment, live rather than at launch", () => {
+    let watching = false
+    const policy = resolveQuestionPolicy({ ...bare, interaction: { questions: "proxy" } }, () => watching)
+    expect(policy.kind).toBe("tiered")
+    // A run lasting an hour sees terminals opened and closed; the escalation rung reads this at the moment it
+    // would spend a unit, not at the moment the run started.
+    expect(policy.kind === "tiered" && policy.humanReachable).toBe(false)
+    watching = true
+    expect(policy.kind === "tiered" && policy.humanReachable).toBe(true)
+  })
+
+  it("gives a human first refusal when a surface is attached, wrapping the ladder as its fallback", () => {
+    const policy = resolveQuestionPolicy(bare, () => true)
+    expect(policy).toMatchObject({
+      kind: "human-first",
+      questions: "human",
+      permissions: "auto",
+      fallback: { kind: "tiered", standInSubagent: "explore" },
+    })
+    expect(policy.kind === "human-first" && policy.graceMs).toBe(300_000)
+  })
+
+  it("honours every `meta.interaction` override", () => {
+    expect(
+      resolveQuestionPolicy(
+        { ...bare, interaction: { questions: "proxy-then-human", permissions: "human", graceMs: 42 } },
+        () => true,
+      ),
+    ).toMatchObject({ kind: "human-first", questions: "proxy-then-human", permissions: "human", graceMs: 42 })
+    // A negative grace is a typo, not a request to skip the human entirely.
+    expect(resolveQuestionPolicy({ ...bare, interaction: { graceMs: -1 } }, () => true)).toMatchObject({
+      graceMs: 0,
+    })
+  })
+})
+
+describe("runWorkflow (interactions)", () => {
+  it("publishes a `ctx.ask` as run state, and resolves it from the control registry", async () => {
+    const store = createRunStore()
+    const control = createControlRegistry()
+    const source = `
+import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "asks", description: "asks the human" },
+  async run({ ask }) {
+    const [answer] = await ask(
+      { header: "Depth", prompt: "fast or thorough?", options: [
+        { label: "fast", description: "one unit per area" },
+        { label: "thorough", description: "two units per area" },
+      ] },
+      { fallback: [["fast"]], graceMs: 30000 },
+    )
+    return answer
+  },
+})`
+    const running = runWorkflow({
+      source,
+      client: makeFakeClient(),
+      parentSessionID: "p",
+      runId: "run-ask",
+      store,
+      control,
+      attached: () => true,
+    })
+
+    // The question reaches run state, where every surface reads it.
+    let pending: RunSnapshot["interactions"] = []
+    for (let i = 0; i < 100 && pending.length === 0; i++) {
+      await Bun.sleep(5)
+      pending = store.get("run-ask")?.interactions ?? []
+    }
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.origin).toBe("script")
+
+    // …and one control action settles it, exactly as `POST /control` would.
+    const result = await control.dispatch({
+      action: "question.reply",
+      runId: "run-ask",
+      requestID: pending[0]!.requestID,
+      answers: [["thorough"]],
+    })
+    expect(result).toEqual({ ok: true })
+    expect((await running).result).toEqual(["thorough"])
+    expect(store.get("run-ask")?.interactions).toEqual([])
+  })
+
+  it("resolves `ctx.ask` to its fallback with nothing attached, without waiting", async () => {
+    const store = createRunStore()
+    const source = `
+import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "asks-headless", description: "asks nobody" },
+  async run({ ask }) {
+    return (await ask(
+      { header: "Depth", prompt: "fast or thorough?", options: [
+        { label: "fast", description: "" }, { label: "thorough", description: "" },
+      ] },
+      { fallback: [["thorough"]], graceMs: 600000 },
+    ))[0]
+  },
+})`
+    const started = Date.now()
+    const out = await runWorkflow({ source, client: makeFakeClient(), parentSessionID: "p", runId: "run-h", store })
+    // The whole point: a headless run does not stall on a question nobody will answer.
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(out.result).toEqual(["thorough"])
+    expect(store.get("run-h")?.interactions).toEqual([])
+  })
+
+  it("leaves a terminal run carrying no pending interactions", async () => {
+    const store = createRunStore()
+    const source = `
+import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "asks-then-ends", description: "asks and moves on" },
+  async run({ ask }) {
+    await ask(
+      { header: "Q", prompt: "?", options: [{ label: "a", description: "" }] },
+      { fallback: [["a"]], graceMs: 10 },
+    )
+    return "done"
+  },
+})`
+    await runWorkflow({
+      source,
+      client: makeFakeClient(),
+      parentSessionID: "p",
+      runId: "run-t",
+      store,
+      attached: () => true,
+    })
+    // A question badge on a run that finished is the kind of thing a user only learns to distrust.
+    expect(store.get("run-t")?.interactions).toEqual([])
+    expect(store.get("run-t")?.status).toBe("done")
+  })
+})

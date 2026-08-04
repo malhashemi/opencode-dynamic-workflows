@@ -36,8 +36,24 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
   { key: "q", action: "close", label: "close", enabled: true },
 ]
 
+/**
+ * The same bindings, relabelled for the answer pane.
+ *
+ * Same keys, same order, same footer positions — only the words change, because on that level `⏎` sends an
+ * answer and `esc` hands the question back to automation. Deriving them rather than writing a second table is
+ * what guarantees the two can never drift into different vocabularies.
+ */
+export const QUESTION_BINDINGS: readonly WorkflowBinding[] = WORKFLOW_BINDINGS.map((binding) => {
+  if (binding.action === "drill") return { ...binding, label: "answer" }
+  if (binding.action === "back") return { ...binding, label: "leave for automation" }
+  return binding
+})
+
 /** The palette/slash name that opens the browser from anywhere. */
 export const OPEN_COMMAND = "workflow.runs.open"
+
+/** The palette/slash name that jumps straight to the question that has been waiting longest. */
+export const ANSWER_COMMAND = "workflow.question.answer"
 
 /**
  * Navigate to the run browser, remembering where the user came from.
@@ -45,10 +61,13 @@ export const OPEN_COMMAND = "workflow.runs.open"
  * The return route is captured HERE, at the moment of the navigation, because that is the only point at which
  * the host's current route is still the one being left — a plugin route gets no history to walk back through.
  */
-export function openWorkflowRoute(api: TuiPluginApi, runId?: string | null): void {
+export function openWorkflowRoute(api: TuiPluginApi, runId?: string | null, requestID?: string | null): void {
   const from = api.route.current
   const params: Record<string, unknown> = {}
   if (runId) params.runId = runId
+  // With both, the route opens ON the answer pane rather than near it: a badge that costs three more keystrokes
+  // to act on is a notification, not a deep link.
+  if (runId && requestID) params.requestID = requestID
   const sessionID =
     from.name === "session" ? (from.params as { sessionID?: unknown } | undefined)?.sessionID : undefined
   if (typeof sessionID === "string") params.returnTo = sessionID
@@ -63,7 +82,11 @@ export function openWorkflowRoute(api: TuiPluginApi, runId?: string | null): voi
  * they remember starting. Deliberately carries NO default keybinding — an unprompted global key from a plugin
  * is a key taken away from the user.
  */
-export function registerOpenCommand(api: TuiPluginApi): () => void {
+export function registerOpenCommand(
+  api: TuiPluginApi,
+  /** The oldest question still waiting, so the answer command has somewhere to go. */
+  oldestPending?: () => { runId: string; requestID: string } | null,
+): () => void {
   return api.keymap.registerLayer({
     commands: [
       {
@@ -74,6 +97,21 @@ export function registerOpenCommand(api: TuiPluginApi): () => void {
         slashName: "workflow-runs",
         run() {
           openWorkflowRoute(api)
+        },
+      },
+      {
+        name: ANSWER_COMMAND,
+        title: "Workflows: answer waiting question",
+        category: "Workflows",
+        namespace: "palette",
+        slashName: "workflow-answer",
+        run() {
+          // The reachable half of the "one keypress from the toast" design. The host's toast carries no action
+          // of its own, and a plugin claiming a global key is a key taken away from the user — so the deep link
+          // is a named command the toast points at, reachable from the palette in two keystrokes.
+          const pending = oldestPending?.()
+          if (pending) openWorkflowRoute(api, pending.runId, pending.requestID)
+          else openWorkflowRoute(api)
         },
       },
     ],

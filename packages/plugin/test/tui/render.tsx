@@ -85,6 +85,29 @@ export async function mountSidebarSlot(plugin: TuiSlotPlugin, options: MountOpti
   return mountView(() => <App />, options)
 }
 
+/**
+ * Mount a registered `app`-slot plugin the way the HOST composes it: as a root overlay beneath the route.
+ *
+ * Separate from {@link mountSidebarSlot} because the two slots are composed at different places in the tree,
+ * and a component that only ever watches — like the announcer — has no visible output to fall back on. If its
+ * effects do not run here, they will not run on a host either.
+ */
+export async function mountAppSlot(plugin: TuiSlotPlugin, options: MountOptions = {}): Promise<MountedView> {
+  const App = () => {
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the `app` slot takes no props of its own
+    const registry = createSolidSlotRegistry<{ app: {} }>(useRenderer(), { theme: fakeTheme() })
+    const Slot = createSlot(registry)
+    registry.register(plugin as never)
+    return (
+      <box flexGrow={1}>
+        <box><text>route body</text></box>
+        <Slot name="app" />
+      </box>
+    )
+  }
+  return mountView(() => <App />, options)
+}
+
 export async function mountView(render: () => JSX.Element, options: MountOptions = {}): Promise<MountedView> {
   const app = await testRender(render, {
     width: options.width ?? 42,

@@ -52,7 +52,74 @@ export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
    * as the schema's inferred type. Omit it for an untyped/unchecked `args` (`ctx.args` is then `unknown`).
    */
   args?: S
+  /** How this Workflow's interactions are routed between a human and the engine's automation. */
+  interaction?: InteractionPolicy
 }
+
+/**
+ * How a Run's interactions are routed — per Workflow, overriding the engine's defaults.
+ *
+ * The engine's default is human-first: when a surface is attached, a nested Question is published and left for
+ * a person for {@link InteractionPolicy.graceMs}; with nobody attached, or once the grace expires, the watcher's
+ * proxy → escalate → reject ladder runs exactly as it does headlessly.
+ */
+export interface InteractionPolicy {
+  /**
+   * - `human` — publish and wait for the grace, then hand back to automation (the default).
+   * - `proxy` — never wait for a person; run the automation ladder immediately, as a headless Run does.
+   * - `proxy-then-human` — same as `proxy`, but a question the proxy cannot ground is offered to a human
+   *   for the grace period before it is rejected.
+   */
+  questions?: "human" | "proxy" | "proxy-then-human"
+  /**
+   * - `auto` — owned permission asks are allowed once, silently, as they are headlessly (the default).
+   * - `human` — an attached person gets first refusal; on grace expiry it falls back to allowing once.
+   */
+  permissions?: "auto" | "human"
+  /** How long a human has before automation takes an interaction back. Defaults to five minutes. */
+  graceMs?: number
+}
+
+/** One question a script asks. The same shape the host uses, so both origins render through one pane. */
+export interface AskQuestion {
+  /** Short display header — the pane's panel title. */
+  header: string
+  /** The complete question text. */
+  prompt: string
+  /** The closed set of answers. A reply is matched by LABEL, per the host's own contract. */
+  options: { label: string; description: string }[]
+  /** Whether more than one label may be chosen. Defaults to false. */
+  multiple?: boolean
+  /** Whether a free-text answer is accepted alongside the offered labels. Defaults to false. */
+  custom?: boolean
+}
+
+export interface AskOptions {
+  /**
+   * The answer to use when nobody can be asked — REQUIRED, not optional.
+   *
+   * A background run, `opencode serve`, and a CI run all have no one attached, and a Workflow that hangs
+   * waiting for an answer nobody will give is worse than one that proceeds on a stated default. Declaring it
+   * also makes the headless path a decision the author made rather than one the engine invented. Shaped like a
+   * reply: one entry per question, each a list of chosen labels.
+   */
+  fallback: string[][]
+  /** How long to wait for a human before falling back. Defaults to the Run's `meta.interaction.graceMs`. */
+  graceMs?: number
+}
+
+/**
+ * Ask the human a question mid-run, and block until they answer (or the grace expires).
+ *
+ * The point is the questions args cannot express: `meta.args` is fixed before the Run starts, so it can offer
+ * "fast or thorough?" but not *"planning found 6 areas — 12 units — fast or thorough?"*. Same two options, far
+ * better decision, and only answerable once the Run has computed something.
+ *
+ * Answers are matched by LABEL, per the host's own reply contract — so the offered labels are a closed set,
+ * which is what makes the fallback well-typed and a later replay exact. The resolved value is always one entry
+ * per question, in the order they were asked.
+ */
+export type AskFn = (form: AskQuestion | AskQuestion[], options: AskOptions) => Promise<string[][]>
 
 /**
  * Options for a single {@link AgentFn} call — one Unit of a Run. Generic over the optional `schema`: when a
@@ -178,7 +245,7 @@ export interface PipelineFn {
 
 /**
  * The context handed to a Workflow's `run`. This slice implements `agent`, `parallel`, `pipeline`, `collect`,
- * `errors`, `args`, `log`, `phase`, `budget`, `signal`; the remaining primitives (`ask`, `workflow`,
+ * `errors`, `args`, `log`, `phase`, `budget`, `signal`, `ask`; the remaining primitives (`workflow`,
  * `mergeWorktree`, …) arrive in later tickets and are intentionally omitted so the typed surface never
  * overstates what works.
  */
@@ -199,6 +266,13 @@ export interface WorkflowContext<A = unknown> {
   log: (message: string) => void
   /** Begin a named progress phase; subsequent `agent()` calls group under it. */
   phase: (title: string) => void
+  /**
+   * Ask the human a question mid-run, with a REQUIRED headless fallback.
+   *
+   * Blocks until someone answers, the grace period expires, or the Run aborts — whichever comes first. With no
+   * surface attached it resolves to `options.fallback` immediately rather than stalling a headless Run.
+   */
+  ask: AskFn
   /**
    * Advisory token budget (D10): `total` is the caller's ceiling (or null), `spent()` the running output-token
    * sum, `remaining()` is `max(0, total - spent())` (or Infinity when uncapped). No engine hard-stop.

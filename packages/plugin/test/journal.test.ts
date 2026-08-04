@@ -45,6 +45,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     units: [],
     logs: [],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: 1_000,
     endedAt: null,

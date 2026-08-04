@@ -171,6 +171,41 @@ Costs five parent prompts and one child session. Only `phase-gate` dispatches a 
 
 ---
 
+### `interactions.tui.live.ts` — a human answering a question mid-run
+
+The question a unit's grandchild raises exists in the **host**, reached through `GET /question`, and the only
+thing that produces one is a model deciding to call the Question tool. There is no way to fake it and still be
+testing the thing: so this probe runs real workflows, drives the real TUI, and answers a real pending question
+by keystroke.
+
+| Leg | Host | What it proves |
+|---|---|---|
+| A | `opencode .` (tmux) | An **agent** question: the sidebar badge, the `/workflow-answer` deep link, the pane's asker/depth/draining countdown, and `⏎` unblocking the agent so the run finishes `done` with its sentinel |
+| B | `opencode .` (tmux) | `esc` hands the same question back — the watcher's ladder resolves it and the run still completes, with nothing left pending |
+| C | `opencode serve` | The same fixture with **no subscriber**: the headless ladder, unchanged, no stall, nothing orphaned |
+| D | `opencode .` (tmux) | A **script** question (`ctx.ask`) whose options the run computed from a unit's answer; answering the second one changes the script's own branch |
+| E | `opencode serve` | The same script question with nobody attached — its declared fallback, immediately, and nothing ever published |
+
+- **`esc` is not `question.reject`.** Declining to be the one who answers is not declining the question: the
+  hand-off expires the grace so the proxy → escalate → reject ladder takes over, and leg B asserts the run
+  still ends `done`.
+- **The script leg is the justification for the primitive.** `meta.args` is fixed before a run starts, so it
+  could never have carried the option labels the pane shows — they come out of a unit's answer. The labels are
+  read off the published interaction rather than hardcoded, so a model's phrasing cannot masquerade as an
+  engine defect.
+- **Legs A–C depend on a model's mood.** A grandchild that answers its own question produces a valid run with
+  no question in it. `waitForQuestion` fails with that spelled out, so a flake reads as a flake.
+- **The toast is UNVERIFIED, and marked `todo` rather than removed.** It never appeared in a captured frame
+  across three live cycles — from a `createRoot` watcher, from an `app`-slot watcher, and at a ten-second
+  duration. Our half is accounted for by `test/tui/announce.test.tsx`, which composes the announcer through the
+  real slot registry and asserts `attention.notify` and `ui.toast` both fire. What the host does after that
+  call is not something a tmux frame settles. The sidebar badge is the durable announcement, and it IS
+  asserted. When a frame under `.artifacts/` is named `15-interactions-no-toast`, that is this.
+
+Costs five parent prompts, five child sessions, and three `task`-spawned grandchildren.
+
+---
+
 ## Reading a failure
 
 Every probe writes frames to `packages/plugin/test/live/.artifacts/` (gitignored), named
@@ -202,6 +237,10 @@ where the screen stopped matching the story.
 | `History` never appears in the route, but `/history` answers | The TUI client's history read failed silently — check that the descriptor's endpoint is the one for THIS worktree, and that `/history` is authorized |
 | `/history` is empty after a restart | Nothing was journaled: the plugin resolves the journal from `worktree \|\| directory`, so a host with neither writes no records |
 | `s` answers "that run is not in the journal" | The row's owning endpoint could not be resolved. History rows are owned via `client.endpointFor` too — a live-only owner map would answer exactly this |
+| "finished `done` without ever publishing a question" | The grandchild declined to call the Question tool. A model outcome, not an engine one — re-run |
+| The badge appears but `/workflow-answer` opens the list | Nothing was pending by the time the command ran, so it fell back to the browser. Usually means the grace expired or another surface answered |
+| The pane opens and `⏎` does nothing | The route dispatches `drill` to the pane only while the question level is on top; check the breadcrumb ends in `question` |
+| A headless run sits on a question | `attached()` returned true with no real subscriber. It is `endpoint.attached()`, i.e. open SSE connections — a stray `curl --no-buffer /events` counts |
 
 ## Debugging by hand
 

@@ -7,12 +7,16 @@
  */
 import { describe, expect, it } from "bun:test"
 import { toRunSummary, type RunSummary } from "../../src/journal"
-import type { RunSnapshot, UnitSnapshot } from "../../src/runs"
+import type { PendingInteraction, RunSnapshot, UnitSnapshot } from "../../src/runs"
 import {
   breadcrumb,
+  findInteraction,
   initialRouteState,
   listRows,
   normalizeRoute,
+  openQuestion,
+  pendingInteractions,
+  questionRowCount,
   reduceRoute,
   runRows,
   selectedControl,
@@ -50,6 +54,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     units: [unit()],
     logs: [],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: 1_000,
     endedAt: null,
@@ -497,5 +502,106 @@ describe("selectIndex — what a mouse click means", () => {
 
   it("never selects a negative row", () => {
     expect(selectIndex(initialRouteState(), -5).stack[0]).toMatchObject({ selected: 0 })
+  })
+})
+
+/**
+ * The `question` level — the answer pane as a member of the drill stack.
+ *
+ * Making the pane a level rather than a modal buys three things that are all asserted here: it is reached by
+ * the same ⏎ that opens a unit, `esc` walks out of it the way it walks out of everything else, and — the one
+ * that only a level can do — it UNWINDS BY ITSELF when the question is answered somewhere else.
+ */
+describe("route model: the answer pane as a level", () => {
+  function interaction(overrides: Partial<PendingInteraction> = {}): PendingInteraction {
+    return {
+      requestID: "req-1",
+      kind: "question",
+      origin: "agent",
+      sessionID: "child-1",
+      unitId: "unit-1",
+      depth: 2,
+      questions: [
+        {
+          header: "Citations",
+          prompt: "Which citation style?",
+          options: [
+            { label: "APA", description: "American Psychological Association" },
+            { label: "MLA", description: "Modern Language Association" },
+          ],
+          multiple: false,
+          custom: false,
+        },
+      ],
+      raisedAt: 2_000,
+      graceEndsAt: 302_000,
+      ...overrides,
+    }
+  }
+
+  const asking = run({ interactions: [interaction()] })
+
+  it("pins waiting interactions above the phases, where they cannot be missed", () => {
+    const rows = runRows(asking)
+    expect(rows[0]).toMatchObject({ kind: "interaction", id: "req-1", glyph: "question", label: "Question" })
+    expect(rows[0]?.detail).toContain("Citations")
+    // A forty-unit fan-out must not be able to bury the one row asking for something.
+    expect(rows.slice(1).every((row) => row.kind !== "interaction")).toBe(true)
+  })
+
+  it("drills into the pane with the same ⏎ that opens a unit", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
+    expect(opened.stack.at(-1)).toEqual({
+      kind: "question",
+      runId: "run-1",
+      requestID: "req-1",
+      selected: 0,
+      custom: null,
+    })
+    expect(breadcrumb(opened, [asking])).toBe("Workflows ▸ deep-research ▸ question")
+  })
+
+  it("moves the cursor over the offered options, and no further", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill", "down", "down", "down"], [asking])
+    const level = opened.stack.at(-1)
+    expect(level).toMatchObject({ kind: "question", selected: 1 }) // two options, clamped
+    expect(drive(opened, ["up", "up"], [asking]).stack.at(-1)).toMatchObject({ selected: 0 })
+  })
+
+  it("counts a custom-answer row only when the question allows one", () => {
+    expect(questionRowCount(interaction())).toBe(2)
+    expect(questionRowCount(interaction({ questions: [{ ...interaction().questions[0]!, custom: true }] }))).toBe(3)
+  })
+
+  it("unwinds the moment the question is answered, whoever answered it", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
+    expect(opened.stack).toHaveLength(3)
+    // Another surface, or the watcher's grace running out: either way the interaction is gone from the run.
+    const answered = normalizeRoute(opened, [run({ interactions: [] })])
+    expect(answered.stack.map((level) => level.kind)).toEqual(["list", "run"])
+  })
+
+  it("targets the RUN when `x` is pressed on the pane — a question has nothing of its own to stop", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
+    expect(selectedControl(opened, [asking], "stop")).toEqual({ action: "stop.run", runId: "run-1" })
+  })
+
+  it("counts and orders every waiting interaction across runs, oldest first", () => {
+    const other = run({
+      runId: "run-2",
+      interactions: [interaction({ requestID: "req-0", raisedAt: 1_000 })],
+    })
+    expect(pendingInteractions([asking, other]).map((entry) => entry.requestID)).toEqual(["req-0", "req-1"])
+    expect(listRows([asking, other], [], "all").map((row) => row.pendingQuestions)).toEqual([1, 1])
+    expect(findInteraction([asking], "run-1", "req-1")?.requestID).toBe("req-1")
+    expect(findInteraction([asking], "run-1", "nope")).toBeNull()
+  })
+
+  it("opens the pane from a deep link on the stack the run browser would have built", () => {
+    const linked = openQuestion(initialRouteState(), "run-1", "req-1")
+    // `list → run → question`, so `esc` walks back out through the run the question belongs to rather than to
+    // wherever the user happened to be when the badge lit up.
+    expect(linked.stack.map((level) => level.kind)).toEqual(["list", "run", "question"])
+    expect(normalizeRoute(linked, [asking]).stack).toHaveLength(3)
   })
 })

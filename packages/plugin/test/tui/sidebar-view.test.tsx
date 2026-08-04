@@ -29,6 +29,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     units: [],
     logs: [],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: Date.now(),
     endedAt: null,
@@ -37,7 +38,21 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 }
 
 function withInteractions(base: RunSnapshot, count: number): RunSnapshot {
-  return { ...base, interactions: Array.from({ length: count }, (_x, i) => ({ requestID: `q-${i}` })) } as RunSnapshot
+  return {
+    ...base,
+    interactions: Array.from({ length: count }, (_x, i) => ({
+      requestID: `q-${i}`,
+      kind: "question" as const,
+      origin: "agent" as const,
+      sessionID: "ses_child",
+      unitId: null,
+      depth: 3,
+      questions: [{ header: "Pick", prompt: "Which?", options: [], multiple: false, custom: false }],
+      // Ascending, so "oldest waiting" is `q-0` — the request the badge deep-links to.
+      raisedAt: 1_000 + i,
+      graceEndsAt: null,
+    })),
+  }
 }
 
 describe("workflow sidebar render", () => {
@@ -228,9 +243,13 @@ describe("workflow sidebar render", () => {
 
         // Back in the session — the sidebar only exists there, so this is the only way a second click happens.
         fake.api.route.navigate("session", { sessionID: "ses_here" })
-        // The badge opens the LIST: with several runs asking, "which one" is the first thing to answer.
+        // The badge is a DEEP LINK, not a hint: it opens the answer pane on the request that has been waiting
+        // longest, which is the one closest to being taken back by automation.
         await view.click(4, view.lineOf(/question waiting/))
-        expect(fake.navigations.at(-1)).toEqual({ name: "workflow-runs", params: { returnTo: "ses_here" } })
+        expect(fake.navigations.at(-1)).toEqual({
+          name: "workflow-runs",
+          params: { runId: "run-1", requestID: "q-0", returnTo: "ses_here" },
+        })
       } finally {
         view.unmount()
       }

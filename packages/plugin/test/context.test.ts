@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
-import { z } from "@opencode-ai/workflow"
-import { createEngineState, createWorkflowContext } from "../src/context"
+import { z, type AskQuestion } from "@opencode-ai/workflow"
+import { createAskRegistry, createEngineState, createWorkflowContext } from "../src/context"
+import { createRunStore, type RunSnapshot } from "../src/runs"
 import { makeFakeClient } from "./fake-client"
 
 describe("createWorkflowContext", () => {
@@ -277,5 +278,164 @@ describe("ctx unit tracking (out-of-band visibility)", () => {
     expect(state.units).toHaveLength(3)
     expect(state.units.every((u) => u.ok && u.sessionID)).toBe(true)
     expect(new Set(state.units.map((u) => u.sessionID)).size).toBe(3) // distinct child sessions
+  })
+})
+
+/**
+ * `ctx.ask` — the script's own question, and the reason the primitive exists.
+ *
+ * `meta.args` is fixed before a run starts, so it can offer "fast or thorough?" but not *"planning found 6
+ * areas — 12 units — fast or thorough?"*. These cover the four ways that question can end: a human answers it,
+ * the grace runs out, nobody is attached, or the run is stopped. The last three all resolve to the fallback,
+ * which is exactly what makes the primitive safe to put in a workflow that will also run in CI.
+ */
+describe("ctx.ask", () => {
+  const FORM: AskQuestion[] = [
+    {
+      header: "Depth",
+      prompt: "Planning found 6 areas. Fast or thorough?",
+      options: [
+        { label: "fast", description: "One unit per area" },
+        { label: "thorough", description: "Two units per area" },
+      ],
+    },
+  ]
+
+  function harness(options: { attached?: boolean; signal?: AbortSignal } = {}) {
+    const store = createRunStore()
+    const run: RunSnapshot = {
+      runId: "run-ask",
+      workflow: "planner",
+      provenance: "inline",
+      parentSessionID: "ses_parent",
+      status: "running",
+      phases: [],
+      phasesDeclared: false,
+      currentPhase: null,
+      units: [],
+      logs: [],
+      errors: [],
+      interactions: [],
+      tokensSpent: 0,
+      startedAt: Date.now(),
+      endedAt: null,
+    }
+    store.create(run)
+    const registry = createAskRegistry({
+      store,
+      attached: () => options.attached ?? true,
+      signal: options.signal ?? new AbortController().signal,
+      defaultGraceMs: 50,
+    })
+    const ctx = createWorkflowContext({
+      client: makeFakeClient(),
+      parentSessionID: "ses_parent",
+      args: undefined,
+      state: createEngineState(),
+      ask: registry,
+      runId: "run-ask",
+    })
+    const pending = () => store.get("run-ask")?.interactions ?? []
+    return { store, registry, ctx, pending }
+  }
+
+  it("publishes the question as run state, then resolves to the human's answer", async () => {
+    const { registry, ctx, pending } = harness()
+    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 10_000 })
+    await Bun.sleep(5)
+
+    expect(pending()).toHaveLength(1)
+    const interaction = pending()[0]!
+    // A script question is the SAME shape as an agent one — one pane renders both.
+    expect(interaction.origin).toBe("script")
+    expect(interaction.kind).toBe("question")
+    expect(interaction.unitId).toBeNull()
+    expect(interaction.depth).toBe(1)
+    expect(interaction.questions[0]?.prompt).toContain("6 areas")
+    expect(interaction.graceEndsAt).toBeGreaterThan(interaction.raisedAt)
+
+    expect(registry.resolve(interaction.requestID, [["thorough"]])).toBe(true)
+    expect(await answered).toEqual([["thorough"]])
+    // Answered means gone: no surface should keep offering a question nobody is waiting on.
+    expect(pending()).toHaveLength(0)
+  })
+
+  it("matches an answer to the offered labels, and refuses one that is not among them", async () => {
+    const { registry, ctx, pending } = harness()
+    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 10_000 })
+    await Bun.sleep(5)
+    const requestID = pending()[0]!.requestID
+
+    expect(registry.resolve(requestID, [["sideways"]])).toBe(false)
+    expect(registry.resolve(requestID, [["fast", "thorough"]])).toBe(false) // not a multiple-choice question
+    expect(pending()).toHaveLength(1) // still the human's to answer
+
+    // Case-insensitive in, canonical out — the host's own reply contract.
+    expect(registry.resolve(requestID, [["THOROUGH"]])).toBe(true)
+    expect(await answered).toEqual([["thorough"]])
+  })
+
+  it("falls back when the grace expires, without failing the run", async () => {
+    const { ctx, pending } = harness()
+    const answered = await ctx.ask(FORM, { fallback: [["fast"]], graceMs: 20 })
+    expect(answered).toEqual([["fast"]])
+    expect(pending()).toHaveLength(0)
+  })
+
+  it("falls back immediately when nothing is attached, and publishes nothing", async () => {
+    const { ctx, pending } = harness({ attached: false })
+    // No wait at all: a background run, `opencode serve`, and CI all have nobody to ask, and a workflow that
+    // hangs waiting for an answer nobody will give is worse than one that proceeds on a stated default.
+    expect(await ctx.ask(FORM, { fallback: [["thorough"]], graceMs: 60_000 })).toEqual([["thorough"]])
+    expect(pending()).toHaveLength(0)
+  })
+
+  it("falls back when the run is aborted mid-question", async () => {
+    const controller = new AbortController()
+    const { ctx, pending } = harness({ signal: controller.signal })
+    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 60_000 })
+    await Bun.sleep(5)
+    expect(pending()).toHaveLength(1)
+    controller.abort()
+    expect(await answered).toEqual([["fast"]])
+    expect(pending()).toHaveLength(0)
+  })
+
+  it("hands a question back to its declared fallback on `reject`", async () => {
+    const { registry, ctx, pending } = harness()
+    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 60_000 })
+    await Bun.sleep(5)
+    expect(registry.reject(pending()[0]!.requestID)).toBe(true)
+    expect(await answered).toEqual([["fast"]])
+  })
+
+  it("rejects a fallback that is not itself a valid answer", async () => {
+    const { ctx } = harness()
+    // An authoring bug, and one that would otherwise only surface headlessly — i.e. in production.
+    await expect(ctx.ask(FORM, { fallback: [["maybe"]] })).rejects.toThrow(/offered labels/)
+    await expect(ctx.ask(FORM, { fallback: [] })).rejects.toThrow(/offered labels/)
+  })
+
+  it("returns one entry per question, in order, for a multi-part form", async () => {
+    const { registry, ctx, pending } = harness()
+    const form: AskQuestion[] = [
+      { header: "A", prompt: "first?", options: [{ label: "a1", description: "" }] },
+      { header: "B", prompt: "second?", options: [{ label: "b1", description: "" }] },
+    ]
+    const answered = ctx.ask(form, { fallback: [["a1"], ["b1"]], graceMs: 10_000 })
+    await Bun.sleep(5)
+    expect(pending()[0]?.questions).toHaveLength(2)
+    expect(registry.resolve(pending()[0]!.requestID, [["a1"], ["b1"]])).toBe(true)
+    expect(await answered).toEqual([["a1"], ["b1"]])
+  })
+
+  it("resolves to the fallback with no registry at all — the headless contract, stated once", async () => {
+    const ctx = createWorkflowContext({
+      client: makeFakeClient(),
+      parentSessionID: "p",
+      args: undefined,
+      state: createEngineState(),
+    })
+    expect(await ctx.ask(FORM[0] as AskQuestion, { fallback: [["fast"]] })).toEqual([["fast"]])
   })
 })

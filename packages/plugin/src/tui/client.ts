@@ -1,7 +1,14 @@
 import { createSignal, type Accessor } from "solid-js"
 import { readDescriptors, type EndpointDescriptor } from "../discovery"
 import type { RunSummary } from "../journal"
-import { cloneRunSnapshot, cloneUnitSnapshot, type RunEvent, type RunSnapshot } from "../runs"
+import {
+  clonePendingInteraction,
+  cloneRunSnapshot,
+  cloneUnitSnapshot,
+  type PendingInteraction,
+  type RunEvent,
+  type RunSnapshot,
+} from "../runs"
 
 export type RunClientFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -64,6 +71,40 @@ function isUnitSnapshot(value: unknown): value is RunSnapshot["units"][number] {
   )
 }
 
+function isInteractionQuestion(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false
+  const question = value as Record<string, unknown>
+  return (
+    typeof question.header === "string" &&
+    typeof question.prompt === "string" &&
+    Array.isArray(question.options) &&
+    question.options.every(
+      (option) =>
+        typeof option === "object" &&
+        option !== null &&
+        typeof (option as { label?: unknown }).label === "string" &&
+        typeof (option as { description?: unknown }).description === "string",
+    )
+  )
+}
+
+function isPendingInteraction(value: unknown): value is PendingInteraction {
+  if (typeof value !== "object" || value === null) return false
+  const interaction = value as Partial<PendingInteraction>
+  return (
+    typeof interaction.requestID === "string" &&
+    (interaction.kind === "question" || interaction.kind === "permission") &&
+    (interaction.origin === "agent" || interaction.origin === "script") &&
+    typeof interaction.sessionID === "string" &&
+    (interaction.unitId === null || typeof interaction.unitId === "string") &&
+    Number.isInteger(interaction.depth) &&
+    Array.isArray(interaction.questions) &&
+    interaction.questions.every(isInteractionQuestion) &&
+    typeof interaction.raisedAt === "number" &&
+    nullableNumber(interaction.graceEndsAt)
+  )
+}
+
 function isRunSnapshot(value: unknown): value is RunSnapshot {
   if (typeof value !== "object" || value === null) return false
   const run = value as Partial<RunSnapshot>
@@ -78,6 +119,9 @@ function isRunSnapshot(value: unknown): value is RunSnapshot {
     Array.isArray(run.units) && run.units.every(isUnitSnapshot) &&
     Array.isArray(run.logs) && run.logs.every((log) => typeof log === "string") &&
     Array.isArray(run.errors) && run.errors.every((error) => typeof error === "object" && error !== null) &&
+    // Tolerated as ABSENT, not required: an engine older than this reader publishes no interactions at all, and
+    // rejecting its snapshots would drop its runs out of the browser entirely over a field meaning "none".
+    (run.interactions === undefined || (Array.isArray(run.interactions) && run.interactions.every(isPendingInteraction))) &&
     typeof run.tokensSpent === "number" && Number.isFinite(run.tokensSpent) &&
     typeof run.startedAt === "number" && Number.isFinite(run.startedAt) &&
     nullableNumber(run.endedAt)
@@ -112,6 +156,17 @@ function isRunEvent(value: unknown): value is RunEvent {
   if (event.type === "run.phase" || event.type === "run.log") {
     return "runId" in event && typeof event.runId === "string" && "value" in event && typeof event.value === "string"
   }
+  if (event.type === "interaction.pending") {
+    return "runId" in event && typeof event.runId === "string" && isPendingInteraction(event.interaction)
+  }
+  if (event.type === "interaction.resolved") {
+    return (
+      "runId" in event &&
+      typeof event.runId === "string" &&
+      typeof event.requestID === "string" &&
+      (event.by === "human" || event.by === "automation")
+    )
+  }
   return (
     (event.type === "unit.queued" || event.type === "unit.started" || event.type === "unit.settled") &&
     "runId" in event &&
@@ -135,6 +190,17 @@ export function reduceRunEvent(runs: Map<string, RunSnapshot>, event: RunEvent):
   }
   if (event.type === "run.log") {
     run.logs.push(event.value)
+    return
+  }
+  if (event.type === "interaction.pending") {
+    const interaction = clonePendingInteraction(event.interaction)
+    const index = run.interactions.findIndex((candidate) => candidate.requestID === interaction.requestID)
+    if (index === -1) run.interactions.push(interaction)
+    else run.interactions[index] = interaction
+    return
+  }
+  if (event.type === "interaction.resolved") {
+    run.interactions = run.interactions.filter((candidate) => candidate.requestID !== event.requestID)
     return
   }
   const unit = cloneUnitSnapshot(event.unit)

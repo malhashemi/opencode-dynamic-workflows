@@ -18,14 +18,25 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, 
 import type { ControlAction, ControlResult } from "../control"
 import type { RunSummary } from "../journal"
 import { formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
-import type { RunSnapshot } from "../runs"
+import type { PendingInteraction, RunSnapshot } from "../runs"
 import type { RunControlClient } from "./control"
-import { footerGroups, registerKeymap, WORKFLOW_ROUTE, type FooterGroup, type WorkflowBinding } from "./keymap"
+import InteractionPane, { buildAnswer, paneRows } from "./interactions"
+import {
+  footerGroups,
+  QUESTION_BINDINGS,
+  registerKeymap,
+  WORKFLOW_ROUTE,
+  type FooterGroup,
+  type WorkflowBinding,
+} from "./keymap"
 import {
   breadcrumb,
+  findInteraction,
   initialRouteState,
+  interactionSource,
   listRows,
   normalizeRoute,
+  openQuestion,
   reduceRoute,
   runRows,
   selectedControl,
@@ -134,6 +145,16 @@ function runStats(run: RunSnapshot, now: number): Stat[] {
 
 /** What a control action did, in the words the user needs — never a bare `ok: false`. */
 function controlNotice(action: ControlAction, result: ControlResult): string {
+  if (action.action === "question.reply" || action.action === "permission.reply") {
+    if (result.ok) return "answered"
+    if (result.reason === "unknown-request") return "that question was already answered"
+    return result.detail ?? "could not send that answer"
+  }
+  if (action.action === "question.reject") {
+    if (result.ok) return "left for automation"
+    if (result.reason === "unknown-request") return "that question was already answered"
+    return result.detail ?? "could not hand that question back"
+  }
   if (action.action === "save.run") {
     if (result.ok) return result.detail ?? "saved to .opencode/workflows"
     if (result.reason === "conflict") return result.detail ?? "that workflow is already saved"
@@ -149,10 +170,22 @@ function controlNotice(action: ControlAction, result: ControlResult): string {
 }
 
 export default function WorkflowRoute(props: WorkflowRouteProps) {
-  const [state, setState] = createSignal<RouteState>(initialRouteState(stringParam(props.params, "runId")))
+  const [state, setState] = createSignal<RouteState>(
+    (() => {
+      const runId = stringParam(props.params, "runId")
+      const requestID = stringParam(props.params, "requestID")
+      const base = initialRouteState(runId)
+      // A deep link from the sidebar badge or the attention toast lands ON the pane, not near it: the whole
+      // point of the badge is that the user already knows what they want to do.
+      return runId && requestID ? openQuestion(base, runId, requestID) : base
+    })(),
+  )
   const [now, setNow] = createSignal(Date.now())
   const [frame, setFrame] = createSignal(0)
   const [notice, setNotice] = createSignal<string | null>(null)
+  /** Which question of a multi-part form is on screen, and the rows answered before it. */
+  const [formIndex, setFormIndex] = createSignal(0)
+  const [formAnswers, setFormAnswers] = createSignal<string[][]>([])
 
   const elapsedTimer = setInterval(() => setNow(Date.now()), 1_000)
   const spinnerTimer = setInterval(() => setFrame((value: number) => (value + 1) % SPINNER_FRAMES.length), 80)
@@ -173,11 +206,102 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     else props.api.route.navigate("home")
   }
 
+  /** The question level the cursor is on, or `undefined` anywhere else in the stack. */
+  const questionLevel = () => {
+    const top = state().stack[state().stack.length - 1]
+    return top?.kind === "question" ? top : undefined
+  }
+  const currentInteraction = (): PendingInteraction | null => {
+    const top = questionLevel()
+    return top ? findInteraction(props.runs(), top.runId, top.requestID) : null
+  }
+
+  /** Rewrite the question level in place — the only level whose state the reducer does not own outright. */
+  const patchQuestion = (patch: { selected?: number; custom?: string | null }) => {
+    setState((current) => {
+      const top = current.stack[current.stack.length - 1]
+      if (top?.kind !== "question") return current
+      const stack = current.stack.slice()
+      stack[stack.length - 1] = { ...top, ...patch }
+      return { ...current, stack }
+    })
+  }
+
+  const send = (target: ControlAction) => {
+    void props.control.send(target).then((result) => setNotice(controlNotice(target, result)))
+  }
+
+  /**
+   * ⏎ on the answer pane: choose, advance, or send.
+   *
+   * Three outcomes rather than one, because a form is answered a question at a time: selecting the custom row
+   * opens the field instead of submitting an empty answer, an unfinished form advances, and only the last
+   * question actually replies.
+   */
+  const answer = () => {
+    const top = questionLevel()
+    const interaction = currentInteraction()
+    if (!top || !interaction) return
+    const rows = paneRows(interaction.questions[formIndex()])
+    const row = rows[top.selected]
+    // First ⏎ on `✎ custom answer…` opens the field; the second (from inside the input) submits it.
+    if (row?.custom && top.custom === null) {
+      patchQuestion({ custom: "" })
+      return
+    }
+    const typed = top.custom !== null && top.custom.trim().length > 0 ? top.custom : null
+    const selection = row && !row.custom ? [row.label] : []
+    if (selection.length === 0 && typed === null) {
+      setNotice("choose an option, or type an answer")
+      return
+    }
+    const answers = buildAnswer(interaction, selection, typed, formAnswers())
+    if (answers.length < interaction.questions.length) {
+      setFormAnswers(answers)
+      setFormIndex((index: number) => index + 1)
+      patchQuestion({ selected: 0, custom: null })
+      return
+    }
+    // A permission has its own action, because its reply vocabulary is the host's (`once` / `reject`) rather
+    // than a set of labels the asker chose.
+    if (interaction.kind === "permission") {
+      const reply = answers[0]?.[0]
+      if (reply !== "once" && reply !== "always" && reply !== "reject") {
+        setNotice("choose `once` or `reject`")
+        return
+      }
+      send({ action: "permission.reply", runId: top.runId, requestID: top.requestID, reply })
+      return
+    }
+    send({ action: "question.reply", runId: top.runId, requestID: top.requestID, answers })
+  }
+
   const dispatch = (action: WorkflowBinding["action"]) => {
     setNotice(null)
     if (action === "close") {
       close()
       return
+    }
+    const question = questionLevel()
+    if (question) {
+      // ⏎ answers. `esc` steps out of the free-text field first, and only then hands the question back — so a
+      // mistyped answer costs one keystroke rather than the whole question.
+      if (action === "drill") {
+        answer()
+        return
+      }
+      if (action === "back") {
+        if (question.custom !== null) {
+          patchQuestion({ custom: null })
+          return
+        }
+        send({ action: "question.reject", runId: question.runId, requestID: question.requestID })
+        setState((current) => reduceRoute(current, "back", props.runs(), history()))
+        return
+      }
+      // While the field is open every printable key belongs to it; navigation would move a cursor the user
+      // cannot see.
+      if (question.custom !== null && (action === "up" || action === "down")) return
     }
     // `back` at the list level is the way out. Making the reducer express "leave the route" would give it a
     // dependency on the host router for one edge case; the caller already owns that.
@@ -188,7 +312,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     if (action === "stop" || action === "save") {
       const target = selectedControl(state(), props.runs(), action, history())
       if (!target) return
-      void props.control.send(target).then((result) => setNotice(controlNotice(target, result)))
+      send(target)
       return
     }
     // A history row has a summary and no snapshot, so there is nothing to open. Saying so beats a key that
@@ -209,10 +333,23 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
 
   // Runs settle and disappear underneath the cursor; re-normalizing on every change is what keeps a selection
   // (and a drilled-into level) from pointing at something that is no longer there — with no keypress involved.
+  // A question answered by somebody else — another surface, or the watcher's grace running out — takes the pane
+  // off the stack the same way, which is the payoff for making it a level.
   createEffect(() => {
     const runs = props.runs()
     const past = history()
     setState((current) => normalizeRoute(current, runs, past))
+  })
+
+  // A new form starts at its first question with nothing collected. Keyed on the requestID rather than on the
+  // level, so walking out of a pane and back into the SAME question does not lose the answers already given.
+  let formRequestID: string | null = null
+  createEffect(() => {
+    const requestID = questionLevel()?.requestID ?? null
+    if (requestID === formRequestID) return
+    formRequestID = requestID
+    setFormIndex(0)
+    setFormAnswers([])
   })
 
   const level = createMemo(() => state().stack[state().stack.length - 1])
@@ -288,7 +425,10 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
    * that runs off the right edge teaches nothing, so the least-essential hints go first at narrow widths.
    */
   const footer = createMemo<FooterGroup[]>(() => {
-    const groups = footerGroups()
+    // The SAME footer bar, the same keys, in the same positions — only the words change, because on the answer
+    // pane `⏎` means answer and `esc` means leave for automation. A pane with a footer of its own would teach
+    // the user that this screen is a different program.
+    const groups = footerGroups(questionLevel() ? QUESTION_BINDINGS : undefined)
     if (density() === "full") return groups
     const dropped = density() === "minimal" ? ["restart", "save", "close"] : ["close"]
     return groups.filter((group) => !dropped.includes(group.label))
@@ -319,6 +459,8 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     if (row.glyph === "running") return theme().accent
     if (row.glyph === "failed") return theme().error
     if (row.glyph === "ok" || row.glyph === "replayed") return theme().success
+    // A waiting question is the one row on this screen that is asking for something.
+    if (row.glyph === "question") return theme().warning
     return theme().textMuted
   }
   const selectedIndex = () => {
@@ -541,6 +683,30 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
               </box>
             </Show>
           </box>
+        </Show>
+
+        <Show when={level()?.kind === "question"}>
+          <InteractionPane
+            interaction={() => currentInteraction() ?? undefined}
+            theme={props.api.theme}
+            now={now}
+            selected={() => questionLevel()?.selected ?? 0}
+            custom={() => questionLevel()?.custom ?? null}
+            index={formIndex}
+            source={() => {
+              const run = activeRun()
+              const current = currentInteraction()
+              return run && current ? interactionSource(run, current) : ""
+            }}
+            onSelect={(index: number) => {
+              // Click to select, click again to answer — the same two steps the keyboard takes everywhere else.
+              if (index === (questionLevel()?.selected ?? -1)) answer()
+              else patchQuestion({ selected: index })
+            }}
+            onCustomInput={(value: string) => patchQuestion({ custom: value })}
+            onAnswer={answer}
+            onHandOff={() => dispatch("back")}
+          />
         </Show>
 
         <Show when={level()?.kind === "unit"}>

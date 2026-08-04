@@ -30,6 +30,14 @@ export interface Endpoint {
   url: string
   token: string
   subscribers(): number
+  /**
+   * Whether any surface is currently listening — the engine's answer to "can a human be asked?".
+   *
+   * An open SSE connection is the only honest signal available: a TUI, a dashboard tab, and a `curl` all
+   * announce themselves the same way, and all three mean somebody could see a question. Read live, per poll,
+   * because it changes while a run is in flight.
+   */
+  attached(): boolean
   stop(): Promise<void>
 }
 
@@ -243,6 +251,7 @@ export async function startEndpoint(
     url,
     token,
     subscribers: () => connections.size,
+    attached: () => !stopped && connections.size > 0,
     async stop() {
       if (stopped) return
       stopped = true

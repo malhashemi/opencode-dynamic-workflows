@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test"
 import type { PendingQuestion, SessionInfo, SessionMessage } from "../src/client"
 import { createEngineState, runOwnedRoots } from "../src/context"
-import { DEFAULT_MAX_ESCALATION_HOPS, isRunOwned, startWatcher } from "../src/watcher"
+import type { PendingInteraction } from "../src/runs"
+import { DEFAULT_MAX_ESCALATION_HOPS, isRunOwned, startWatcher, type InteractionEvent } from "../src/watcher"
 import { makeFakeClient, type FakeResponse } from "./fake-client"
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, message: string, timeoutMs = 200): Promise<void> {
@@ -311,9 +312,11 @@ describe("watcher substrate", () => {
 
     const roots = new Set(["run-root"])
 
-    await expect(isRunOwned("run-root", roots, client)).resolves.toEqual({ owned: true, depth: 1 })
-    await expect(isRunOwned("run-child", roots, client)).resolves.toEqual({ owned: true, depth: 2 })
-    await expect(isRunOwned("run-grandchild", roots, client)).resolves.toEqual({ owned: true, depth: 3 })
+    // `root` is the run root the walk landed on; `unitSession` is the hop below it — a RUNNING unit's own
+    // child session, which is not yet a root, and is what attributes a grandchild's question to its unit.
+    await expect(isRunOwned("run-root", roots, client)).resolves.toEqual({ owned: true, depth: 1, root: "run-root", unitSession: null })
+    await expect(isRunOwned("run-child", roots, client)).resolves.toEqual({ owned: true, depth: 2, root: "run-root", unitSession: "run-child" })
+    await expect(isRunOwned("run-grandchild", roots, client)).resolves.toEqual({ owned: true, depth: 3, root: "run-root", unitSession: "run-child" })
 
     await expect(isRunOwned("operator-root", roots, client)).resolves.toMatchObject({ owned: false })
     await expect(isRunOwned("sibling-run-root", roots, client)).resolves.toMatchObject({ owned: false })
@@ -1109,5 +1112,359 @@ describe("watcher substrate", () => {
     expect(client.permissionReplies.length).toBeLessThanOrEqual(1)
     expect(client.permissionReplies.every((reply) => reply.requestID === "perm-owned" && reply.reply === "once")).toBe(true)
     expect(client.permissionReplies.some((reply) => reply.requestID === "perm-foreign")).toBe(false)
+  })
+})
+
+/**
+ * The human-first rows of the matrix.
+ *
+ * Every row above this block describes the HEADLESS ladder, and every one of them still holds — that is the
+ * contract Phase 4 was written against: with nobody attached, the watcher behaves byte-for-byte as it did.
+ * What changes is that an attached surface gets first refusal, for a grace period, on the questions that were
+ * previously proxied without anyone ever seeing them.
+ */
+describe("watcher: human-first interactions", () => {
+  const NESTED_SESSIONS: SessionInfo[] = [
+    { id: "run-root", title: "Run root" },
+    { id: "unit-session", parentID: "run-root", title: "Unit" },
+    { id: "grandchild", parentID: "unit-session", title: "Grandchild" },
+  ]
+
+  function humanFirstPolicy(overrides: Partial<{ graceMs: number; attached: () => boolean; questions: "human" | "proxy-then-human"; permissions: "auto" | "human" }> = {}) {
+    return {
+      kind: "human-first" as const,
+      graceMs: overrides.graceMs ?? 10_000,
+      attached: overrides.attached ?? (() => true),
+      questions: overrides.questions ?? ("human" as const),
+      permissions: overrides.permissions ?? ("auto" as const),
+      fallback: {
+        kind: "tiered" as const,
+        standInSubagent: "explore",
+        maxEscalationHops: DEFAULT_MAX_ESCALATION_HOPS,
+        humanReachable: false,
+      },
+    }
+  }
+
+  function start(opts: {
+    client: ReturnType<typeof makeFakeClient>
+    policy: ReturnType<typeof humanFirstPolicy>
+    events: InteractionEvent[]
+    unitIdForSession?: (sessionID: string) => string | null
+  }) {
+    const controller = new AbortController()
+    const watcher = startWatcher({
+      client: opts.client,
+      parentSessionID: "run-root",
+      runOwnedRoots: () => new Set(["run-root", "unit-session"]),
+      signal: controller.signal,
+      pollIntervalMs: 5,
+      resolutionPolicy: opts.policy,
+      onInteraction: (event) => opts.events.push(event),
+      ...(opts.unitIdForSession ? { unitIdForSession: opts.unitIdForSession } : {}),
+    })
+    return { watcher, controller, stop: () => { watcher.stop(); controller.abort() } }
+  }
+
+  it("attached and within grace: the question is published and left alone", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("do the thing") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({
+      client,
+      policy: humanFirstPolicy({ graceMs: 10_000 }),
+      events,
+      unitIdForSession: (sessionID) => (sessionID === "unit-session" ? "unit-abc" : null),
+    })
+    try {
+      await waitFor(() => events.length > 0, "no interaction was published")
+      await new Promise((resolve) => setTimeout(resolve, 60))
+
+      const published = events.filter((event) => event.kind === "pending")
+      expect(published).toHaveLength(1)
+      const interaction = (published[0] as { interaction: PendingInteraction }).interaction
+      expect(interaction.requestID).toBe("q-1")
+      expect(interaction.origin).toBe("agent")
+      // Depth counts to the NEAREST run root, and a unit's own child session is one — so a grandchild of the
+      // run parent that is a child of a unit is depth 2, not 3.
+      expect(interaction.depth).toBe(2)
+      // The unit that owns the asking session, resolved through the run root the walk landed on.
+      expect(interaction.unitId).toBe("unit-abc")
+      expect(interaction.questions[0]?.prompt).toContain("deployment region")
+      expect(interaction.graceEndsAt).toBeGreaterThan(interaction.raisedAt)
+
+      // Nothing dispatched, nothing rejected: while the grace runs, the question is the human's.
+      expect(client.promptCalls).toHaveLength(0)
+      expect(client.questionReplies).toHaveLength(0)
+      expect(client.questionRejects).toHaveLength(0)
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("a human answering mid-grace resolves it with no proxy dispatch at all", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("do the thing") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: 10_000 }), events })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "no interaction was published")
+      // What a surface answering through `POST /control` does to the host.
+      await client.question.reply({ requestID: "q-1", answers: [["EU"]] })
+      await waitFor(
+        () => events.some((event) => event.kind === "resolved" && event.by === "human"),
+        "the watcher never noticed the human's answer",
+      )
+      expect(client.promptCalls).toHaveLength(0)
+      expect(client.questionRejects).toHaveLength(0)
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("grace expiry hands it to the tiered ladder, and says so", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "EU" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: {
+        "run-root": firstUserMessage("Launch in the EU."),
+        "unit-session": firstUserMessage("Launch region answer: EU"),
+        grandchild: firstUserMessage("Launch region answer: EU"),
+      },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: 20 }), events })
+    try {
+      await waitFor(
+        () => client.questionReplies.length + client.questionRejects.length >= 1,
+        "the ladder never ran after the grace expired",
+        1_000,
+      )
+      expect(events.map((event) => event.kind)).toEqual(["pending", "resolved"])
+      expect(events[1]).toMatchObject({ kind: "resolved", requestID: "q-1", by: "automation" })
+      // The proxy rung, exactly as it runs headlessly.
+      expect(client.promptCalls.map((call) => call.agent)).toEqual(["explore"])
+      expect(client.questionReplies).toEqual([{ requestID: "q-1", answers: [["EU"]] }])
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("detached: today's behaviour, byte for byte — nothing published, the ladder runs at once", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "EU" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: {
+        "run-root": firstUserMessage("Launch region answer: EU"),
+        "unit-session": firstUserMessage("Launch region answer: EU"),
+        grandchild: firstUserMessage("Launch region answer: EU"),
+      },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ attached: () => false, graceMs: 600_000 }), events })
+    try {
+      await waitFor(
+        () => client.questionReplies.length + client.questionRejects.length >= 1,
+        "a detached watcher did not resolve the question",
+        1_000,
+      )
+      expect(events).toEqual([])
+      expect(client.questionReplies).toEqual([{ requestID: "q-1", answers: [["EU"]] }])
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("`handOff` expires the grace early, so `esc` costs no wait", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "UNANSWERABLE" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("no help here") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: 600_000 }), events })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "no interaction was published")
+      expect(session.watcher.handOff("q-1")).toBe(true)
+      expect(session.watcher.handOff("not-a-request")).toBe(false)
+      await waitFor(
+        () => client.questionRejects.length >= 1,
+        "the ladder never took over after the hand-off",
+        2_000,
+      )
+      expect(events.at(-1)).toMatchObject({ kind: "resolved", by: "automation" })
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("`proxy-then-human` asks the grounded proxy first, and nobody at all when it answers", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "EU" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: {
+        "run-root": firstUserMessage("Launch region answer: EU"),
+        "unit-session": firstUserMessage("Launch region answer: EU"),
+        grandchild: firstUserMessage("Launch region answer: EU"),
+      },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({
+      client,
+      policy: humanFirstPolicy({ questions: "proxy-then-human", graceMs: 600_000 }),
+      events,
+    })
+    try {
+      await waitFor(() => client.questionReplies.length >= 1, "the proxy rung never ran", 1_000)
+      // Nothing was ever published: a question the run's own context answers should not interrupt anyone.
+      expect(events).toEqual([])
+      expect(client.questionReplies).toEqual([{ requestID: "q-1", answers: [["EU"]] }])
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("`proxy-then-human` publishes only what the proxy could not ground", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "UNANSWERABLE" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("nothing relevant") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({
+      client,
+      policy: humanFirstPolicy({ questions: "proxy-then-human", graceMs: 600_000 }),
+      events,
+    })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "the abstained question was never offered", 2_000)
+      expect(client.promptCalls.map((call) => call.agent)).toEqual(["explore"])
+      expect(client.questionRejects).toHaveLength(0)
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("an auto-allowed permission is reported, not published — the badge stays for real decisions", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      pendingPermissions: [
+        { id: "perm-1", sessionID: "grandchild", permission: "bash", patterns: ["bun test"], metadata: {}, always: [] },
+      ],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy(), events })
+    try {
+      await waitFor(() => client.permissionReplies.length >= 1, "the owned permission was not allowed")
+      expect(client.permissionReplies).toEqual([{ requestID: "perm-1", reply: "once" }])
+      expect(events).toEqual([{ kind: "auto-allowed", requestID: "perm-1", permission: "bash", depth: 2 }])
+      expect(events.some((event) => event.kind === "pending")).toBe(false)
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("`permissions: \"human\"` offers it instead, and still allows once when the grace runs out", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      pendingPermissions: [
+        { id: "perm-1", sessionID: "grandchild", permission: "bash", patterns: ["bun test"], metadata: {}, always: [] },
+      ],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ permissions: "human", graceMs: 30 }), events })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "the permission was never offered")
+      const interaction = (events[0] as { interaction: PendingInteraction }).interaction
+      expect(interaction.kind).toBe("permission")
+      // `always` is deliberately absent: replies stay `once`-scoped, so no surface offers to persist a grant.
+      expect(interaction.questions[0]?.options.map((option) => option.label)).toEqual(["once", "reject"])
+
+      await waitFor(() => client.permissionReplies.length >= 1, "the permission was never allowed on expiry", 2_000)
+      expect(client.permissionReplies).toEqual([{ requestID: "perm-1", reply: "once" }])
+      expect(events.some((event) => event.kind === "resolved")).toBe(true)
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("never escalates a handed-back question to a human — `esc` means automation", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "UNANSWERABLE" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("nothing that grounds this") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    // A surface IS attached — which is exactly the trap. The tiered ladder's escalation rung spends a depth-1
+    // unit to surface the question through the host's own dock, so a live `humanReachable` would re-ask the
+    // very person who just declined, through a worse surface, and hang the run until they answered it.
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: 20 }), events })
+    try {
+      await waitFor(
+        () => client.questionRejects.length >= 1,
+        "the handed-back question never reached the reject terminus",
+        2_000,
+      )
+      // One unit only: the grounded proxy. No escalation was dispatched.
+      expect(client.promptCalls.map((call) => call.agent)).toEqual(["explore"])
+      expect(client.questionRejects).toEqual([{ requestID: "q-1" }])
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("attributes a question to the RUNNING unit it is blocking, not to the run", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    // Only the run root is a root: a unit's own session becomes one when it SETTLES, and the unit blocked on
+    // this question has not. Found live — the run browser said the question came from "run" while the unit
+    // waiting on it sat one row below.
+    const controller = new AbortController()
+    const watcher = startWatcher({
+      client,
+      parentSessionID: "run-root",
+      runOwnedRoots: () => new Set(["run-root"]),
+      signal: controller.signal,
+      pollIntervalMs: 5,
+      resolutionPolicy: humanFirstPolicy({ graceMs: 600_000 }),
+      onInteraction: (event) => events.push(event),
+      unitIdForSession: (sessionID) => (sessionID === "unit-session" ? "unit-abc" : null),
+    })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "no interaction was published")
+      const interaction = (events[0] as { interaction: PendingInteraction }).interaction
+      expect(interaction.depth).toBe(3)
+      expect(interaction.unitId).toBe("unit-abc")
+    } finally {
+      watcher.stop()
+      controller.abort()
+    }
+  })
+
+  it("clears everything it published when it stops, so a dead run carries no badge", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: 600_000 }), events })
+    await waitFor(() => events.some((event) => event.kind === "pending"), "no interaction was published")
+    session.stop()
+    expect(events.at(-1)).toMatchObject({ kind: "resolved", requestID: "q-1", by: "automation" })
   })
 })

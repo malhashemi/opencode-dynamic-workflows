@@ -14,6 +14,7 @@ function run(): RunSnapshot {
     units: [],
     logs: [],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: 100,
     endedAt: null,

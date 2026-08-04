@@ -59,6 +59,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     units: [unit()],
     logs: ["gathered 9/20 sources"],
     errors: [],
+    interactions: [],
     tokensSpent: 41_200,
     startedAt: Date.now() - 130_000,
     endedAt: null,

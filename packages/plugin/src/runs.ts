@@ -39,6 +39,65 @@ export function toUnitOutput(value: unknown): string | undefined {
   return text.length > 0 ? text : undefined
 }
 
+/**
+ * One question in an interaction, mirroring the host's `QuestionInfo` field for field.
+ *
+ * Mirrored rather than reshaped so an agent-raised question and a script-raised one are the SAME thing by the
+ * time they reach a surface: one pane renders both, one control action answers both, and the label-matched
+ * answer format is the host's own rather than a translation of it. (`prompt` is the host's `question` field,
+ * renamed only because "question.question" reads as a typo everywhere it is used.)
+ */
+export interface InteractionQuestion {
+  header: string
+  prompt: string
+  options: { label: string; description: string }[]
+  multiple: boolean
+  /** Whether the host permits a free-text answer alongside the offered labels. */
+  custom: boolean
+}
+
+/**
+ * Something inside a run that is waiting on a person.
+ *
+ * Present in `RunSnapshot.interactions` only while it is genuinely BLOCKED on a human decision — an interaction
+ * the engine resolves without asking never appears here, because a badge that lights up for something nobody
+ * has to answer teaches the user to ignore the badge.
+ */
+export interface PendingInteraction {
+  requestID: string
+  kind: "question" | "permission"
+  /**
+   * Who raised it — and therefore how it resolves.
+   *
+   * `agent` requests exist in the HOST (`GET /question`), so answering means `POST /question/{id}/reply`.
+   * `script` requests exist only here: the host has no create-question endpoint, questions there originate from
+   * a model's tool call, so `ctx.ask` publishes into this store and answering resolves a local promise.
+   * Orthogonal to `unitId`, which says *where* in the run it came from, not who made it.
+   */
+  origin: "agent" | "script"
+  /** The session the request was raised in. For a script ask, the run's own parent session. */
+  sessionID: string
+  /** The unit that owns the asking session, or `null` when the request came from the run root. */
+  unitId: string | null
+  /** One-based, per `RunOwnership`: a request on a run root is depth 1, a direct child is depth 2. */
+  depth: number
+  /** The form. One entry for an agent question or a permission; several when a script asks a multi-part form. */
+  questions: InteractionQuestion[]
+  raisedAt: number
+  /** When automation takes it back; `null` when no human-first grace applies. */
+  graceEndsAt: number | null
+}
+
+export function clonePendingInteraction(interaction: PendingInteraction): PendingInteraction {
+  return {
+    ...interaction,
+    questions: interaction.questions.map((question) => ({
+      ...question,
+      options: question.options.map((option) => ({ ...option })),
+    })),
+  }
+}
+
 export interface RunSnapshot {
   runId: string
   workflow: string
@@ -63,6 +122,14 @@ export interface RunSnapshot {
   units: UnitSnapshot[]
   logs: string[]
   errors: WorkflowError[]
+  /**
+   * Interactions currently waiting on a person, newest last.
+   *
+   * Lives on the run rather than in a side channel because every surface — the sidebar badge, the run browser's
+   * question level, the dashboard's answer card — needs the same list, and a second source of truth is how two
+   * surfaces come to disagree about whether anyone is waiting.
+   */
+  interactions: PendingInteraction[]
   tokensSpent: number
   startedAt: number
   endedAt: number | null
@@ -76,6 +143,8 @@ export type RunEvent =
   | { type: "unit.queued"; runId: string; unit: UnitSnapshot }
   | { type: "unit.started"; runId: string; unit: UnitSnapshot }
   | { type: "unit.settled"; runId: string; unit: UnitSnapshot }
+  | { type: "interaction.pending"; runId: string; interaction: PendingInteraction }
+  | { type: "interaction.resolved"; runId: string; requestID: string; by: "human" | "automation" }
 
 export type RunSubscriber = (event: RunEvent) => void
 
@@ -99,6 +168,10 @@ export function cloneRunSnapshot(run: RunSnapshot): RunSnapshot {
     units: run.units.map(cloneUnitSnapshot),
     logs: [...run.logs],
     errors: run.errors.map((error) => ({ ...error })),
+    // Tolerated as absent rather than required: a snapshot can arrive over the wire from an engine older than
+    // this reader (two hosts, two checkouts, one project), and a missing list means "nobody is waiting", which
+    // is both true of that engine and harmless here.
+    interactions: (run.interactions ?? []).map(clonePendingInteraction),
   }
 }
 
@@ -107,6 +180,10 @@ export function cloneRunEvent(event: RunEvent): RunEvent {
     return { type: event.type, run: cloneRunSnapshot(event.run) }
   }
   if (event.type === "run.phase" || event.type === "run.log") return { ...event }
+  if (event.type === "interaction.pending") {
+    return { type: event.type, runId: event.runId, interaction: clonePendingInteraction(event.interaction) }
+  }
+  if (event.type === "interaction.resolved") return { ...event }
   return { type: event.type, runId: event.runId, unit: cloneUnitSnapshot(event.unit) }
 }
 
@@ -154,6 +231,21 @@ export function createRunStore(): RunStore {
     } else if (event.type === "run.log") {
       const current = requireRun(event.runId)
       current.logs.push(event.value)
+      run = current
+    } else if (event.type === "interaction.pending") {
+      const current = requireRun(event.runId)
+      const interaction = clonePendingInteraction(event.interaction)
+      const index = current.interactions.findIndex((candidate) => candidate.requestID === interaction.requestID)
+      // Upsert rather than append: the watcher republishes a request whose grace it re-based, and a duplicate
+      // row would make the badge count one waiting question twice.
+      if (index === -1) current.interactions.push(interaction)
+      else current.interactions[index] = interaction
+      run = current
+    } else if (event.type === "interaction.resolved") {
+      const current = requireRun(event.runId)
+      // Deliberately idempotent. Two parties can observe the same resolution — the surface that answered, and
+      // the watcher noticing it left the host's pending list — and neither should have to check first.
+      current.interactions = current.interactions.filter((candidate) => candidate.requestID !== event.requestID)
       run = current
     } else {
       const current = requireRun(event.runId)

@@ -37,6 +37,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     units: [unit("ok", 1), unit("running", 2), unit("queued", 3), unit("failed", 4)],
     logs: [],
     errors: [],
+    interactions: [],
     tokensSpent: 0,
     startedAt: 1_000,
     endedAt: null,
@@ -46,7 +47,21 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 
 /** A run carrying Phase 4's `interactions` field before that field exists on `RunSnapshot`. */
 function withInteractions(base: RunSnapshot, count: number): RunSnapshot {
-  return { ...base, interactions: Array.from({ length: count }, (_x, i) => ({ requestID: `q-${i}` })) } as RunSnapshot
+  return {
+    ...base,
+    interactions: Array.from({ length: count }, (_x, i) => ({
+      requestID: `q-${i}`,
+      kind: "question" as const,
+      origin: "agent" as const,
+      sessionID: "ses_child",
+      unitId: null,
+      depth: 3,
+      questions: [{ header: "Pick", prompt: "Which?", options: [], multiple: false, custom: false }],
+      // Ascending, so "oldest waiting" is `q-0` — the request the badge deep-links to.
+      raisedAt: 1_000 + i,
+      graceEndsAt: null,
+    })),
+  }
 }
 
 describe("workflow sidebar view model", () => {
@@ -118,7 +133,7 @@ describe("workflow sidebar view model", () => {
   })
 
   it("shows nothing at all only when there are no runs whatsoever", () => {
-    expect(sidebarViewModel([], 2_000)).toEqual({ rows: [], pendingQuestions: 0 })
+    expect(sidebarViewModel([], 2_000)).toEqual({ rows: [], pendingQuestions: 0, oldestPending: null })
     expect(sidebarViewModel([run({ status: "done", endedAt: 2_000 })], 2_000).rows).toHaveLength(1)
   })
 

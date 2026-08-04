@@ -175,6 +175,9 @@ function parseRunDocument(value: unknown): RunDocument | null {
       units: Array.isArray(run.units) ? (run.units as RunSnapshot["units"]) : [],
       logs: Array.isArray(run.logs) ? run.logs.filter((log): log is string => typeof log === "string") : [],
       errors: Array.isArray(run.errors) ? (run.errors as RunSnapshot["errors"]) : [],
+      // Always empty on read: a journaled run is over, so nothing in it is still waiting on a person. Records
+      // written before Phase 4 have no such field at all, which is the same statement.
+      interactions: [],
       tokensSpent: typeof run.tokensSpent === "number" && Number.isFinite(run.tokensSpent) ? run.tokensSpent : 0,
       startedAt: run.startedAt,
       endedAt: typeof run.endedAt === "number" && Number.isFinite(run.endedAt) ? run.endedAt : null,

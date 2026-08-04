@@ -52,9 +52,17 @@ export interface FakeNavigation {
   params?: Record<string, unknown>
 }
 
+export interface FakeToast {
+  variant?: string
+  title?: string
+  message: string
+  duration?: number
+}
+
 export interface FakeTuiApi {
   api: TuiPluginApi
   slots: TuiSlotPlugin[]
+  toasts: FakeToast[]
   routes: TuiRouteDefinition[][]
   keymapLayers: FakeKeymapLayer[]
   attention: TuiAttentionNotifyInput[]
@@ -81,6 +89,7 @@ export function createFakeTuiApi(
   const routes: TuiRouteDefinition[][] = []
   const keymapLayers: FakeKeymapLayer[] = []
   const attention: TuiAttentionNotifyInput[] = []
+  const toasts: FakeToast[] = []
   const navigations: FakeNavigation[] = []
   const modes: string[] = []
   const disposers: Array<() => void | Promise<void>> = []
@@ -129,6 +138,11 @@ export function createFakeTuiApi(
       },
     },
     theme: fakeTheme(themeOverrides),
+    ui: {
+      toast(input: FakeToast) {
+        toasts.push(input)
+      },
+    },
     attention: {
       async notify(input: TuiAttentionNotifyInput) {
         attention.push(input)
@@ -150,6 +164,7 @@ export function createFakeTuiApi(
   return {
     api,
     slots,
+    toasts,
     routes,
     keymapLayers,
     attention,

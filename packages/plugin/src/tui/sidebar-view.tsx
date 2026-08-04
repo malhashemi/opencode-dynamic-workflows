@@ -68,10 +68,17 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
           )}
         </For>
         <Show when={view().pendingQuestions > 0}>
-          {/* The badge opens the LIST, not a run: with several runs asking, "which one" is the first thing
-              the user has to answer, and Phase 4's question level hangs off the same stack. */}
-          <box onMouseUp={() => props.onOpen?.(null)}>
-            <text fg={theme().accent}>
+          {/* Straight to the question that has been waiting longest — the one closest to being taken back by
+              automation — rather than to the list. With several waiting, answering the most urgent first and
+              landing back on the run is the right order anyway. */}
+          <box
+            onMouseUp={() => {
+              const pending = view().oldestPending
+              if (pending) props.onAnswer?.(pending.runId, pending.requestID)
+              else props.onOpen?.(null)
+            }}
+          >
+            <text fg={theme().warning}>
               {`❓ ${view().pendingQuestions} question${view().pendingQuestions === 1 ? "" : "s"} waiting`}
             </text>
           </box>

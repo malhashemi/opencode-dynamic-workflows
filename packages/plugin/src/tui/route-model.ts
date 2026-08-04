@@ -12,7 +12,7 @@
 import { formatClock, formatElapsed, formatTokens, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { ControlAction } from "../control"
 import type { RunSummary } from "../journal"
-import type { RunSnapshot, UnitSnapshot } from "../runs"
+import type { PendingInteraction, RunSnapshot, UnitSnapshot } from "../runs"
 
 export type RunStatusFilter = "all" | "active" | "done" | "failed"
 
@@ -20,6 +20,14 @@ export type RouteLevel =
   | { kind: "list"; selected: number }
   | { kind: "run"; runId: string; selected: number }
   | { kind: "unit"; runId: string; unitId: string; scroll: number }
+  /**
+   * The answer pane — a LEVEL of the drill stack, not a modal.
+   *
+   * Being a level is what keeps `esc` meaning the same thing here as everywhere else in the route, and what
+   * lets a question be reached the same way a unit is: select the row, press ⏎. `custom` is the free-text
+   * buffer, and `null` when the user is choosing from the offered options rather than typing.
+   */
+  | { kind: "question"; runId: string; requestID: string; selected: number; custom: string | null }
 
 /**
  * `restart` and `resume` are declared now, before Phases 3 and 6 wire them, so the keymap's vocabulary is
@@ -125,10 +133,54 @@ function isReplayed(unit: UnitSnapshot): boolean {
   return (unit as UnitSnapshot & { replayed?: unknown }).replayed === true
 }
 
-/** Phase 4 adds `RunSnapshot.interactions`; same reasoning as `replayed`. */
-function pendingInteractions(run: RunSnapshot): number {
-  const value = (run as RunSnapshot & { interactions?: unknown }).interactions
-  return Array.isArray(value) ? value.length : 0
+/** Tolerated as absent so a snapshot from an engine older than this reader still counts as "none waiting". */
+function interactionsOf(run: RunSnapshot): readonly PendingInteraction[] {
+  return Array.isArray(run.interactions) ? run.interactions : []
+}
+
+/**
+ * Every interaction waiting on a human, across every run, oldest first.
+ *
+ * Oldest first because the one that has been waiting longest is the one closest to being taken back by
+ * automation — so a person working through a queue answers them in the order they will expire.
+ */
+export function pendingInteractions(runs: readonly RunSnapshot[]): PendingInteraction[] {
+  return runs
+    .flatMap((run) => interactionsOf(run))
+    .slice()
+    .sort((a, b) => a.raisedAt - b.raisedAt || a.requestID.localeCompare(b.requestID))
+}
+
+/** The run that owns a request, so a deep link from the sidebar can address it. */
+export function runOfInteraction(runs: readonly RunSnapshot[], requestID: string): RunSnapshot | undefined {
+  return runs.find((run) => interactionsOf(run).some((candidate) => candidate.requestID === requestID))
+}
+
+export function findInteraction(
+  runs: readonly RunSnapshot[],
+  runId: string,
+  requestID: string,
+): PendingInteraction | null {
+  const run = runs.find((candidate) => candidate.runId === runId)
+  return run ? (interactionsOf(run).find((candidate) => candidate.requestID === requestID) ?? null) : null
+}
+
+/**
+ * Open the answer pane on one request, from wherever the user was.
+ *
+ * The stack is rebuilt rather than pushed onto, because the two ways in — a sidebar badge and a row in the run
+ * browser — should land on the same stack: `list → run → question`, so `esc` walks back out through the run the
+ * question belongs to instead of to wherever the user happened to be.
+ */
+export function openQuestion(state: RouteState, runId: string, requestID: string): RouteState {
+  return {
+    ...state,
+    stack: [
+      { kind: "list", selected: 0 },
+      { kind: "run", runId, selected: 0 },
+      { kind: "question", runId, requestID, selected: 0, custom: null },
+    ],
+  }
 }
 
 function matchesFilter(status: RunSnapshot["status"], filter: RunStatusFilter): boolean {
@@ -208,7 +260,7 @@ function fromRun(run: RunSnapshot): RowSource {
     startedAt: run.startedAt,
     endedAt: run.endedAt,
     live: true,
-    pendingQuestions: pendingInteractions(run),
+    pendingQuestions: interactionsOf(run).length,
   }
 }
 
@@ -308,10 +360,43 @@ function unitRow(unit: UnitSnapshot, indent: 0 | 1, now: number): RunLevelRow {
  * Nesting rather than two panes because the common case — "which phase is it in, and what is running inside
  * it" — should cost zero keystrokes; the unit level exists for the content that genuinely needs a screen.
  */
+/**
+ * Who raised an interaction, in the words the pane will repeat.
+ *
+ * The unit when the engine could attribute one — `#1 nested asker` is what a person recognizes, and the depth
+ * is only interesting when there is no unit to name. A script's question comes from the run itself.
+ */
+export function interactionSource(run: RunSnapshot, interaction: PendingInteraction): string {
+  if (interaction.origin === "script") return "the workflow script"
+  const unit = interaction.unitId ? run.units.find((candidate) => candidate.unitId === interaction.unitId) : undefined
+  if (unit) return `#${unit.ordinal} ${unit.label ?? unit.subagent}`
+  return `a unit at depth ${interaction.depth}`
+}
+
+/** How long a request has been waiting, or how long is left before automation takes it. */
+function interactionRow(run: RunSnapshot, interaction: PendingInteraction, now: number): RunLevelRow {
+  const remaining = interaction.graceEndsAt === null ? null : Math.max(0, interaction.graceEndsAt - now)
+  return {
+    kind: "interaction",
+    id: interaction.requestID,
+    glyph: "question",
+    indent: 0,
+    label: interaction.kind === "permission" ? "Permission" : "Question",
+    detail: [interaction.questions[0]?.header ?? "", interactionSource(run, interaction)]
+      .filter(Boolean)
+      .join(" · "),
+    elapsed: remaining === null ? formatElapsed(now - interaction.raisedAt) : `${formatElapsed(remaining)} left`,
+  }
+}
+
 export function runRows(run: RunSnapshot): RunLevelRow[] {
   const now = Date.now()
   const rows: RunLevelRow[] = []
   const currentIndex = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
+
+  // Pinned above the phases: something waiting on a person is the most actionable thing on the screen, and a
+  // question buried under a forty-unit fan-out is a question nobody answers.
+  for (const interaction of interactionsOf(run)) rows.push(interactionRow(run, interaction, now))
 
   const byPhase = new Map<string, UnitSnapshot[]>()
   const unphased: UnitSnapshot[] = []
@@ -376,6 +461,18 @@ export function unitDetail(run: RunSnapshot, unitId: string): UnitDetail | null 
   }
 }
 
+/**
+ * The rows the answer pane offers for one question of a form: its options, plus the custom entry when allowed.
+ *
+ * A single function so the reducer's clamping and the view's rendering can never disagree about how many rows
+ * there are — an off-by-one here is a cursor that selects nothing.
+ */
+export function questionRowCount(interaction: PendingInteraction, index = 0): number {
+  const question = interaction.questions[index]
+  if (!question) return 0
+  return question.options.length + (question.custom ? 1 : 0)
+}
+
 function rowCount(
   level: RouteLevel,
   runs: readonly RunSnapshot[],
@@ -386,6 +483,10 @@ function rowCount(
   if (level.kind === "run") {
     const run = runs.find((candidate) => candidate.runId === level.runId)
     return run ? runRows(run).length : 0
+  }
+  if (level.kind === "question") {
+    const interaction = findInteraction(runs, level.runId, level.requestID)
+    return interaction ? questionRowCount(interaction) : 0
   }
   return 0
 }
@@ -428,6 +529,20 @@ export function normalizeRoute(
       })
       continue
     }
+    if (level.kind === "question") {
+      // An answered question is GONE, and the pane goes with it. That is the point of making the pane a level:
+      // whoever answered — this terminal, a dashboard, or the watcher's grace running out — the surface unwinds
+      // to the run instead of sitting on a form nothing is listening to.
+      if (!findInteraction(runs, level.runId, level.requestID)) break
+      stack.push({
+        kind: "question",
+        runId: level.runId,
+        requestID: level.requestID,
+        selected: clamp(level.selected, rowCount(level, runs, state.filter, history)),
+        custom: level.custom,
+      })
+      continue
+    }
     if (!run.units.some((unit) => unit.unitId === level.unitId)) break
     stack.push({ kind: "unit", runId: level.runId, unitId: level.unitId, scroll: Math.max(0, level.scroll) })
   }
@@ -446,7 +561,8 @@ export function normalizeRoute(
  */
 export function selectIndex(state: RouteState, index: number): RouteState {
   const level = state.stack[state.stack.length - 1]
-  // Phase 4's `question` level will land here too; it has its own selection, so revisit when it arrives.
+  // The unit level has a scroll position rather than a selection, so a click there means nothing. Every other
+  // level — including the answer pane, whose options are clickable — moves its cursor.
   if (!level || level.kind === "unit") return state
   if (level.selected === index) return state
   const stack = state.stack.slice()
@@ -462,6 +578,15 @@ function sameStack(a: readonly RouteLevel[], b: readonly RouteLevel[]): boolean 
     if (left.kind === "list") return right.kind === "list" && left.selected === right.selected
     if (left.kind === "run") {
       return right.kind === "run" && left.runId === right.runId && left.selected === right.selected
+    }
+    if (left.kind === "question") {
+      return (
+        right.kind === "question" &&
+        left.runId === right.runId &&
+        left.requestID === right.requestID &&
+        left.selected === right.selected &&
+        left.custom === right.custom
+      )
     }
     return (
       right.kind === "unit" &&
@@ -504,9 +629,18 @@ function drill(state: RouteState, runs: readonly RunSnapshot[], history: readonl
     const run = runs.find((candidate) => candidate.runId === top.runId)
     if (!run) return state
     const row = runRows(run)[top.selected]
+    if (!row) return state
+    // A waiting question opens its answer pane — the same ⏎ that opens a unit, because from the user's side
+    // both are "show me this row".
+    if (row.kind === "interaction") {
+      return {
+        ...state,
+        stack: [...state.stack, { kind: "question", runId: top.runId, requestID: row.id, selected: 0, custom: null }],
+      }
+    }
     // Only a unit row has a screen behind it. Drilling a phase row is a deliberate no-op rather than an
     // invented "phase detail" level nobody asked for.
-    if (!row || row.kind !== "unit") return state
+    if (row.kind !== "unit") return state
     return { ...state, stack: [...state.stack, { kind: "unit", runId: top.runId, unitId: row.id, scroll: 0 }] }
   }
   return state
@@ -546,6 +680,11 @@ export function breadcrumb(state: RouteState, runs: readonly RunSnapshot[]): str
       parts.push(run?.workflow ?? level.runId)
       continue
     }
+    if (level.kind === "question") {
+      const interaction = findInteraction(runs, level.runId, level.requestID)
+      parts.push(interaction?.kind === "permission" ? "permission" : "question")
+      continue
+    }
     const unit = run?.units.find((candidate) => candidate.unitId === level.unitId)
     parts.push(unit ? `#${unit.ordinal} ${unit.label ?? unit.subagent}` : level.unitId)
   }
@@ -579,6 +718,9 @@ export function selectedControl(
   if (action === "save") return { action: "save.run", runId: selectedRunId }
   if (top.kind === "list") return { action: "stop.run", runId: selectedRunId }
   if (top.kind === "unit") return { action: "stop.unit", runId: top.runId, unitId: top.unitId }
+  // On the answer pane, `x` still means "stop the run" — the run this question is holding up is the thing the
+  // user can act on, and a question has nothing of its own to stop.
+  if (top.kind === "question") return { action: "stop.run", runId: top.runId }
   const run = runs.find((candidate) => candidate.runId === top.runId)
   if (!run) return null
   const row = runRows(run)[top.selected]

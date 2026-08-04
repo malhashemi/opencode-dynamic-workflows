@@ -8,10 +8,10 @@
  * {@link Semaphore} caps in-flight Units across the whole Run: `agent()` runs under it, so `parallel` (a
  * barrier) and `pipeline` (no barrier between items) both draw from the same limiter (D5).
  */
-import type { AgentOpts, WorkflowContext, WorkflowError, z } from "@opencode-ai/workflow"
+import type { AgentOpts, AskOptions, AskQuestion, WorkflowContext, WorkflowError, z } from "@opencode-ai/workflow"
 import type { WorkflowClient } from "./client"
 import { DEFAULT_SUBAGENT, runAgent, stringifyError } from "./runner"
-import { toUnitOutput, type UnitSnapshot } from "./runs"
+import { toUnitOutput, type PendingInteraction, type RunStore, type UnitSnapshot } from "./runs"
 import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
 
 /**
@@ -40,8 +40,12 @@ export interface EngineEvents {
    * Routed as an EVENT so the context never learns what a `runId` is: the orchestrator owns run identity and
    * the control registry, and this keeps the engine's execution core independent of the control layer. Fires
    * again per structured-output retry attempt (each attempt is a fresh child); the last handle wins.
+   *
+   * `childSessionID` rides along because this is the FIRST moment a unit's session exists — a settled unit's
+   * snapshot carries it, but an interaction raised inside a running unit needs the mapping while it is running,
+   * which is the only time anyone can answer it.
    */
-  onUnitCancelable?: (unitId: string, cancel: () => void) => void
+  onUnitCancelable?: (unitId: string, cancel: () => void, childSessionID: string) => void
 }
 
 export interface EngineState {
@@ -68,6 +72,175 @@ export function runOwnedRoots(state: EngineState, parentSessionID: string): Read
   return roots
 }
 
+/** The default a run gives `ctx.ask` when the workflow declares no `meta.interaction.graceMs`. */
+export const DEFAULT_ASK_GRACE_MS = 300_000
+
+/**
+ * The script half of the interaction system: `ctx.ask` published as run state and settled from a surface.
+ *
+ * The host has no create-question endpoint — its questions originate from a model's tool call and carry a
+ * `tool: { messageID, callID }` back-reference a script has nothing to hang one off — so a script's question
+ * cannot borrow that primitive. It is published into THIS store instead, with `origin: "script"`, and every
+ * surface downstream treats it identically to an agent's because the shapes are identical.
+ */
+export interface AskRegistry {
+  /** Publish the interaction and resolve when answered, the grace expires, or the run aborts. */
+  ask(runId: string, form: AskQuestion[], options: AskOptions): Promise<string[][]>
+  /** Answer a `script`-origin request; false when the requestID is unknown, settled, or the answer is invalid. */
+  resolve(requestID: string, answers: string[][]): boolean
+  /**
+   * Hand a `script`-origin request back to its declared fallback — what `esc leave for automation` means here.
+   *
+   * Not in the original sketch: `esc` has to mean the same thing on a script question as on an agent one, and
+   * for a script the automation IS the fallback the author declared.
+   */
+  reject(requestID: string): boolean
+}
+
+/**
+ * Coerce an answer to the offered labels, or reject it.
+ *
+ * Matching is case-insensitive and canonicalizing, exactly as the watcher's own proxy coercion is, so a surface
+ * that sends back what it displayed always lands — and a script can trust that what it receives is drawn from
+ * the closed set it offered rather than from whatever a client felt like posting.
+ */
+export function coerceAskAnswer(form: readonly AskQuestion[], answers: readonly string[][]): string[][] | null {
+  if (answers.length !== form.length) return null
+  const coerced: string[][] = []
+  for (const [index, question] of form.entries()) {
+    const requested = answers[index] ?? []
+    if (requested.length === 0) return null
+    if (question.multiple !== true && requested.length !== 1) return null
+    const labels: string[] = []
+    for (const candidate of requested) {
+      const option = question.options.find((entry) => entry.label.toLowerCase() === candidate.toLowerCase())
+      if (option) {
+        labels.push(option.label)
+        continue
+      }
+      // A free-text answer is only an answer when the author said it could be one.
+      if (question.custom === true && candidate.trim().length > 0) {
+        labels.push(candidate)
+        continue
+      }
+      return null
+    }
+    coerced.push(labels)
+  }
+  return coerced
+}
+
+interface PendingAsk {
+  form: AskQuestion[]
+  fallback: string[][]
+  settle: (answers: string[][]) => void
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+export function createAskRegistry(input: {
+  store: RunStore
+  attached: () => boolean
+  signal: AbortSignal
+  defaultGraceMs: number
+}): AskRegistry {
+  const waiting = new Map<string, PendingAsk & { runId: string }>()
+
+  const finish = (requestID: string, answers: string[][], by: "human" | "automation"): boolean => {
+    const entry = waiting.get(requestID)
+    if (!entry) return false
+    waiting.delete(requestID)
+    if (entry.timer) clearTimeout(entry.timer)
+    try {
+      input.store.apply({ type: "interaction.resolved", runId: entry.runId, requestID, by })
+    } catch {
+      // The run may already be gone from the store (a terminal run drops nothing, but a store can be swapped in
+      // a test). The waiting script still has to be released, which is what happens next.
+    }
+    entry.settle(answers)
+    return true
+  }
+
+  // A run that stops does not get to leave its author's `await` hanging: every outstanding ask falls back.
+  const onAbort = () => {
+    for (const [requestID, entry] of [...waiting]) finish(requestID, entry.fallback, "automation")
+  }
+  input.signal.addEventListener("abort", onAbort, { once: true })
+
+  return {
+    ask(runId, form, options) {
+      const fallback = coerceAskAnswer(form, options.fallback)
+      // The fallback is the one answer the engine may have to give on the author's behalf, so it is validated
+      // eagerly — a fallback that does not match the offered labels is an authoring bug, and discovering it
+      // only in the headless path means discovering it in production.
+      if (!fallback) {
+        return Promise.reject(
+          new Error(
+            "ctx.ask: `fallback` must have one entry per question, each drawn from that question's offered labels",
+          ),
+        )
+      }
+      if (input.signal.aborted || !input.attached()) return Promise.resolve(fallback)
+
+      const run = input.store.get(runId)
+      if (!run) return Promise.resolve(fallback)
+
+      const requestID = crypto.randomUUID()
+      const graceMs = Math.max(0, options.graceMs ?? input.defaultGraceMs)
+      const now = Date.now()
+      const interaction: PendingInteraction = {
+        requestID,
+        kind: "question",
+        origin: "script",
+        sessionID: run.parentSessionID,
+        // A script asks from the run root, not from inside a unit — which is exactly the case `unitId: null`
+        // and `depth: 1` were defined for.
+        unitId: null,
+        depth: 1,
+        questions: form.map((question) => ({
+          header: question.header,
+          prompt: question.prompt,
+          options: question.options.map((option) => ({ ...option })),
+          multiple: question.multiple === true,
+          custom: question.custom === true,
+        })),
+        raisedAt: now,
+        graceEndsAt: now + graceMs,
+      }
+
+      return new Promise<string[][]>((settle) => {
+        const entry = { runId, form, fallback, settle, timer: null as ReturnType<typeof setTimeout> | null }
+        waiting.set(requestID, entry)
+        // The grace timer is the ONLY deadline on this path, and its expiry falls back rather than failing:
+        // a question nobody answered is not an error, it is the default the author already wrote down.
+        entry.timer = setTimeout(() => finish(requestID, fallback, "automation"), graceMs)
+        try {
+          input.store.apply({ type: "interaction.pending", runId, interaction })
+        } catch {
+          waiting.delete(requestID)
+          if (entry.timer) clearTimeout(entry.timer)
+          settle(fallback)
+        }
+      })
+    },
+
+    resolve(requestID, answers) {
+      const entry = waiting.get(requestID)
+      if (!entry) return false
+      const coerced = coerceAskAnswer(entry.form, answers)
+      // An answer outside the offered set is refused rather than passed through, so the script's own closed set
+      // holds no matter what a surface posts. The interaction stays pending; the surface can try again.
+      if (!coerced) return false
+      return finish(requestID, coerced, "human")
+    },
+
+    reject(requestID) {
+      const entry = waiting.get(requestID)
+      if (!entry) return false
+      return finish(requestID, entry.fallback, "automation")
+    },
+  }
+}
+
 export interface CreateContextInput<A> {
   client: WorkflowClient
   parentSessionID: string
@@ -82,6 +255,18 @@ export interface CreateContextInput<A> {
   signal?: AbortSignal
   /** Default per-Unit prompt timeout (ms) — a Unit's `agent({ timeoutMs })` overrides it; absent ⇒ no default. */
   unitTimeout?: number
+  /**
+   * Where `ctx.ask` publishes. Absent ⇒ it resolves to its declared fallback immediately, which is the headless
+   * contract — a Workflow that asks still runs, it just does not wait.
+   */
+  ask?: AskRegistry
+  /**
+   * The run this context belongs to, so `ctx.ask` can address it.
+   *
+   * Not in the original sketch, which had the registry alone. The registry is keyed by run because a surface
+   * answers "this run's question", and the context is the only place holding both the registry and the id.
+   */
+  runId?: string
 }
 
 export function createWorkflowContext<A>(input: CreateContextInput<A>): WorkflowContext<A> {
@@ -157,7 +342,10 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           // Only wire the handle when someone is listening: without a subscriber the runner keeps its plain
           // blocking-prompt path rather than building a per-attempt controller nobody can reach.
           ...(events?.onUnitCancelable
-            ? { onCancelable: (cancel: () => void) => events.onUnitCancelable?.(unitId, cancel) }
+            ? {
+                onCancelable: (cancel: () => void, childSessionID: string) =>
+                  events.onUnitCancelable?.(unitId, cancel, childSessionID),
+              }
             : {}),
         })
 
@@ -274,8 +462,28 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     events?.onPhase?.(title)
   }
 
+  // The headless contract, stated once here rather than checked at every call site: with no registry (or no
+  // run to attach the question to) the fallback IS the answer, and it arrives without a wait. That is what
+  // makes `ctx.ask` safe to put in a workflow that will also run in CI.
+  const ask: WorkflowContext<A>["ask"] = async (form, options) => {
+    const questions = Array.isArray(form) ? form : [form]
+    if (questions.length === 0) return []
+    const registry = input.ask
+    if (!registry || !input.runId) {
+      const fallback = coerceAskAnswer(questions, options.fallback)
+      if (!fallback) {
+        throw new Error(
+          "ctx.ask: `fallback` must have one entry per question, each drawn from that question's offered labels",
+        )
+      }
+      return fallback
+    }
+    return registry.ask(input.runId, questions, options)
+  }
+
   return {
     agent,
+    ask,
     parallel,
     pipeline,
     collect,
