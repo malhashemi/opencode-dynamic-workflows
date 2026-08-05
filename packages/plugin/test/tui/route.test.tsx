@@ -128,6 +128,7 @@ describe("workflow keymap", () => {
       "up,k",
       "down,j",
       "return,right,l",
+      "space",
       "escape,left,h",
       "f",
       "x",
@@ -137,6 +138,22 @@ describe("workflow keymap", () => {
     // `r` is declared but not wired — the vocabulary was fixed up front so Phase 6 adds behavior, not keys.
     // `s` made exactly that transition in Phase 3: same key, same footer position, now live.
     expect(layer?.bindings?.some((binding) => binding.key === "r")).toBe(false)
+
+    /**
+     * `space` is the one binding that does not consume its keystroke, and that is what makes it safe to claim.
+     *
+     * The host's keymap prepends its listener to the renderer's key stream and `preventDefault()`s anything it
+     * matched; OpenTUI then skips the focused renderable's own handler on a default-prevented key. A bound
+     * printable key therefore never reaches the pane's free-text field. Registered this way, the space still
+     * lands in the answer being typed — and `route.tsx` makes the toggle inert while that field is open.
+     */
+    const toggle = layer?.bindings?.find((binding) => binding.key === "space")
+    expect((toggle as { preventDefault?: boolean } | undefined)?.preventDefault).toBe(false)
+    // …and no other binding gives its key away.
+    for (const binding of layer?.bindings ?? []) {
+      if (binding.key === "space") continue
+      expect((binding as { preventDefault?: boolean }).preventDefault).toBeUndefined()
+    }
 
     fake.runCommand(commandName("stop"))
     expect(seen).toEqual(["stop"])
@@ -612,11 +629,15 @@ describe("route spacing: separators live in the text, not in a flex gap", () => 
     })
   }
 
-  it("puts two spaces between the run's vital signs, and one inside each figure", async () => {
+  // Two spaces AFTER a meter as well as before it. `▰`/`▱` are East-Asian ambiguous width, so a font may draw
+  // them wider than their cell and paint over the separator that follows — which is what a real terminal did,
+  // rendering `▰▰▰▰phase 3/3` from a string that contained the space. One space is a separator that exists only
+  // in the buffer.
+  it("puts two spaces around every figure in the strip, meters included", async () => {
     const harness = await mountRoute([run()], { params: { runId: "run-1" }, width: 120 })
     try {
       const strip = harness.view.text().split("\n").find((line) => line.includes("running")) ?? ""
-      expect(strip).toMatch(/running {2}[▰▱]{4} phase 2\/3 gather {2}[▰▱]{4} 0\/1 units {2}\d/)
+      expect(strip).toMatch(/running {2}[▰▱]{4} {2}phase 2\/3 gather {2}[▰▱]{4} {2}0\/1 units {2}\d/)
     } finally {
       harness.view.unmount()
     }

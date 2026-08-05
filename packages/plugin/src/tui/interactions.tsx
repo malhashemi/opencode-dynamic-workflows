@@ -47,6 +47,11 @@ export const CUSTOM_ROW_LABEL = "✎ custom answer…"
  * form one question at a time: the reply is a property of the whole form, and the pane only ever holds one
  * question's worth of state at a time.
  *
+ * The set is a set on purpose: a `multiple` question hands in everything the user ticked, a single-choice one
+ * hands in the row the cursor was on, and this function cannot tell the difference — which is why it never had
+ * to change when multi-select arrived. A typed answer still wins over both, because someone who reached for the
+ * free-text field after ticking has said which of the two they meant.
+ *
  * The result is complete when its length equals `interaction.questions.length`; until then the pane advances.
  */
 export function buildAnswer(
@@ -109,6 +114,14 @@ export interface InteractionPaneProps {
   custom: Accessor<string | null>
   /** Which question of a multi-part form is on screen, zero-based. */
   index: Accessor<number>
+  /**
+   * The labels ticked so far, on a question that accepts more than one answer.
+   *
+   * Empty everywhere else, which is what makes the pane's rendering of it uniform: a single-choice question has
+   * nothing ticked because ticking is not how it is answered, and a record has nothing ticked because its
+   * chosen set is already `answers`.
+   */
+  chosen?: Accessor<readonly string[]>
   /**
    * Who raised it, already resolved to a name — `#1 nested asker`, or the depth when no unit could be named.
    *
@@ -203,6 +216,16 @@ export default function InteractionPane(props: InteractionPaneProps) {
 
   const isChosen = (label: string) => chosen().some((entry) => entry.toLowerCase() === label.toLowerCase())
 
+  /**
+   * Whether this question accepts more than one answer — the field the host has always sent and nothing read.
+   *
+   * It changes exactly two things here, and neither is a new vocabulary: every option grows a `○`/`●` of its
+   * own, and a ticked one takes the same `success` an answered record's chosen option takes.
+   */
+  const multiple = createMemo(() => !answered() && question()?.multiple === true)
+  const isTicked = (label: string) =>
+    multiple() && (props.chosen?.() ?? []).some((entry) => entry.toLowerCase() === label.toLowerCase())
+
   // A record has no cursor: there is nothing to choose, so nothing is highlighted as choosable. What IS marked
   // is the option that was taken.
   const rowBackground = (index: number) =>
@@ -212,10 +235,23 @@ export default function InteractionPane(props: InteractionPaneProps) {
   // against any other background — it did exactly that in the run browser, on a real host.
   const rowLabel = (row: PaneRow, index: number) => {
     if (answered()) return isChosen(row.label) ? theme().success : theme().textMuted
-    return index === props.selected() ? theme().accent : theme().text
+    if (index === props.selected()) return theme().accent
+    // A ticked option the cursor has moved off still has to read as chosen — the same `success` a settled
+    // record uses for the answer that was given, because it is the same claim about the same option.
+    return isTicked(row.label) ? theme().success : theme().text
   }
-  /** `●` for the answer that was given, `○` for the ones that were not. Single-width, like every other glyph. */
-  const rowMark = (row: PaneRow) => (answered() ? (isChosen(row.label) ? "●" : "○") : " ")
+  /**
+   * `●` for a chosen option, `○` for one that was not — the vocabulary the record view already established,
+   * borrowed rather than reinvented so a ticked box and a taken answer look like the same thing at two moments.
+   *
+   * A blank on a single-choice question: there is nothing to tick there, and marking every option `○` would
+   * offer a gesture that does not exist. The custom row is blank on both, because typing is how it is answered.
+   */
+  const rowMark = (row: PaneRow) => {
+    if (answered()) return isChosen(row.label) ? "●" : "○"
+    if (multiple() && !row.custom) return isTicked(row.label) ? "●" : "○"
+    return " "
+  }
 
   return (
     <Show when={record()}>
@@ -250,8 +286,9 @@ export default function InteractionPane(props: InteractionPaneProps) {
                     {`  ${meter(ratio() ?? 0, GRACE_METER_WIDTH)}`}
                   </text>
                 </Show>
+                {/* Two spaces, not one: the meter before it can overhang its cell. See route.tsx's stat strip. */}
                 <text flexShrink={0} fg={meterColor()}>
-                  {` ${remaining()}`}
+                  {`  ${remaining()}`}
                 </text>
               </box>
             </Show>

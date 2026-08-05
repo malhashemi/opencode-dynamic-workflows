@@ -23,7 +23,7 @@ import type { RunControlClient } from "./control"
 import InteractionPane, { buildAnswer, paneRows } from "./interactions"
 import {
   footerGroups,
-  QUESTION_BINDINGS,
+  questionBindings,
   registerKeymap,
   WORKFLOW_ROUTE,
   type FooterGroup,
@@ -36,6 +36,7 @@ import {
   initialRouteState,
   interactionSource,
   listRows,
+  multiSelectQuestion,
   normalizeRoute,
   openQuestion,
   reduceRoute,
@@ -44,6 +45,7 @@ import {
   selectIndex,
   unitDetail,
   type ListRow,
+  type RouteLevel,
   type RouteState,
   type UnitOutput,
   type RunLevelRow,
@@ -195,9 +197,6 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   const [now, setNow] = createSignal(Date.now())
   const [frame, setFrame] = createSignal(0)
   const [notice, setNotice] = createSignal<string | null>(null)
-  /** Which question of a multi-part form is on screen, and the rows answered before it. */
-  const [formIndex, setFormIndex] = createSignal(0)
-  const [formAnswers, setFormAnswers] = createSignal<string[][]>([])
 
   const elapsedTimer = setInterval(() => setNow(Date.now()), 1_000)
   const spinnerTimer = setInterval(() => setFrame((value: number) => (value + 1) % SPINNER_FRAMES.length), 80)
@@ -233,9 +232,11 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     if (!top || currentInteraction()) return null
     return findResolved(props.runs(), top.runId, top.requestID)
   }
+  /** The question on screen when it accepts more than one answer — `null` otherwise, which is the common case. */
+  const multiSelect = () => multiSelectQuestion(state(), props.runs())
 
   /** Rewrite the question level in place — the only level whose state the reducer does not own outright. */
-  const patchQuestion = (patch: { selected?: number; custom?: string | null }) => {
+  const patchQuestion = (patch: Partial<Extract<RouteLevel, { kind: "question" }>>) => {
     setState((current) => {
       const top = current.stack[current.stack.length - 1]
       if (top?.kind !== "question") return current
@@ -271,12 +272,18 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
    * Three outcomes rather than one, because a form is answered a question at a time: selecting the custom row
    * opens the field instead of submitting an empty answer, an unfinished form advances, and only the last
    * question actually replies.
+   *
+   * What ⏎ answers WITH depends on one field the host has always sent and this browser used to ignore. On a
+   * single-choice question it is the row the cursor is on. On a `multiple` one it is the set the user ticked —
+   * and an empty set is refused, because "I chose nothing" is not one of the answers on offer and sending the
+   * highlighted row instead would be answering on their behalf.
    */
   const answer = () => {
     const top = questionLevel()
     const interaction = currentInteraction()
     if (!top || !interaction) return
-    const rows = paneRows(interaction.questions[formIndex()])
+    const question = interaction.questions[top.index]
+    const rows = paneRows(question)
     const row = rows[top.selected]
     // First ⏎ on `✎ custom answer…` opens the field; the second (from inside the input) submits it.
     if (row?.custom && top.custom === null) {
@@ -284,16 +291,17 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       return
     }
     const typed = top.custom !== null && top.custom.trim().length > 0 ? top.custom : null
-    const selection = row && !row.custom ? [row.label] : []
+    const multiple = question?.multiple === true
+    const selection = multiple ? top.chosen : row && !row.custom ? [row.label] : []
     if (selection.length === 0 && typed === null) {
-      setNotice("choose an option, or type an answer")
+      setNotice(multiple ? "choose at least one option, or type an answer" : "choose an option, or type an answer")
       return
     }
-    const answers = buildAnswer(interaction, selection, typed, formAnswers())
+    const answers = buildAnswer(interaction, selection, typed, top.answers)
     if (answers.length < interaction.questions.length) {
-      setFormAnswers(answers)
-      setFormIndex((index: number) => index + 1)
-      patchQuestion({ selected: 0, custom: null })
+      // The next question starts clean — its own cursor, its own ticks, its own empty field — while the rows
+      // already collected ride along on the level so the reply is assembled in ask order.
+      patchQuestion({ index: top.index + 1, answers, selected: 0, custom: null, chosen: [] })
       return
     }
     // A permission has its own action, because its reply vocabulary is the host's (`once` / `reject`) rather
@@ -340,8 +348,20 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         patchQuestion({ custom: null })
         return
       }
+      /**
+       * `space` ticks — and does so through the reducer, not through a second key path.
+       *
+       * Inert while the free-text field is open, exactly as `↑`/`↓` are: the space belongs to the answer being
+       * typed. The binding is registered without `preventDefault`, so the keystroke reaches the input as well —
+       * this branch is what stops it ALSO ticking a row the user cannot see.
+       */
+      if (action === "toggle") {
+        if (question.custom !== null) return
+        setState((current) => reduceRoute(current, action, props.runs(), history()))
+        return
+      }
       // Handing a question to automation is a deliberate act and costs the deliberate key. `x` is relabelled
-      // `leave for automation` on this level through the same `QUESTION_BINDINGS` derivation that relabels ⏎.
+      // `leave for automation` on this level through the same `questionBindings` derivation that relabels ⏎.
       if (action === "stop") {
         const target = selectedControl(state(), props.runs(), action, history())
         if (!target) {
@@ -373,7 +393,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       setNotice("nothing live to open — this run is from an earlier session")
       return
     }
-    setState((current) => reduceRoute(current, action, props.runs(), history()))
+    setState((current) => resumeQuestion(current, reduceRoute(current, action, props.runs(), history())))
   }
 
   onMount(() => {
@@ -393,16 +413,44 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     setState((current) => normalizeRoute(current, runs, past))
   })
 
-  // A new form starts at its first question with nothing collected. Keyed on the requestID rather than on the
-  // level, so walking out of a pane and back into the SAME question does not lose the answers already given.
-  let formRequestID: string | null = null
+  /**
+   * The half-built answer for the question last on screen, kept across a pop.
+   *
+   * Popping a level discards everything on it, which is right for a cursor and wrong for an answer. Someone who
+   * ticked two of five options, stepped out to read the unit that asked, and came back should find their two
+   * ticks; someone three questions into a five-question form should not have to start it again. Keyed by
+   * request, so a DIFFERENT question always opens clean.
+   *
+   * A plain variable rather than a signal: nothing renders from it. It is the memory of a level, and the level
+   * itself is what the pane reads.
+   */
+  let draft: Extract<RouteLevel, { kind: "question" }> | null = null
   createEffect(() => {
-    const requestID = questionLevel()?.requestID ?? null
-    if (requestID === formRequestID) return
-    formRequestID = requestID
-    setFormIndex(0)
-    setFormAnswers([])
+    const level = questionLevel()
+    if (level) draft = level
   })
+
+  /**
+   * Put the retained answer back on a question level the user is RE-entering.
+   *
+   * The entry test is what makes this safe: applied on every transition it would also fire on `↓`, restoring the
+   * level the user just moved off and pinning the cursor in place.
+   */
+  const resumeQuestion = (from: RouteState, next: RouteState): RouteState => {
+    const top = next.stack[next.stack.length - 1]
+    if (top?.kind !== "question") return next
+    const before = from.stack[from.stack.length - 1]
+    if (before?.kind === "question" && before.requestID === top.requestID) return next
+    const kept = draft
+    if (!kept || kept.runId !== top.runId || kept.requestID !== top.requestID) return next
+    // Only while the question is still the user's to answer. Re-opening a RECORD should show it from the top:
+    // there is no half-built reply left to resume, and landing on the last page of a form nobody is filling in
+    // any more would be resuming a session rather than reading a record.
+    if (!findInteraction(props.runs(), top.runId, top.requestID)) return next
+    const stack = next.stack.slice()
+    stack[stack.length - 1] = kept
+    return { ...next, stack }
+  }
 
   const level = createMemo(() => state().stack[state().stack.length - 1])
   const crumb = createMemo(() => breadcrumb(state(), props.runs()))
@@ -481,7 +529,10 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     // The SAME footer bar, the same keys, in the same positions — only the words change, because on the answer
     // pane `⏎` means answer and `esc` means leave for automation. A pane with a footer of its own would teach
     // the user that this screen is a different program.
-    const groups = footerGroups(questionLevel() ? QUESTION_BINDINGS : undefined)
+    //
+    // `space toggle` is the one hint that appears and disappears, because it is the one key whose meaning does
+    // not survive leaving the screen it belongs to: on a single-choice question there is nothing to tick.
+    const groups = footerGroups(questionLevel() ? questionBindings(multiSelect() !== null) : undefined)
     if (density() === "full") return groups
     const dropped = density() === "minimal" ? ["restart", "save", "close"] : ["close"]
     return groups.filter((group) => !dropped.includes(group.label))
@@ -608,8 +659,17 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             <text flexShrink={0} fg={statusColor(run().status)}>
               <b>{run().status === "running" ? `${spinner()} running` : `${statusGlyph(run().status)} ${run().status}`}</b>
             </text>
-            {/* Two spaces between figures, one between a meter and the label it belongs to — carried in the
-                text rather than by a flex `gap`, for the reason on the header bar above. */}
+            {/* Two spaces everywhere, including after a meter — carried in the text rather than by a flex
+                `gap`, for the reason on the header bar above.
+
+                A meter used to get ONE space, on the theory that a bar belongs closer to the label it measures
+                than to its neighbours. On a real terminal it got none: `▰`/`▱` are East-Asian AMBIGUOUS width,
+                so a font may draw them wider than the single cell the layout budgets, and the overhang paints
+                straight over the following space. The user saw `▰▰▰▰phase 3/3 finish` while the string they
+                copied out of the same screen had the space in it — ink, not content.
+
+                Two spaces survives an overhang of one cell, and the tighter rule was not worth a separator that
+                exists only in the buffer. */}
             <For each={runStats(run(), now())}>
               {(stat: Stat) => (
                 <box flexDirection="row" flexShrink={1}>
@@ -621,7 +681,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                     )}
                   </Show>
                   <text flexShrink={1} fg={theme().textMuted}>
-                    {stat.meter ? ` ${stat.label}` : `  ${stat.label}`}
+                    {`  ${stat.label}`}
                   </text>
                 </box>
               )}
@@ -669,8 +729,9 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                           {` ${meter(row.phaseRatio ?? 0, METER_WIDTH)}`}
                         </text>
                       </Show>
+                      {/* Two spaces, not one: the meter before it can overhang its cell. See the stat strip. */}
                       <text flexShrink={1} fg={rowMuted(index())}>
-                        {` ${[row.position, row.phase].filter(Boolean).join(" ")}`}
+                        {`  ${[row.position, row.phase].filter(Boolean).join(" ")}`}
                       </text>
                     </box>
                     <box flexDirection="row" flexShrink={0}>
@@ -685,9 +746,11 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                       <text flexShrink={0} fg={rowMuted(index())}>
                         {`  ${rightAlign(row.elapsed, 7)}`}
                       </text>
+                      {/* Day then clock, as one "when". The day is blank for today, so a list of today's runs
+                          looks exactly as it did before and History is where the column fills in. */}
                       <Show when={density() !== "minimal"}>
                         <text flexShrink={0} fg={theme().borderSubtle}>
-                          {`  ${rightAlign(row.startedAt, 5)}`}
+                          {`  ${rightAlign(row.startedOn, 11)}  ${rightAlign(row.startedAt, 5)}`}
                         </text>
                       </Show>
                     </box>
@@ -756,7 +819,8 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             now={now}
             selected={() => questionLevel()?.selected ?? 0}
             custom={() => questionLevel()?.custom ?? null}
-            index={formIndex}
+            index={() => questionLevel()?.index ?? 0}
+            chosen={() => questionLevel()?.chosen ?? []}
             source={() => {
               const run = activeRun()
               const current = currentInteraction() ?? currentAnswer()

@@ -9,10 +9,19 @@
  * Every function is total. `reduceRoute` normalizes its result against the runs it was given, so a stack can
  * never point at a run that has gone, and a selection can never sit past the end of its level.
  */
-import { formatClock, formatElapsed, formatTokens, phasePosition, phaseProgress, settledUnits } from "../progress"
+import {
+  formatClock,
+  formatDay,
+  formatElapsed,
+  formatTokens,
+  phasePosition,
+  phaseProgress,
+  settledUnits,
+} from "../progress"
 import type { ControlAction } from "../control"
 import type { RunSummary } from "../journal"
 import type {
+  InteractionQuestion,
   InteractionRecord,
   PendingInteraction,
   ResolvedInteraction,
@@ -36,15 +45,48 @@ export type RouteLevel =
    * The same level renders an ANSWERED question read-only, which is why it survives the interaction leaving
    * the pending list: what you were asked and what you said is a thing to go back and look at, not something
    * that should evaporate the instant you answer it.
+   *
+   * `index`, `answers` and `chosen` are the half-built reply. They live HERE rather than inside the pane
+   * because a half-built reply is part of where the user is: the reducer has to clamp the cursor against the
+   * question actually on screen (a form's second question may offer fewer options than its first), and a set of
+   * ticks a person spent thirty seconds assembling is not view state to be thrown away on a re-render.
    */
-  | { kind: "question"; runId: string; requestID: string; selected: number; custom: string | null }
+  | {
+      kind: "question"
+      runId: string
+      requestID: string
+      selected: number
+      custom: string | null
+      /** Which question of the form is on screen, zero-based. A form is answered one question at a time. */
+      index: number
+      /** The rows already collected for the questions before {@link index}, in ask order. */
+      answers: string[][]
+      /**
+       * The option labels ticked for the question on screen, in the order they were ticked.
+       *
+       * Only ever non-empty on a question that declared `multiple`. A single-choice question is answered by the
+       * cursor and ⏎, so a set there would be a second, contradictable way of saying the same thing.
+       */
+      chosen: string[]
+    }
 
 /**
  * `restart` and `resume` are declared now, before Phases 3 and 6 wire them, so the keymap's vocabulary is
  * fixed from the first release: a key that appears later as a NEW binding teaches the user the tool changed
  * under them, where a key that was always visible-but-inert teaches them it arrived.
  */
-export type RouteAction = "up" | "down" | "drill" | "back" | "filter" | "stop" | "save" | "restart" | "resume"
+export type RouteAction =
+  | "up"
+  | "down"
+  | "drill"
+  | "back"
+  | "filter"
+  | "stop"
+  | "save"
+  /** Tick the highlighted option in or out, on a question that accepts more than one answer. */
+  | "toggle"
+  | "restart"
+  | "resume"
 
 export interface RouteState {
   /** Never empty; `stack[0]` is always the list level. */
@@ -79,6 +121,15 @@ export interface ListRow {
   elapsed: string
   /** `14:03` — when the run started. */
   startedAt: string
+  /**
+   * The DAY the run started — `""` today, `yesterday`, `Aug 3`, `Aug 3 2025`.
+   *
+   * Empty for today on purpose. A column repeating the same date down every row of a list you opened today
+   * carries no information, and the Visual language's honesty rule cuts both ways: a figure that says nothing
+   * is dropped, not padded out. Where it earns its width is History, whose rows are by definition from earlier
+   * sessions and often earlier days — which is exactly where "started at 14:03" was ambiguous before.
+   */
+  startedOn: string
   /** False for journal-only history rows (Phase 3); every row is live today. */
   live: boolean
   /** Phase 4 fills this from `RunSnapshot.interactions`. */
@@ -226,9 +277,14 @@ export function openQuestion(state: RouteState, runId: string, requestID: string
     stack: [
       { kind: "list", selected: 0 },
       { kind: "run", runId, selected: 0 },
-      { kind: "question", runId, requestID, selected: 0, custom: null },
+      questionLevel(runId, requestID),
     ],
   }
+}
+
+/** A question level as it is first pushed: first question, nothing collected, nothing ticked. */
+export function questionLevel(runId: string, requestID: string): Extract<RouteLevel, { kind: "question" }> {
+  return { kind: "question", runId, requestID, selected: 0, custom: null, index: 0, answers: [], chosen: [] }
 }
 
 function matchesFilter(status: RunSnapshot["status"], filter: RunStatusFilter): boolean {
@@ -289,6 +345,7 @@ function toListRow(source: RowSource, now: number): ListRow {
     tokens: source.tokensSpent > 0 ? formatTokens(source.tokensSpent) : "",
     elapsed: formatElapsed((source.endedAt ?? now) - source.startedAt),
     startedAt: formatClock(source.startedAt),
+    startedOn: formatDay(source.startedAt, now),
     live: source.live,
     pendingQuestions: source.pendingQuestions,
   }
@@ -350,8 +407,10 @@ export function listRows(
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[],
   filter: RunStatusFilter,
+  /** Injectable so a test that asserts "today" / "yesterday" is not a test that passes only today. */
+  atTime: number = Date.now(),
 ): ListRow[] {
-  const now = Date.now()
+  const now = atTime
   const live = runs
     .filter((run) => matchesFilter(run.status, filter))
     .slice()
@@ -625,7 +684,9 @@ function rowCount(
     // An ANSWERED question has no selectable rows: it is a record, not a form, and a cursor on it would offer
     // a choice that has already been made.
     const interaction = findInteraction(runs, level.runId, level.requestID)
-    return interaction ? questionRowCount(interaction) : 0
+    // Against the question ON SCREEN, not against the first one: a form whose second question offers fewer
+    // options than its first would otherwise leave the cursor parked past the end of the list it is drawn on.
+    return interaction ? questionRowCount(interaction, level.index) : 0
   }
   return 0
 }
@@ -673,13 +734,21 @@ export function normalizeRoute(
       // be opened again from its row. What the pane must never do is sit on a form nothing is listening to,
       // which is why ANSWERING navigates away immediately (`route.tsx`) rather than waiting to be evicted here.
       // A request that is neither pending nor recorded never existed as far as this snapshot knows.
-      if (!findInteractionRecord(runs, level.runId, level.requestID)) break
+      const record = findInteractionRecord(runs, level.runId, level.requestID)
+      if (!record) break
+      // A form cannot shrink under a user in practice; clamping anyway keeps every function here total, and
+      // keeps `index` from ever addressing a question the record does not have.
+      const index = clamp(level.index, record.questions.length)
+      const clamped: RouteLevel = { ...level, index }
       stack.push({
         kind: "question",
         runId: level.runId,
         requestID: level.requestID,
-        selected: clamp(level.selected, rowCount(level, runs, state.filter, history)),
+        selected: clamp(level.selected, rowCount(clamped, runs, state.filter, history)),
         custom: level.custom,
+        index,
+        answers: level.answers,
+        chosen: level.chosen,
       })
       continue
     }
@@ -710,6 +779,10 @@ export function selectIndex(state: RouteState, index: number): RouteState {
   return { stack, filter: state.filter }
 }
 
+function sameLabels(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((label, index) => label === b[index])
+}
+
 function sameStack(a: readonly RouteLevel[], b: readonly RouteLevel[]): boolean {
   if (a.length !== b.length) return false
   return a.every((left, index) => {
@@ -725,7 +798,11 @@ function sameStack(a: readonly RouteLevel[], b: readonly RouteLevel[]): boolean 
         left.runId === right.runId &&
         left.requestID === right.requestID &&
         left.selected === right.selected &&
-        left.custom === right.custom
+        left.custom === right.custom &&
+        left.index === right.index &&
+        sameLabels(left.chosen, right.chosen) &&
+        left.answers.length === right.answers.length &&
+        left.answers.every((row, index) => sameLabels(row, right.answers[index] ?? []))
       )
     }
     return (
@@ -774,10 +851,7 @@ function drill(state: RouteState, runs: readonly RunSnapshot[], history: readonl
     // this row". Answered ones open too, read-only: "what did I say to this?" is exactly the question a record
     // exists to answer.
     if (row.kind === "interaction") {
-      return {
-        ...state,
-        stack: [...state.stack, { kind: "question", runId: top.runId, requestID: row.id, selected: 0, custom: null }],
-      }
+      return { ...state, stack: [...state.stack, questionLevel(top.runId, row.id)] }
     }
     // Only a unit row has a screen behind it. Drilling a phase row is a deliberate no-op rather than an
     // invented "phase detail" level nobody asked for.
@@ -785,6 +859,52 @@ function drill(state: RouteState, runs: readonly RunSnapshot[], history: readonl
     return { ...state, stack: [...state.stack, { kind: "unit", runId: top.runId, unitId: row.id, scroll: 0 }] }
   }
   return state
+}
+
+/**
+ * The question on screen, when it is one that accepts more than one answer.
+ *
+ * `multiple` has been declared by the host's `QuestionInfo`, mirrored into `InteractionQuestion`, and carried by
+ * `ctx.ask` since Phase 4 — and read by nothing, so a question that asked for several answers quietly took one.
+ * This is the predicate that makes it mean something: it decides whether the toggle key exists on this screen at
+ * all, and whether ⏎ submits a set or the row the cursor is on.
+ */
+export function multiSelectQuestion(
+  state: RouteState,
+  runs: readonly RunSnapshot[],
+): InteractionQuestion | null {
+  const top = state.stack[state.stack.length - 1]
+  if (top?.kind !== "question") return null
+  // Deliberately the PENDING half only: a record's options are history, and offering to re-tick them would be a
+  // key that appears to work and changes nothing.
+  const interaction = findInteraction(runs, top.runId, top.requestID)
+  const question = interaction?.questions[top.index]
+  return question && question.multiple === true ? question : null
+}
+
+/**
+ * Tick the highlighted option in or out of the chosen set.
+ *
+ * A no-op everywhere ticking would be a lie: off the question level, on a single-choice question (⏎ already
+ * answers with the row the cursor is on, so a set there would be a second and contradictable way to say the same
+ * thing), on the custom row (typing is the answer there), and on a record.
+ *
+ * The set keeps the order the user built it in rather than the order the options were offered, because that is
+ * what they did and the reply carries it verbatim.
+ */
+export function toggleChoice(state: RouteState, runs: readonly RunSnapshot[]): RouteState {
+  const question = multiSelectQuestion(state, runs)
+  const top = state.stack[state.stack.length - 1]
+  if (!question || top?.kind !== "question") return state
+  // The custom-answer row sits past the last option, and it is not a tick target.
+  const option = question.options[top.selected]
+  if (!option) return state
+  const chosen = top.chosen.includes(option.label)
+    ? top.chosen.filter((label) => label !== option.label)
+    : [...top.chosen, option.label]
+  const stack = state.stack.slice()
+  stack[stack.length - 1] = { ...top, chosen }
+  return { ...state, stack }
 }
 
 export function reduceRoute(
@@ -795,6 +915,7 @@ export function reduceRoute(
 ): RouteState {
   if (action === "up") return normalizeRoute(move(state, -1, runs, history), runs, history)
   if (action === "down") return normalizeRoute(move(state, 1, runs, history), runs, history)
+  if (action === "toggle") return normalizeRoute(toggleChoice(state, runs), runs, history)
   if (action === "drill") return normalizeRoute(drill(state, runs, history), runs, history)
   if (action === "back") {
     // The list level is the floor; closing the route from there is the caller's decision, not the reducer's.
@@ -808,7 +929,8 @@ export function reduceRoute(
     const stack = state.stack.map((level) => (level.kind === "list" ? { kind: "list" as const, selected: 0 } : level))
     return normalizeRoute({ stack, filter: next }, runs, history)
   }
-  // `stop` and `save`, and Phase 6's `restart`/`resume`, act on the world rather than on navigation.
+  // `stop` and `save`, and Phase 6's `restart`/`resume`, act on the world rather than on navigation — they go
+  // through `selectedControl` instead.
   return normalizeRoute(state, runs, history)
 }
 

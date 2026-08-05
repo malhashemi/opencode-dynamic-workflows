@@ -24,7 +24,7 @@ import InteractionPane, {
   graceRemaining,
   paneRows,
 } from "../../src/tui/interactions"
-import { commandName, footerHint, QUESTION_BINDINGS } from "../../src/tui/keymap"
+import { commandName, footerHint, questionBindings, QUESTION_BINDINGS } from "../../src/tui/keymap"
 import WorkflowRoute from "../../src/tui/route"
 import { createFakeTuiApi, fakeTheme, type FakeTuiApi } from "./fake-api"
 import { mountView, type MountedView } from "./render"
@@ -221,8 +221,10 @@ describe("answer pane render", () => {
       // stalled, then jumpy. This is the one meter whose job is continuous drain, and the pane has the room.
       expect(frame).toMatch(/[▰▱]{20}/)
       expect(frame).toMatch(/\d+m\d+s left|\d+s left/)
-      // …with real space around the meter, carried in the text rather than by a flex `gap`.
-      expect(frame).toMatch(/[▰▱] \d+m\d+s left|[▰▱] \d+s left/)
+      // …with real space around the meter, carried in the text rather than by a flex `gap`, and TWO cells on
+      // each side: these glyphs are East-Asian ambiguous width, so a font can overhang the single space that
+      // used to follow them and paint the countdown flush against the bar. See route.tsx's stat strip.
+      expect(frame).toMatch(/[▰▱] {2}\d+m\d+s left|[▰▱] {2}\d+s left/)
       expect(frame).toMatch(/ {2}[▰▱]{20}/)
     } finally {
       view.unmount()
@@ -471,6 +473,220 @@ describe("answer pane render", () => {
     try {
       expect(view.text()).toContain("Which citation style should the report use?")
       expect(view.text()).toContain("2m30s left")
+    } finally {
+      view.unmount()
+    }
+  })
+})
+
+/**
+ * A question that accepts more than one answer.
+ *
+ * `multiple` shipped with Phase 4 and was read by NOTHING: the pane built `[row.label]` and sent exactly one
+ * label whatever the question asked for, so a workflow that wanted a set got the row the cursor happened to be
+ * on. Everything here is the difference between a declared field and an implemented one.
+ */
+describe("answer pane: choosing more than one", () => {
+  function regions(overrides: Partial<PendingInteraction["questions"][number]> = {}) {
+    return {
+      header: "Regions",
+      prompt: "Which regions should the report cover?",
+      options: [
+        { label: "EU", description: "European Union" },
+        { label: "US", description: "United States" },
+        { label: "APAC", description: "Asia-Pacific" },
+      ],
+      multiple: true,
+      custom: false,
+      ...overrides,
+    }
+  }
+  const asking = (overrides: Partial<PendingInteraction["questions"][number]> = {}) =>
+    run({ interactions: [live({ questions: [regions(overrides)] })] })
+
+  it("gives every option a box of its own, and ticks the one under the cursor", async () => {
+    const { view, press } = await mountPane([asking()], { width: 120 })
+    try {
+      // `○` on every option before anything is chosen: the shape of the question is visible before the answer
+      // is. The vocabulary is the record view's, not a new one.
+      expect(view.text()).toMatch(/○ EU/)
+      expect(view.text()).toMatch(/○ US/)
+
+      await press("toggle")
+      expect(view.text()).toMatch(/● EU/)
+      expect(view.text()).toMatch(/○ US/)
+
+      await press("down")
+      await press("toggle")
+      expect(view.text()).toMatch(/● EU/)
+      expect(view.text()).toMatch(/● US/)
+
+      // And back off again — the same key, because a set you cannot correct is worse than a single choice.
+      await press("toggle")
+      expect(view.text()).toMatch(/○ US/)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("submits everything ticked, in one reply", async () => {
+    const { view, press, sent } = await mountPane([asking()], { width: 120 })
+    try {
+      await press("toggle")
+      await press("down")
+      await press("down")
+      await press("toggle")
+      await press("drill")
+      expect(sent).toEqual([
+        { action: "question.reply", runId: "run-1", requestID: "req-1", answers: [["EU", "APAC"]] },
+      ])
+      // Answering still leaves, exactly as it does for one label.
+      expect(view.text()).not.toContain("Which regions should the report cover?")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("refuses an empty set rather than answering with whatever the cursor was on", async () => {
+    const { view, press, sent } = await mountPane([asking()], { width: 120 })
+    try {
+      await press("drill")
+      // The cursor is on `EU`, and sending it would be answering on the user's behalf: they ticked nothing, and
+      // "nothing" is not one of the answers on offer.
+      expect(sent).toEqual([])
+      expect(view.text()).toContain("choose at least one option")
+      expect(view.text()).toContain("Which regions should the report cover?")
+
+      // …and it is a refusal, not a dead end.
+      await press("toggle")
+      await press("drill")
+      expect(sent).toEqual([
+        { action: "question.reply", runId: "run-1", requestID: "req-1", answers: [["EU"]] },
+      ])
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("offers the key only where it means something, and says what ⏎ will do", async () => {
+    const multi = await mountPane([asking()], { width: 120 })
+    try {
+      const frame = multi.view.text()
+      expect(frame).toContain("space toggle")
+      // ⏎ stops meaning "answer with this row" the moment a set is what it sends.
+      expect(frame).toContain("⏎ submit")
+    } finally {
+      multi.view.unmount()
+    }
+
+    // A single-choice question is untouched: no boxes to tick, no key offered, and ⏎ still answers.
+    const single = await mountPane([run()], { width: 120 })
+    try {
+      const frame = single.view.text()
+      expect(frame).not.toContain("space toggle")
+      expect(frame).toContain("⏎ answer")
+      expect(frame).not.toMatch(/[●○] APA/)
+    } finally {
+      single.view.unmount()
+    }
+
+    expect(questionBindings(true).map((binding) => binding.key)).toContain("space")
+    expect(questionBindings(false).map((binding) => binding.key)).not.toContain("space")
+    expect(QUESTION_BINDINGS.map((binding) => binding.key)).not.toContain("space")
+  })
+
+  it("keeps a half-built set when the user walks out and comes back", async () => {
+    const { view, press } = await mountPane([asking()], { width: 120 })
+    try {
+      await press("toggle")
+      await press("down")
+      await press("toggle")
+      expect(view.text()).toMatch(/● US/)
+
+      // Out to the run — to check on the unit that asked, say — and back in through its row.
+      await press("back")
+      expect(view.text()).not.toContain("Which regions should the report cover?")
+      await press("drill")
+
+      const frame = view.text()
+      expect(frame).toMatch(/● EU/)
+      expect(frame).toMatch(/● US/)
+      expect(frame).toMatch(/○ APAC/)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("leaves the ticks alone while the free-text field is open", async () => {
+    // The one collision worth guarding: `space` is a character before it is a command. The binding does not
+    // consume the keystroke — that is what lets a space reach the field at all — so this is what stops the same
+    // press ALSO ticking a row, which a mouse can leave highlighted underneath an open field.
+    const { view, press, sent } = await mountPane([asking({ custom: true })], { width: 120 })
+    try {
+      await press("toggle")
+      expect(view.text()).toMatch(/● EU/)
+
+      for (let i = 0; i < 3; i++) await press("down")
+      await press("drill")
+      expect(view.text()).toContain("Your answer")
+
+      // A click puts the cursor back on an option without closing the field.
+      const row = view.lineOf(/● EU/)
+      expect(row).toBeGreaterThan(-1)
+      await view.click(4, row)
+      await press("toggle")
+      expect(view.text()).toMatch(/● EU/)
+      expect(view.text()).toContain("Your answer")
+      expect(sent).toEqual([])
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("answers a form that mixes the two, one question at a time and in order", async () => {
+    const form = live({
+      questions: [
+        {
+          header: "Depth",
+          prompt: "How deep should this go?",
+          options: [
+            { label: "fast", description: "One unit per area" },
+            { label: "thorough", description: "Two units per area" },
+          ],
+          multiple: false,
+          custom: false,
+        },
+        regions(),
+      ],
+    })
+    const { view, press, sent } = await mountPane([run({ interactions: [form] })], { width: 120 })
+    try {
+      // Question one is single-choice: no boxes, no toggle key, ⏎ answers with the cursor.
+      expect(view.text()).toContain("How deep should this go?")
+      expect(view.text()).not.toContain("space toggle")
+      expect(view.text()).toContain("1/2")
+      await press("down")
+      await press("drill")
+      expect(sent).toEqual([]) // an unfinished form advances rather than replying with half of one
+
+      // Question two is not, and the footer changes with it.
+      expect(view.text()).toContain("Which regions should the report cover?")
+      expect(view.text()).toContain("space toggle")
+      expect(view.text()).toContain("2/2")
+      await press("toggle")
+      await press("down")
+      await press("toggle")
+      await press("drill")
+
+      // One entry per question, in ask order — a single label for the first, a set for the second.
+      expect(sent).toEqual([
+        {
+          action: "question.reply",
+          runId: "run-1",
+          requestID: "req-1",
+          answers: [["thorough"], ["EU", "US"]],
+        },
+      ])
     } finally {
       view.unmount()
     }

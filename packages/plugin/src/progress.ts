@@ -76,3 +76,27 @@ export function formatClock(timestamp: number): string {
   const date = new Date(timestamp)
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
 }
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const
+
+/**
+ * The DAY a timestamp falls on, relative to `now` — `""` today, `yesterday`, `Aug 3`, `Aug 3 2025`.
+ *
+ * Empty for today rather than "today": a clock already says a run happened today, so the word only takes width
+ * from the columns beside it. Compared by local calendar date rather than by elapsed hours, because "yesterday"
+ * is a thing a person reads off a calendar — a run at 23:50 is yesterday's at 00:10, forty minutes later, and
+ * a 24-hour window would call it today for most of the following day.
+ */
+export function formatDay(timestamp: number, now: number = Date.now()): string {
+  const date = new Date(timestamp)
+  const today = new Date(now)
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+
+  if (sameDay(date, today)) return ""
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  if (sameDay(date, yesterday)) return "yesterday"
+
+  const day = `${MONTHS[date.getMonth()]} ${date.getDate()}`
+  return date.getFullYear() === today.getFullYear() ? day : `${day} ${date.getFullYear()}`
+}

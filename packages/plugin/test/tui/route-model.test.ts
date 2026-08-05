@@ -15,11 +15,13 @@ import {
   findResolved,
   initialRouteState,
   listRows,
+  multiSelectQuestion,
   normalizeRoute,
   openQuestion,
   pendingInteractions,
   questionRowCount,
   reduceRoute,
+  toggleChoice,
   runRows,
   selectedControl,
   selectIndex,
@@ -141,6 +143,40 @@ describe("listRows", () => {
     expect(listRows(runs, [], "all").every((row) => row.live)).toBe(true)
     expect(listRows(runs, [], "all").every((row) => row.pendingQuestions === 0)).toBe(true)
     expect(listRows([], [summary({ runId: "old" })], "all").map((row) => row.live)).toEqual([false])
+  })
+})
+
+describe("listRows: the day a run started", () => {
+  // `startedAt` alone was ambiguous the moment History started carrying runs from earlier sessions: "14:03"
+  // does not say which 14:03. The day column answers that — and stays EMPTY for today, because a column
+  // repeating one date down every row of a list opened today is width spent on nothing.
+  const at = (year: number, month: number, day: number, hour = 14, minute = 3) =>
+    new Date(year, month, day, hour, minute).getTime()
+  const now = at(2026, 7, 5, 9, 0) // 5 Aug 2026, 09:00
+
+  const dayOf = (startedAt: number) => listRows([run({ runId: "r", startedAt })], [], "all", now)[0]?.startedOn
+
+  it("is empty for a run started today", () => {
+    expect(dayOf(at(2026, 7, 5, 8, 30))).toBe("")
+  })
+
+  it("reads `yesterday` for the calendar day before, however few hours ago that was", () => {
+    // 23:50 yesterday is forty minutes before 00:10 today, and an elapsed-hours rule would call both the same
+    // day for most of the following day. People read `yesterday` off a calendar, not off a stopwatch.
+    expect(dayOf(at(2026, 7, 4, 23, 50))).toBe("yesterday")
+    expect(dayOf(at(2026, 7, 4, 0, 5))).toBe("yesterday")
+  })
+
+  it("names the day earlier in the year, and adds the year beyond it", () => {
+    expect(dayOf(at(2026, 7, 1))).toBe("Aug 1")
+    expect(dayOf(at(2026, 0, 9))).toBe("Jan 9")
+    expect(dayOf(at(2025, 11, 31))).toBe("Dec 31 2025")
+  })
+
+  it("dates a journal row the same way it dates a live one", () => {
+    const rows = listRows([], [summary({ runId: "old", startedAt: at(2026, 7, 3) })], "all", now)
+    expect(rows[0]?.startedOn).toBe("Aug 3")
+    expect(rows[0]?.startedAt).toBe("14:03")
   })
 })
 
@@ -719,6 +755,10 @@ describe("route model: the answer pane as a level", () => {
       requestID: "req-1",
       selected: 0,
       custom: null,
+      // A freshly opened question is at its first question with nothing collected and nothing ticked.
+      index: 0,
+      answers: [],
+      chosen: [],
     })
     expect(breadcrumb(opened, [asking])).toBe("Workflows ▸ deep-research ▸ question")
   })
@@ -800,5 +840,124 @@ describe("route model: the answer pane as a level", () => {
     // wherever the user happened to be when the badge lit up.
     expect(linked.stack.map((level) => level.kind)).toEqual(["list", "run", "question"])
     expect(normalizeRoute(linked, [asking]).stack).toHaveLength(3)
+  })
+})
+
+/**
+ * A question that accepts more than one answer.
+ *
+ * `multiple` arrived with Phase 4 — mirrored from the host's own `QuestionInfo`, carried by `ctx.ask`, declared
+ * on `InteractionQuestion`, and read by nothing. A question asking for several answers therefore took exactly
+ * one, silently, and the author had no way to tell. These are the assertions that make the field mean something.
+ */
+describe("route model: a question that accepts more than one answer", () => {
+  function regions(overrides: Partial<PendingInteraction["questions"][number]> = {}) {
+    return {
+      header: "Regions",
+      prompt: "Which regions should the report cover?",
+      options: [
+        { label: "EU", description: "European Union" },
+        { label: "US", description: "United States" },
+        { label: "APAC", description: "Asia-Pacific" },
+      ],
+      multiple: true,
+      custom: false,
+      ...overrides,
+    }
+  }
+  const asking = run({ interactions: [interaction({ questions: [regions()] })] })
+
+  it("ticks the highlighted option in, and the same key takes it back out", () => {
+    const one = drive(initialRouteState("run-1"), ["drill", "toggle"], [asking])
+    expect(one.stack.at(-1)).toMatchObject({ chosen: ["EU"] })
+
+    const two = drive(one, ["down", "toggle"], [asking])
+    expect(two.stack.at(-1)).toMatchObject({ chosen: ["EU", "US"] })
+
+    // A set you cannot un-tick is a decision you cannot correct.
+    expect(drive(two, ["toggle"], [asking]).stack.at(-1)).toMatchObject({ chosen: ["EU"] })
+  })
+
+  it("keeps the order the user built, not the order the options were offered", () => {
+    const built = drive(
+      initialRouteState("run-1"),
+      ["drill", "down", "down", "toggle", "up", "up", "toggle"],
+      [asking],
+    )
+    expect(built.stack.at(-1)).toMatchObject({ chosen: ["APAC", "EU"] })
+  })
+
+  it("names the question the key belongs to, and only that one", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
+    expect(multiSelectQuestion(opened, [asking])?.header).toBe("Regions")
+    // Off the pane there is nothing to tick, whatever the question underneath says.
+    expect(multiSelectQuestion(drive(opened, ["back"], [asking]), [asking])).toBeNull()
+  })
+
+  it("does nothing on a single-choice question, where ⏎ already answers with the cursor", () => {
+    const single = run({ interactions: [interaction()] })
+    const opened = drive(initialRouteState("run-1"), ["drill", "toggle"], [single])
+    expect(opened.stack.at(-1)).toMatchObject({ chosen: [] })
+    expect(multiSelectQuestion(opened, [single])).toBeNull()
+  })
+
+  it("does nothing on the custom row, where typing is the answer", () => {
+    const withCustom = run({ interactions: [interaction({ questions: [regions({ custom: true })] })] })
+    const onCustom = drive(initialRouteState("run-1"), ["drill", "down", "down", "down", "toggle"], [withCustom])
+    // The custom row sits past the last option; it is a way in to the field, not a tick target.
+    expect(onCustom.stack.at(-1)).toMatchObject({ selected: 3, chosen: [] })
+  })
+
+  it("does nothing on a question that has already been answered", () => {
+    const settled = run({
+      interactions: [],
+      resolved: [resolved({ questions: [regions()], answers: [["EU", "US"]] })],
+    })
+    const opened = openQuestion(initialRouteState(), "run-1", "req-1")
+    // Identity: a record has no set to build, and a key that appears to work and changes nothing is worse than
+    // one that is not offered.
+    expect(toggleChoice(opened, [settled])).toBe(opened)
+  })
+
+  it("clamps the cursor against the question ON SCREEN, not against the first one", () => {
+    const mixed = run({
+      interactions: [
+        interaction({
+          questions: [
+            regions(),
+            {
+              header: "Depth",
+              prompt: "How deep?",
+              options: [{ label: "shallow", description: "" }],
+              multiple: false,
+              custom: false,
+            },
+          ],
+        }),
+      ],
+    })
+    const onSecond: RouteState = {
+      filter: "all",
+      stack: [
+        { kind: "list", selected: 0 },
+        { kind: "run", runId: "run-1", selected: 0 },
+        {
+          kind: "question",
+          runId: "run-1",
+          requestID: "req-1",
+          selected: 2,
+          custom: null,
+          index: 1,
+          answers: [["EU"]],
+          chosen: [],
+        },
+      ],
+    }
+    // The second question offers one option. A cursor left on the third row of the FIRST question would be
+    // sitting on nothing — which is what the row count did before it consulted the level's own index.
+    expect(questionRowCount(mixed.interactions[0]!, 1)).toBe(1)
+    expect(normalizeRoute(onSecond, [mixed]).stack.at(-1)).toMatchObject({ selected: 0, index: 1 })
+    // …and the rows already collected survive normalization, because they are the answer being built.
+    expect(normalizeRoute(onSecond, [mixed]).stack.at(-1)).toMatchObject({ answers: [["EU"]] })
   })
 })

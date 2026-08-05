@@ -376,6 +376,60 @@ describe("ctx.ask", () => {
     expect(await answered).toEqual([["thorough"]])
   })
 
+  /**
+   * The validation half of multi-select.
+   *
+   * A pane that can now send several labels is only half the feature: the registry is what decides whether the
+   * script gets them. It already read `multiple` — this pins that it does, because a validator that admitted one
+   * label per question would have turned the new pane into a silent truncation rather than a visible failure.
+   */
+  it("admits as many labels as a `multiple` question offered, and still refuses one it did not", async () => {
+    const { registry, ctx, pending } = harness()
+    const form: AskQuestion[] = [
+      {
+        header: "Regions",
+        prompt: "Which regions should the report cover?",
+        options: [
+          { label: "EU", description: "European Union" },
+          { label: "US", description: "United States" },
+          { label: "APAC", description: "Asia-Pacific" },
+        ],
+        multiple: true,
+      },
+    ]
+    const answered = ctx.ask(form, { fallback: [["EU"]], graceMs: 10_000 })
+    await Bun.sleep(5)
+    const requestID = pending()[0]!.requestID
+    // The pane renders from this, so the field has to survive the trip into run state as well.
+    expect(pending()[0]?.questions[0]?.multiple).toBe(true)
+
+    // Still a closed set: more labels does not mean any label.
+    expect(registry.resolve(requestID, [["EU", "Mars"]])).toBe(false)
+    expect(pending()).toHaveLength(1)
+
+    expect(registry.resolve(requestID, [["eu", "APAC"]])).toBe(true)
+    // Canonical labels, in the order they were sent — the order the user ticked them in.
+    expect(await answered).toEqual([["EU", "APAC"]])
+  })
+
+  it("takes a multi-label fallback for a multi-select question, and refuses one for a single-choice one", async () => {
+    const { ctx } = harness({ attached: false })
+    const many: AskQuestion[] = [
+      {
+        header: "Regions",
+        prompt: "Which regions?",
+        options: [
+          { label: "EU", description: "" },
+          { label: "US", description: "" },
+        ],
+        multiple: true,
+      },
+    ]
+    expect(await ctx.ask(many, { fallback: [["EU", "US"]] })).toEqual([["EU", "US"]])
+    // The same fallback against a question that only takes one is an authoring bug, caught before the run.
+    await expect(ctx.ask(FORM, { fallback: [["fast", "thorough"]] })).rejects.toThrow(/offered labels/)
+  })
+
   it("publishes with no deadline when no grace was declared anywhere", async () => {
     const store = createRunStore()
     const run: RunSnapshot = {

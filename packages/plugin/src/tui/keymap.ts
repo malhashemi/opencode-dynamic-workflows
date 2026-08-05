@@ -22,12 +22,34 @@ export interface WorkflowBinding {
   action: RouteAction | "close"
   label: string
   enabled: boolean
+  /**
+   * The one screen this key means anything on, when it is not every screen.
+   *
+   * `multiple` is a question that accepts more than one answer. Unlike `restart`, this key is not merely unwired
+   * — it has no meaning at all on a list, a run, a unit, or a single-choice question, and a footer offering to
+   * "toggle" there would be teaching the user something untrue. So it is registered once, with everything else,
+   * and shown only where it does something. See {@link BROWSER_BINDINGS} and {@link questionBindings}.
+   */
+  scope?: "multiple"
+  /**
+   * Let the keystroke reach a focused input as well as running the command.
+   *
+   * Load-bearing exactly once, and the reason `space` is safe to claim. The host's keymap prepends its listener
+   * to the renderer's key stream and, by default, `preventDefault()`s anything it matched — and OpenTUI skips a
+   * focused renderable's own handler on a key that was default-prevented. So a bound printable key never reaches
+   * the free-text field. `space` is bound with this set, which leaves the event alone: the toggle runs (and is
+   * ignored while the field is open, in `route.tsx`), and the space still lands in the answer being typed.
+   */
+  passthrough?: boolean
 }
 
 export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
   { key: "up,k", action: "up", label: "select", enabled: true },
   { key: "down,j", action: "down", label: "select", enabled: true },
   { key: "return,right,l", action: "drill", label: "open", enabled: true },
+  // Beside ⏎ rather than at the end, because on the one screen it exists the two keys are one gesture: tick the
+  // ones you want, then submit them.
+  { key: "space", action: "toggle", label: "toggle", enabled: true, scope: "multiple", passthrough: true },
   { key: "escape,left,h", action: "back", label: "back", enabled: true },
   { key: "f", action: "filter", label: "filter", enabled: true },
   { key: "x", action: "stop", label: "stop", enabled: true },
@@ -35,6 +57,11 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
   { key: "s", action: "save", label: "save", enabled: true },
   { key: "q", action: "close", label: "close", enabled: true },
 ]
+
+/** What the run browser's own levels show: everything that is not scoped to one kind of screen. */
+export const BROWSER_BINDINGS: readonly WorkflowBinding[] = WORKFLOW_BINDINGS.filter(
+  (binding) => binding.scope === undefined,
+)
 
 /**
  * The same bindings, relabelled for the answer pane.
@@ -48,12 +75,21 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
  * automation is a real decision and now costs a real key: `x`, the same one that stops a run, relabelled here
  * because on this level the destructive thing is not the run but the question. `esc` pops the level and leaves
  * the question exactly where it was, like every other level in the browser.
+ *
+ * `multiple` says the question accepts more than one answer. That is the only screen `space` appears on, and it
+ * is also where ⏎ stops meaning "answer with this row" and starts meaning "send what I ticked" — so the two
+ * hints change together, from one table, and a user is never shown a key that does nothing.
  */
-export const QUESTION_BINDINGS: readonly WorkflowBinding[] = WORKFLOW_BINDINGS.map((binding) => {
-  if (binding.action === "drill") return { ...binding, label: "answer" }
-  if (binding.action === "stop") return { ...binding, label: "leave for automation" }
-  return binding
-})
+export function questionBindings(multiple = false): readonly WorkflowBinding[] {
+  return WORKFLOW_BINDINGS.filter((binding) => binding.scope === undefined || multiple).map((binding) => {
+    if (binding.action === "drill") return { ...binding, label: multiple ? "submit" : "answer" }
+    if (binding.action === "stop") return { ...binding, label: "leave for automation" }
+    return binding
+  })
+}
+
+/** The single-choice answer pane's vocabulary — the common case, kept as a constant for the footer tests. */
+export const QUESTION_BINDINGS: readonly WorkflowBinding[] = questionBindings(false)
 
 /** The palette/slash name that opens the browser from anywhere. */
 export const OPEN_COMMAND = "workflow.runs.open"
@@ -166,7 +202,7 @@ export interface FooterGroup {
  * {@link footerHint} is the flat-string rendering of exactly this, kept for the tests and for any surface that
  * only has one colour to spend.
  */
-export function footerGroups(bindings: readonly WorkflowBinding[] = WORKFLOW_BINDINGS): FooterGroup[] {
+export function footerGroups(bindings: readonly WorkflowBinding[] = BROWSER_BINDINGS): FooterGroup[] {
   const groups: { keys: string[]; label: string; enabled: boolean }[] = []
   for (const binding of bindings) {
     const last = groups[groups.length - 1]
@@ -179,7 +215,7 @@ export function footerGroups(bindings: readonly WorkflowBinding[] = WORKFLOW_BIN
   return groups.map((group) => ({ keys: group.keys.join(""), label: group.label, enabled: group.enabled }))
 }
 
-export function footerHint(bindings: readonly WorkflowBinding[] = WORKFLOW_BINDINGS): string {
+export function footerHint(bindings: readonly WorkflowBinding[] = BROWSER_BINDINGS): string {
   return footerGroups(bindings)
     .map((group) => {
       const hint = `${group.keys} ${group.label}`
@@ -219,6 +255,9 @@ export function registerKeymap(
       cmd: commandName(binding.action),
       desc: binding.label,
       group: "Workflows",
+      // Omitted rather than defaulted to `true`: the keymap's own default is to prevent, and writing it out on
+      // eight bindings to be explicit about one would bury the exception it exists for.
+      ...(binding.passthrough ? { preventDefault: false } : {}),
     })),
   })
 }
