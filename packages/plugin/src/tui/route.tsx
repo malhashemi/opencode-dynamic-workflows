@@ -22,6 +22,7 @@ import type { PendingInteraction, ResolvedInteraction, RunSnapshot } from "../ru
 import type { RunControlClient } from "./control"
 import InteractionPane, { buildAnswer, paneRows } from "./interactions"
 import {
+  FIELD_BINDINGS,
   footerGroups,
   questionBindings,
   registerKeymap,
@@ -39,12 +40,15 @@ import {
   multiSelectQuestion,
   normalizeRoute,
   openQuestion,
+  questionTabs,
   reduceRoute,
+  restoreAnswer,
   runRows,
   selectedControl,
   selectIndex,
   unitDetail,
   type ListRow,
+  type QuestionTab,
   type RouteLevel,
   type RouteState,
   type UnitOutput,
@@ -234,6 +238,30 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   }
   /** The question on screen when it accepts more than one answer — `null` otherwise, which is the common case. */
   const multiSelect = () => multiSelectQuestion(state(), props.runs())
+  /** The other questions waiting on a person, across every run — empty unless there is more than one. */
+  const tabs = createMemo<QuestionTab[]>(() => questionTabs(state(), props.runs()))
+  /**
+   * A tab's visible text: its question header, prefixed by the workflow only when the waiting set spans runs.
+   *
+   * `questionTabs` already decides that, leaving `workflow` empty when every waiting question belongs to the
+   * same run — repeating one name across every tab is a label that distinguishes nothing.
+   */
+  const tabTitle = (tab: QuestionTab) => (tab.workflow ? `${tab.workflow} · ${tab.label}` : tab.label)
+  /** Jump straight to a tab. Rebuilt through `openQuestion`, since the target may belong to another run. */
+  const openTab = (tab: QuestionTab) => {
+    if (tab.current || !tab.runId) return
+    setState((current) => openQuestion(current, tab.runId, tab.requestID))
+  }
+  /**
+   * Whether the free-text field currently owns the keyboard.
+   *
+   * A memo rather than a read at the point of use, because it drives a keymap layer: an effect reading the
+   * whole route state would tear down and re-register the layer on every keystroke.
+   */
+  const typing = createMemo(() => {
+    const top = questionLevel()
+    return top !== undefined && top.custom !== null
+  })
 
   /** Rewrite the question level in place — the only level whose state the reducer does not own outright. */
   const patchQuestion = (patch: Partial<Extract<RouteLevel, { kind: "question" }>>) => {
@@ -297,11 +325,12 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       setNotice(multiple ? "choose at least one option, or type an answer" : "choose an option, or type an answer")
       return
     }
-    const answers = buildAnswer(interaction, selection, typed, top.answers)
-    if (answers.length < interaction.questions.length) {
-      // The next question starts clean — its own cursor, its own ticks, its own empty field — while the rows
-      // already collected ride along on the level so the reply is assembled in ask order.
-      patchQuestion({ index: top.index + 1, answers, selected: 0, custom: null, chosen: [] })
+    const answers = buildAnswer(interaction, selection, typed, top.answers, top.index)
+    if (top.index < interaction.questions.length - 1) {
+      // The next question arrives showing whatever was said to it before — nothing at all the first time
+      // through, and the answer already given when the user has stepped back and is coming forward again.
+      const index = top.index + 1
+      patchQuestion({ index, answers, ...restoreAnswer(interaction, index, answers[index]) })
       return
     }
     // A permission has its own action, because its reply vocabulary is the host's (`once` / `reject`) rather
@@ -400,7 +429,21 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     // Mode-scoped, so `x` cannot stop a run while the user is typing in a session prompt — and, symmetrically,
     // so the prompt gets every key back the instant this route unmounts.
     onCleanup(props.api.mode.push(WORKFLOW_ROUTE))
-    onCleanup(registerKeymap(props.api, dispatch))
+  })
+
+  /**
+   * The keymap layer, swapped for a minimal one while the free-text answer field is open.
+   *
+   * The defect this fixes shipped: one layer for the whole life of the route bound `h j k l f x s q n`, and the
+   * host's keymap consumes any key it matched — OpenTUI skips a focused renderable's handler on a
+   * default-prevented event — so those letters never reached the answer field. `chicago` typed as nothing.
+   *
+   * Registering reactively is the whole mechanism: `registerLayer` returns a disposer, Solid runs the cleanup
+   * before the effect re-runs, and the two layers therefore never exist at once. It is keyed on a memo so this
+   * happens exactly twice per visit to the field — once opening, once closing — rather than on every keystroke.
+   */
+  createEffect(() => {
+    onCleanup(registerKeymap(props.api, dispatch, typing() ? FIELD_BINDINGS : undefined))
   })
 
   // Runs settle and disappear underneath the cursor; re-normalizing on every change is what keeps a selection
@@ -414,20 +457,24 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   })
 
   /**
-   * The half-built answer for the question last on screen, kept across a pop.
+   * The half-built answer for every question that has been on screen, kept across a pop or a tab change.
    *
    * Popping a level discards everything on it, which is right for a cursor and wrong for an answer. Someone who
    * ticked two of five options, stepped out to read the unit that asked, and came back should find their two
-   * ticks; someone three questions into a five-question form should not have to start it again. Keyed by
-   * request, so a DIFFERENT question always opens clean.
+   * ticks; someone three questions into a five-question form should not have to start it again.
+   *
+   * A MAP rather than one slot, which is what cycling between waiting questions costs: with a single slot,
+   * moving from question A to B and back to A would find B's draft under A's key — or, keyed by request, find
+   * nothing at all. Every open question keeps its own.
    *
    * A plain variable rather than a signal: nothing renders from it. It is the memory of a level, and the level
    * itself is what the pane reads.
    */
-  let draft: Extract<RouteLevel, { kind: "question" }> | null = null
+  const drafts = new Map<string, Extract<RouteLevel, { kind: "question" }>>()
+  const draftKey = (level: { runId: string; requestID: string }) => `${level.runId} ${level.requestID}`
   createEffect(() => {
     const level = questionLevel()
-    if (level) draft = level
+    if (level) drafts.set(draftKey(level), level)
   })
 
   /**
@@ -441,8 +488,8 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     if (top?.kind !== "question") return next
     const before = from.stack[from.stack.length - 1]
     if (before?.kind === "question" && before.requestID === top.requestID) return next
-    const kept = draft
-    if (!kept || kept.runId !== top.runId || kept.requestID !== top.requestID) return next
+    const kept = drafts.get(draftKey(top))
+    if (!kept) return next
     // Only while the question is still the user's to answer. Re-opening a RECORD should show it from the top:
     // there is no half-built reply left to resume, and landing on the last page of a form nobody is filling in
     // any more would be resuming a session rather than reading a record.
@@ -530,9 +577,25 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     // pane `⏎` means answer and `esc` means leave for automation. A pane with a footer of its own would teach
     // the user that this screen is a different program.
     //
-    // `space toggle` is the one hint that appears and disappears, because it is the one key whose meaning does
-    // not survive leaving the screen it belongs to: on a single-choice question there is nothing to tick.
-    const groups = footerGroups(questionLevel() ? questionBindings(multiSelect() !== null) : undefined)
+    // `space toggle` and `n next question` are the hints that appear and disappear, because they are the keys
+    // whose meaning does not survive leaving the screen they belong to: on a single-choice question there is
+    // nothing to tick, and with one question waiting there is nothing to cycle to.
+    //
+    // While the field is open the footer shrinks to the two keys that still work, because every other key in
+    // the table is now a character being typed. A footer offering `f filter` to someone whose `f` lands in
+    // their answer is worse than no footer at all.
+    const question = questionLevel()
+    const groups = footerGroups(
+      typing()
+        ? FIELD_BINDINGS
+        : question
+          ? questionBindings({
+              multiple: multiSelect() !== null,
+              previous: question.index > 0,
+              queued: tabs().length > 1,
+            })
+          : undefined,
+    )
     if (density() === "full") return groups
     const dropped = density() === "minimal" ? ["restart", "save", "close"] : ["close"]
     return groups.filter((group) => !dropped.includes(group.label))
@@ -812,30 +875,60 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         </Show>
 
         <Show when={level()?.kind === "question"}>
-          <InteractionPane
-            interaction={() => currentInteraction() ?? undefined}
-            answered={() => currentAnswer() ?? undefined}
-            theme={props.api.theme}
-            now={now}
-            selected={() => questionLevel()?.selected ?? 0}
-            custom={() => questionLevel()?.custom ?? null}
-            index={() => questionLevel()?.index ?? 0}
-            chosen={() => questionLevel()?.chosen ?? []}
-            source={() => {
-              const run = activeRun()
-              const current = currentInteraction() ?? currentAnswer()
-              return run && current ? interactionSource(run, current) : ""
-            }}
-            onSelect={(index: number) => {
-              // A record has nothing to choose; a click on one is a click on a page, not a button.
-              if (currentAnswer()) return
-              // Click to select, click again to answer — the same two steps the keyboard takes everywhere else.
-              if (index === (questionLevel()?.selected ?? -1)) answer()
-              else patchQuestion({ selected: index })
-            }}
-            onCustomInput={(value: string) => patchQuestion({ custom: value })}
-            onAnswer={answer}
-          />
+          <box flexDirection="column" gap={1}>
+            {/* The other questions waiting on a person, across every run — rendered only when there is more
+                than one, because a one-tab tab strip is furniture. Separators live in the text, and the current
+                tab is FILLED rather than marked, exactly like a selected row anywhere else in the browser. */}
+            <Show when={tabs().length > 1}>
+              <box flexDirection="row">
+                <For each={tabs()}>
+                  {(tab: QuestionTab, index) => (
+                    <box flexDirection="row" flexShrink={1}>
+                      <Show when={index() > 0}>
+                        <text flexShrink={0} fg={theme().borderSubtle}>
+                          {"  "}
+                        </text>
+                      </Show>
+                      <box
+                        flexDirection="row"
+                        flexShrink={1}
+                        backgroundColor={tab.current ? theme().backgroundElement : undefined}
+                        onMouseUp={() => openTab(tab)}
+                      >
+                        <text flexShrink={1} fg={tab.current ? theme().accent : theme().textMuted}>
+                          {tab.current ? <b>{` ${tabTitle(tab)} `}</b> : ` ${tabTitle(tab)} `}
+                        </text>
+                      </box>
+                    </box>
+                  )}
+                </For>
+              </box>
+            </Show>
+            <InteractionPane
+              interaction={() => currentInteraction() ?? undefined}
+              answered={() => currentAnswer() ?? undefined}
+              theme={props.api.theme}
+              now={now}
+              selected={() => questionLevel()?.selected ?? 0}
+              custom={() => questionLevel()?.custom ?? null}
+              index={() => questionLevel()?.index ?? 0}
+              chosen={() => questionLevel()?.chosen ?? []}
+              source={() => {
+                const run = activeRun()
+                const current = currentInteraction() ?? currentAnswer()
+                return run && current ? interactionSource(run, current) : ""
+              }}
+              onSelect={(index: number) => {
+                // A record has nothing to choose; a click on one is a click on a page, not a button.
+                if (currentAnswer()) return
+                // Click to select, click again to answer — the same two steps the keyboard takes everywhere.
+                if (index === (questionLevel()?.selected ?? -1)) answer()
+                else patchQuestion({ selected: index })
+              }}
+              onCustomInput={(value: string) => patchQuestion({ custom: value })}
+              onAnswer={answer}
+            />
+          </box>
         </Show>
 
         <Show when={level()?.kind === "unit"}>

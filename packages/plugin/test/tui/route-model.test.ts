@@ -11,6 +11,7 @@ import type { PendingInteraction, ResolvedInteraction, RunSnapshot, UnitSnapshot
 import {
   answerSummary,
   breadcrumb,
+  cycleQuestion,
   findInteraction,
   findResolved,
   initialRouteState,
@@ -19,6 +20,7 @@ import {
   normalizeRoute,
   openQuestion,
   pendingInteractions,
+  questionTabs,
   questionRowCount,
   reduceRoute,
   toggleChoice,
@@ -959,5 +961,121 @@ describe("route model: a question that accepts more than one answer", () => {
     expect(normalizeRoute(onSecond, [mixed]).stack.at(-1)).toMatchObject({ selected: 0, index: 1 })
     // …and the rows already collected survive normalization, because they are the answer being built.
     expect(normalizeRoute(onSecond, [mixed]).stack.at(-1)).toMatchObject({ answers: [["EU"]] })
+  })
+})
+
+describe("moving between the questions of one form", () => {
+  // A form used to go one way only: `⏎` answered question one and there was no route back to change it. The
+  // native ask tool lets you move between questions, and a form you cannot revise is a form you have to get
+  // right first time.
+  const twoPart = (): PendingInteraction =>
+    interaction({
+      questions: [
+        {
+          header: "Depth",
+          prompt: "How deep?",
+          options: [
+            { label: "quick", description: "" },
+            { label: "thorough", description: "" },
+          ],
+          multiple: false,
+          custom: false,
+        },
+        {
+          header: "Sections",
+          prompt: "Which sections?",
+          options: [
+            { label: "sources", description: "" },
+            { label: "gaps", description: "" },
+          ],
+          multiple: true,
+          custom: false,
+        },
+      ],
+    })
+
+  const onQuestionTwo = (form: PendingInteraction, runs: readonly RunSnapshot[]) => {
+    const opened = openQuestion(initialRouteState(), "run-1", form.requestID)
+    // Answer the first question the way the pane does, then step forward.
+    const advanced = { ...opened, stack: [...opened.stack.slice(0, -1), { ...opened.stack.at(-1)!, index: 1, answers: [["thorough"]] }] } as RouteState
+    return normalizeRoute(advanced, runs)
+  }
+
+  it("steps `back` to the previous question instead of leaving the pane", () => {
+    const form = twoPart()
+    const runs = [run({ interactions: [form] })]
+    const second = onQuestionTwo(form, runs)
+    expect(second.stack.at(-1)).toMatchObject({ kind: "question", index: 1 })
+
+    const first = reduceRoute(second, "back", runs)
+    // Still on the pane — `back` moved WITHIN the form.
+    expect(first.stack.at(-1)).toMatchObject({ kind: "question", index: 0 })
+    // …and what was said to question one is on the cursor, so revisiting is reading rather than re-deciding.
+    expect(first.stack.at(-1)).toMatchObject({ selected: 1 })
+  })
+
+  it("leaves the pane only from the first question", () => {
+    const form = twoPart()
+    const runs = [run({ interactions: [form] })]
+    const opened = openQuestion(initialRouteState(), "run-1", form.requestID)
+    expect(opened.stack.at(-1)).toMatchObject({ kind: "question", index: 0 })
+
+    const out = reduceRoute(opened, "back", runs)
+    expect(out.stack.at(-1)?.kind).not.toBe("question")
+  })
+})
+
+describe("moving between separate waiting questions", () => {
+  // Several questions can wait at once — the badge has always counted them globally — and reaching the second
+  // used to mean leaving the pane, walking back to the list, and drilling into a different run.
+  const first = interaction({ requestID: "req-1" })
+  const second = interaction({ requestID: "req-2", questions: [{ ...questionForm()[0]!, header: "Regions" }] })
+
+  it("shows no tabs when only one question is waiting — a one-tab strip is furniture", () => {
+    const runs = [run({ interactions: [first] })]
+    const state = openQuestion(initialRouteState(), "run-1", "req-1")
+    expect(questionTabs(state, runs)).toEqual([])
+  })
+
+  it("lists every waiting question, marking the one on screen", () => {
+    const runs = [run({ interactions: [first, second] })]
+    const state = openQuestion(initialRouteState(), "run-1", "req-1")
+    const tabs = questionTabs(state, runs)
+    expect(tabs.map((tab) => tab.label)).toEqual(["Citations", "Regions"])
+    expect(tabs.map((tab) => tab.current)).toEqual([true, false])
+    // One run, so the workflow name would distinguish nothing and is left off every tab.
+    expect(tabs.every((tab) => tab.workflow === "")).toBe(true)
+  })
+
+  it("qualifies tabs with the workflow only when the waiting set spans runs", () => {
+    const runs = [
+      run({ runId: "run-1", workflow: "deep-research", interactions: [first] }),
+      run({ runId: "run-2", workflow: "asks-complex", interactions: [second] }),
+    ]
+    const state = openQuestion(initialRouteState(), "run-1", "req-1")
+    expect(questionTabs(state, runs).map((tab) => tab.workflow)).toEqual(["deep-research", "asks-complex"])
+  })
+
+  it("cycles to the next waiting question and wraps, across runs", () => {
+    const runs = [
+      run({ runId: "run-1", interactions: [first] }),
+      run({ runId: "run-2", interactions: [second] }),
+    ]
+    const state = openQuestion(initialRouteState(), "run-1", "req-1")
+
+    const next = cycleQuestion(state, runs)
+    expect(next.stack.at(-1)).toMatchObject({ kind: "question", runId: "run-2", requestID: "req-2" })
+    // The stack is REBUILT rather than having its top swapped: leaving run-1's level underneath would make
+    // `esc` walk out through a run the question on screen has nothing to do with.
+    expect(next.stack.some((level) => level.kind === "run" && level.runId === "run-1")).toBe(false)
+
+    expect(cycleQuestion(next, runs).stack.at(-1)).toMatchObject({ requestID: "req-1" })
+  })
+
+  it("offers nothing to cycle when the level is reading back an answered record", () => {
+    const runs = [run({ interactions: [first, second], resolved: [resolved({ requestID: "req-9" })] })]
+    const state = openQuestion(initialRouteState(), "run-1", "req-9")
+    expect(questionTabs(state, runs)).toEqual([])
+    expect(cycleQuestion(state, runs)).toBe(state)
   })
 })

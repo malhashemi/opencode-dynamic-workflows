@@ -23,24 +23,17 @@ export interface WorkflowBinding {
   label: string
   enabled: boolean
   /**
-   * The one screen this key means anything on, when it is not every screen.
+   * The one kind of screen this key means anything on, when it is not every screen.
    *
-   * `multiple` is a question that accepts more than one answer. Unlike `restart`, this key is not merely unwired
-   * — it has no meaning at all on a list, a run, a unit, or a single-choice question, and a footer offering to
-   * "toggle" there would be teaching the user something untrue. So it is registered once, with everything else,
-   * and shown only where it does something. See {@link BROWSER_BINDINGS} and {@link questionBindings}.
-   */
-  scope?: "multiple"
-  /**
-   * Let the keystroke reach a focused input as well as running the command.
+   * Unlike `restart`, these keys are not merely unwired — they have no meaning at all elsewhere, and a footer
+   * offering them there would be teaching the user something untrue. So they are registered once, with
+   * everything else, and shown only where they do something. See {@link BROWSER_BINDINGS} and
+   * {@link questionBindings}.
    *
-   * Load-bearing exactly once, and the reason `space` is safe to claim. The host's keymap prepends its listener
-   * to the renderer's key stream and, by default, `preventDefault()`s anything it matched — and OpenTUI skips a
-   * focused renderable's own handler on a key that was default-prevented. So a bound printable key never reaches
-   * the free-text field. `space` is bound with this set, which leaves the event alone: the toggle runs (and is
-   * ignored while the field is open, in `route.tsx`), and the space still lands in the answer being typed.
+   * - `multiple` — a question that accepts more than one answer, which is the only screen `space` ticks on.
+   * - `queue` — more than one question is waiting, across every run; the only screen worth cycling between.
    */
-  passthrough?: boolean
+  scope?: "multiple" | "queue"
 }
 
 export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
@@ -49,13 +42,44 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
   { key: "return,right,l", action: "drill", label: "open", enabled: true },
   // Beside ⏎ rather than at the end, because on the one screen it exists the two keys are one gesture: tick the
   // ones you want, then submit them.
-  { key: "space", action: "toggle", label: "toggle", enabled: true, scope: "multiple", passthrough: true },
+  { key: "space", action: "toggle", label: "toggle", enabled: true, scope: "multiple" },
+  // `n` rather than the `tab` the request suggested, and that is a finding rather than a preference: the host
+  // binds `tab` to `agent_cycle` and `shift+tab` to `agent_cycle_reverse` (read out of the 1.18.10 binary's own
+  // default keybinds, and advertised in its startup tips as "Press tab to cycle between Build and Plan agents").
+  // Whether a mode-scoped plugin layer outranks a host default is not something this plugin gets to decide, and
+  // a key a user has muscle memory for is not ours to gamble with — so the cycle key is a free one that says
+  // what it does.
+  { key: "n", action: "next", label: "next question", enabled: true, scope: "queue" },
   { key: "escape,left,h", action: "back", label: "back", enabled: true },
   { key: "f", action: "filter", label: "filter", enabled: true },
   { key: "x", action: "stop", label: "stop", enabled: true },
   { key: "r", action: "restart", label: "restart", enabled: false }, // Phase 6
   { key: "s", action: "save", label: "save", enabled: true },
   { key: "q", action: "close", label: "close", enabled: true },
+]
+
+/**
+ * What stays bound while the free-text answer field has the keyboard — and the fix for a defect that shipped.
+ *
+ * The route registers ONE layer for the whole life of the screen, and the host's keymap `preventDefault()`s any
+ * key it matched; OpenTUI then skips the focused renderable's own handler on a default-prevented event. So
+ * every letter in `h j k l f x s q n` was swallowed before it could reach the answer field: a user could not
+ * type `chicago`, `flask`, or their own name into it, and nothing anywhere failed.
+ *
+ * The fix is that the field OWNS the keyboard while it is open. This layer replaces the full one for exactly as
+ * long as `custom !== null`, so every key the field does not need falls through to the input — including `left`
+ * and `right`, which are cursor movement inside a text field and navigation everywhere else.
+ *
+ * Two keys survive, because without them the field is a trap: `escape` closes it (leaving the question exactly
+ * as it was, per the rule that navigation decides nothing) and `return` submits what was typed. Note that
+ * `escape` alone appears here rather than `escape,left,h` for that same reason.
+ *
+ * The alternative — marking every binding `passthrough`, i.e. registering it with `preventDefault: false` — was
+ * rejected: `q` would then both close the route and type a `q`.
+ */
+export const FIELD_BINDINGS: readonly WorkflowBinding[] = [
+  { key: "escape", action: "back", label: "close field", enabled: true },
+  { key: "return", action: "drill", label: "answer", enabled: true },
 ]
 
 /** What the run browser's own levels show: everything that is not scoped to one kind of screen. */
@@ -80,16 +104,35 @@ export const BROWSER_BINDINGS: readonly WorkflowBinding[] = WORKFLOW_BINDINGS.fi
  * is also where ⏎ stops meaning "answer with this row" and starts meaning "send what I ticked" — so the two
  * hints change together, from one table, and a user is never shown a key that does nothing.
  */
-export function questionBindings(multiple = false): readonly WorkflowBinding[] {
-  return WORKFLOW_BINDINGS.filter((binding) => binding.scope === undefined || multiple).map((binding) => {
-    if (binding.action === "drill") return { ...binding, label: multiple ? "submit" : "answer" }
+export interface QuestionVocabulary {
+  /** The question on screen accepts more than one answer: `space` ticks, and ⏎ submits a set. */
+  multiple?: boolean
+  /**
+   * There is an earlier question in this form, so `esc` steps back to it rather than leaving the pane.
+   *
+   * The word has to change with the behaviour: a footer that says `back` while the key moves within a form is
+   * how a user learns to distrust the footer.
+   */
+  previous?: boolean
+  /** More than one question is waiting, so cycling between them means something. */
+  queued?: boolean
+}
+
+export function questionBindings(vocabulary: QuestionVocabulary = {}): readonly WorkflowBinding[] {
+  const shown = (binding: WorkflowBinding) =>
+    binding.scope === undefined ||
+    (binding.scope === "multiple" && vocabulary.multiple === true) ||
+    (binding.scope === "queue" && vocabulary.queued === true)
+  return WORKFLOW_BINDINGS.filter(shown).map((binding) => {
+    if (binding.action === "drill") return { ...binding, label: vocabulary.multiple ? "submit" : "answer" }
     if (binding.action === "stop") return { ...binding, label: "leave for automation" }
+    if (binding.action === "back" && vocabulary.previous) return { ...binding, label: "previous question" }
     return binding
   })
 }
 
 /** The single-choice answer pane's vocabulary — the common case, kept as a constant for the footer tests. */
-export const QUESTION_BINDINGS: readonly WorkflowBinding[] = questionBindings(false)
+export const QUESTION_BINDINGS: readonly WorkflowBinding[] = questionBindings()
 
 /** The palette/slash name that opens the browser from anywhere. */
 export const OPEN_COMMAND = "workflow.runs.open"
@@ -234,12 +277,18 @@ export function footerHint(bindings: readonly WorkflowBinding[] = BROWSER_BINDIN
  *
  * Deviation from the outline's sketch: `dispatch` takes `RouteAction | "close"` rather than `RouteAction`,
  * because `close` is a real binding (`q`) and leaving the route is not a navigation the reducer can express.
+ *
+ * `bindings` exists for one caller and one reason: while the answer pane's free-text field is open the route
+ * re-registers with {@link FIELD_BINDINGS}, so every key the field needs reaches the field instead of being
+ * swallowed by a command it matched. Swapping the whole layer — rather than making bindings conditionally inert
+ * — is what makes that true of keys this plugin never thought about.
  */
 export function registerKeymap(
   api: TuiPluginApi,
   dispatch: (action: WorkflowBinding["action"]) => void,
+  bindings: readonly WorkflowBinding[] = WORKFLOW_BINDINGS,
 ): () => void {
-  const active = WORKFLOW_BINDINGS.filter((binding) => binding.enabled)
+  const active = bindings.filter((binding) => binding.enabled)
   return api.keymap.registerLayer({
     mode: WORKFLOW_ROUTE,
     commands: active.map((binding) => ({
@@ -250,14 +299,14 @@ export function registerKeymap(
         dispatch(binding.action)
       },
     })),
+    // Every binding consumes its key, which is the keymap's own default and the only honest setting: a key that
+    // both runs a command and types a character is a key doing two things at once. Where a key must reach an
+    // input instead, the LAYER changes — see {@link FIELD_BINDINGS}.
     bindings: active.map((binding) => ({
       key: binding.key,
       cmd: commandName(binding.action),
       desc: binding.label,
       group: "Workflows",
-      // Omitted rather than defaulted to `true`: the keymap's own default is to prevent, and writing it out on
-      // eight bindings to be explicit about one would bury the exception it exists for.
-      ...(binding.passthrough ? { preventDefault: false } : {}),
     })),
   })
 }

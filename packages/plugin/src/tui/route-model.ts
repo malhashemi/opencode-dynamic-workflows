@@ -85,6 +85,14 @@ export type RouteAction =
   | "save"
   /** Tick the highlighted option in or out, on a question that accepts more than one answer. */
   | "toggle"
+  /**
+   * Move to the next question waiting on a person, across every run.
+   *
+   * A navigation rather than a control, so it belongs in the reducer with the rest of them: several questions
+   * can be waiting at once — the sidebar badge has always counted them globally — and reaching the second one
+   * used to mean leaving the pane, walking back to the list, and drilling into a different run.
+   */
+  | "next"
   | "restart"
   | "resume"
 
@@ -907,6 +915,129 @@ export function toggleChoice(state: RouteState, runs: readonly RunSnapshot[]): R
   return { ...state, stack }
 }
 
+/** How much of a question header a tab shows before it starts crowding its neighbours off the strip. */
+const TAB_LABEL_MAX = 24
+
+/**
+ * One waiting question, as the tab strip above the answer pane renders it.
+ *
+ * Waiting questions can belong to DIFFERENT runs — the sidebar badge has counted them globally since Phase 1 —
+ * so this is navigation across runs, not within one. `workflow` is filled only when the waiting set actually
+ * spans more than one run: repeating the same name on every tab of a single run's form is a column that says
+ * nothing, which the honesty rule already forbids elsewhere.
+ */
+export interface QuestionTab {
+  runId: string
+  requestID: string
+  /** The question's own header — what the user recognizes it by — truncated to fit beside its neighbours. */
+  label: string
+  /** The run's workflow name, or `""` when every waiting question comes from the same run. */
+  workflow: string
+  current: boolean
+}
+
+function tabLabel(interaction: PendingInteraction): string {
+  const header = interaction.questions[0]?.header?.trim()
+  const label = header && header.length > 0 ? header : interaction.kind === "permission" ? "Permission" : "Question"
+  return label.length > TAB_LABEL_MAX ? `${label.slice(0, TAB_LABEL_MAX - 1)}…` : label
+}
+
+/**
+ * Every question waiting on a person, as tabs — or nothing at all.
+ *
+ * Empty unless the pane is open ON a pending question and there is more than one waiting: a one-tab tab strip
+ * is furniture, and a strip drawn above a settled RECORD would offer to switch between things the level it sits
+ * on is not one of.
+ */
+export function questionTabs(state: RouteState, runs: readonly RunSnapshot[]): QuestionTab[] {
+  const top = state.stack[state.stack.length - 1]
+  if (top?.kind !== "question") return []
+  const pending = pendingInteractions(runs)
+  if (pending.length < 2) return []
+  const owners = pending.map((interaction) => runOfInteraction(runs, interaction.requestID))
+  const acrossRuns = new Set(owners.map((run) => run?.runId)).size > 1
+  const tabs = pending.map((interaction, index) => {
+    const owner = owners[index]
+    return {
+      runId: owner?.runId ?? "",
+      requestID: interaction.requestID,
+      label: tabLabel(interaction),
+      workflow: acrossRuns ? (owner?.workflow ?? "") : "",
+      current: owner?.runId === top.runId && interaction.requestID === top.requestID,
+    }
+  })
+  // The level addresses something that is not in the waiting set — a record being read back. Nothing to cycle.
+  return tabs.some((tab) => tab.current) ? tabs : []
+}
+
+/**
+ * Move to the next waiting question, wrapping.
+ *
+ * The stack is REBUILT through {@link openQuestion} rather than having its top swapped, because the next
+ * question may belong to a different run: leaving the old run level underneath would make `esc` walk out
+ * through a run the question on screen has nothing to do with.
+ */
+export function cycleQuestion(state: RouteState, runs: readonly RunSnapshot[], delta = 1): RouteState {
+  const tabs = questionTabs(state, runs)
+  if (tabs.length < 2) return state
+  const at = tabs.findIndex((tab) => tab.current)
+  if (at < 0) return state
+  const next = tabs[(at + delta + tabs.length) % tabs.length]
+  if (!next || !next.runId) return state
+  return openQuestion(state, next.runId, next.requestID)
+}
+
+/**
+ * Put a question's own previous answer back on the cursor, so revisiting it is reading rather than re-deciding.
+ *
+ * A form is answered one question at a time and can now be walked backwards, which is only worth anything if
+ * arriving at question two shows what was said to question two. The row order mirrors `paneRows` — offered
+ * options, then the custom entry — which is the same order {@link questionRowCount} counts.
+ *
+ * A free-text answer is not among the offered labels by construction, so it comes back as the buffer it was
+ * typed into rather than being silently dropped.
+ */
+export function restoreAnswer(
+  interaction: PendingInteraction,
+  index: number,
+  answer: readonly string[] = [],
+): { selected: number; chosen: string[]; custom: string | null } {
+  const blank = { selected: 0, chosen: [] as string[], custom: null }
+  const question = interaction.questions[index]
+  if (!question) return blank
+  const labels = question.options.map((option) => option.label)
+  const offered = (label: string) => labels.some((candidate) => candidate.toLowerCase() === label.toLowerCase())
+  const typed = question.custom ? (answer.find((label) => !offered(label)) ?? null) : null
+  if (question.multiple === true) {
+    const chosen = answer.filter(offered)
+    return { selected: typed === null ? 0 : labels.length, chosen, custom: typed }
+  }
+  const at = labels.findIndex((candidate) => candidate.toLowerCase() === (answer[0] ?? "").toLowerCase())
+  if (at >= 0) return { selected: at, chosen: [], custom: null }
+  if (typed !== null) return { selected: labels.length, chosen: [], custom: typed }
+  return blank
+}
+
+/**
+ * Step back one question of a form, or `null` when there is no earlier question to step to.
+ *
+ * `esc` means "one thing at a time" throughout this route — it closes the free-text field before it leaves the
+ * pane, and now it walks back through a form before it leaves it either. A form that only ever went forwards
+ * meant that mis-answering question one of four cost the whole form.
+ */
+function previousQuestion(state: RouteState, runs: readonly RunSnapshot[]): RouteState | null {
+  const top = state.stack[state.stack.length - 1]
+  if (top?.kind !== "question" || top.index <= 0) return null
+  const interaction = findInteraction(runs, top.runId, top.requestID)
+  if (!interaction) return null
+  const index = top.index - 1
+  const stack = state.stack.slice()
+  // `answers` is kept whole rather than truncated to the cursor: walking back and forward again must not cost
+  // the answers already given to the questions after this one.
+  stack[stack.length - 1] = { ...top, index, ...restoreAnswer(interaction, index, top.answers[index]) }
+  return { ...state, stack }
+}
+
 export function reduceRoute(
   state: RouteState,
   action: RouteAction,
@@ -916,8 +1047,12 @@ export function reduceRoute(
   if (action === "up") return normalizeRoute(move(state, -1, runs, history), runs, history)
   if (action === "down") return normalizeRoute(move(state, 1, runs, history), runs, history)
   if (action === "toggle") return normalizeRoute(toggleChoice(state, runs), runs, history)
+  if (action === "next") return normalizeRoute(cycleQuestion(state, runs), runs, history)
   if (action === "drill") return normalizeRoute(drill(state, runs, history), runs, history)
   if (action === "back") {
+    // Inside a multi-question form, `back` moves within the form before it leaves it.
+    const stepped = previousQuestion(state, runs)
+    if (stepped) return normalizeRoute(stepped, runs, history)
     // The list level is the floor; closing the route from there is the caller's decision, not the reducer's.
     if (state.stack.length <= 1) return normalizeRoute(state, runs, history)
     return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history)

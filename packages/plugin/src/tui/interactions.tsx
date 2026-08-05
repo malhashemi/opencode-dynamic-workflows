@@ -13,7 +13,9 @@
  *
  * A multi-question form is answered ONE QUESTION AT A TIME. `PendingInteraction.questions` is a list, so a
  * script can pose several at once; rendering them all at once would turn a terminal pane into a web form, and
- * the person answering has a run in flight to keep track of.
+ * the person answering has a run in flight to keep track of. One question at a time is not one DIRECTION at a
+ * time, though: `esc` steps back through the form, restoring what was said to the question it lands on, because
+ * a form that only went forwards made mis-answering question one of four cost the whole form.
  */
 import type { TuiTheme } from "@opencode-ai/plugin/tui"
 import { createEffect, createMemo, createSignal, For, Show, type Accessor } from "solid-js"
@@ -39,29 +41,56 @@ const URGENT_FRACTION = 0.25
 export const CUSTOM_ROW_LABEL = "✎ custom answer…"
 
 /**
+ * The mark in front of an option, and the one thing on the screen that says how many answers are wanted.
+ *
+ * Boxes for a question that takes a SET, a radio for one that takes exactly one — the vocabulary every other
+ * terminal and every form on the web uses, including the host's own ask tool. This is not decoration: it is the
+ * only signal a person gets, before they try anything, about whether ticking two options is a thing this
+ * question does. A circle on both said "pick one" on a question that wanted three.
+ *
+ * Both marks are three cells wide, so the labels line up down the list whichever kind of question it is, and the
+ * custom row is blanked to the same width rather than left un-marked and half a word out of column.
+ */
+const CHOICE_MARKS = {
+  multiple: { on: "[x]", off: "[ ]" },
+  single: { on: "(•)", off: "( )" },
+  none: "   ",
+} as const
+
+/**
  * Turn a pane's selection into the host's own reply shape.
  *
  * `selection` is the set of option labels chosen for the CURRENT question and `custom` is the free-text buffer
  * (`null` while the user is choosing from the offered set). `answered` carries the rows already collected for
- * earlier questions — a fourth parameter the sketch did not have, and the price of answering a multi-question
+ * the other questions — a fourth parameter the sketch did not have, and the price of answering a multi-question
  * form one question at a time: the reply is a property of the whole form, and the pane only ever holds one
  * question's worth of state at a time.
+ *
+ * `at` is which question the answer belongs to, and it is what lets a form be walked BACKWARDS. Appending would
+ * have been enough for a form that only ever went forwards; once `esc` can step back to question one, changing
+ * it must overwrite question one's row and leave questions two and three alone.
  *
  * The set is a set on purpose: a `multiple` question hands in everything the user ticked, a single-choice one
  * hands in the row the cursor was on, and this function cannot tell the difference — which is why it never had
  * to change when multi-select arrived. A typed answer still wins over both, because someone who reached for the
  * free-text field after ticking has said which of the two they meant.
  *
- * The result is complete when its length equals `interaction.questions.length`; until then the pane advances.
+ * Whether the form is finished is the CALLER's question now (`at === questions.length - 1`), because a revisited
+ * form is already the right length long before its last question is on screen.
  */
 export function buildAnswer(
   interaction: PendingInteraction,
   selection: readonly string[],
   custom: string | null,
   answered: readonly string[][] = [],
+  at: number = answered.length,
 ): string[][] {
   const chosen = custom !== null && custom.trim().length > 0 ? [custom.trim()] : [...selection]
-  const rows = [...answered.map((row) => [...row]), chosen]
+  const index = Math.max(0, Math.min(at, Math.max(0, interaction.questions.length - 1)))
+  const rows: string[][] = []
+  for (let row = 0; row < Math.max(index + 1, answered.length); row++) {
+    rows.push(row === index ? chosen : [...(answered[row] ?? [])])
+  }
   return rows.slice(0, Math.max(1, interaction.questions.length))
 }
 
@@ -219,8 +248,8 @@ export default function InteractionPane(props: InteractionPaneProps) {
   /**
    * Whether this question accepts more than one answer — the field the host has always sent and nothing read.
    *
-   * It changes exactly two things here, and neither is a new vocabulary: every option grows a `○`/`●` of its
-   * own, and a ticked one takes the same `success` an answered record's chosen option takes.
+   * It changes two things here, and neither is a new vocabulary: every option is marked with a BOX rather than
+   * a radio, and a ticked one takes the same `success` an answered record's chosen option takes.
    */
   const multiple = createMemo(() => !answered() && question()?.multiple === true)
   const isTicked = (label: string) =>
@@ -241,16 +270,26 @@ export default function InteractionPane(props: InteractionPaneProps) {
     return isTicked(row.label) ? theme().success : theme().text
   }
   /**
-   * `●` for a chosen option, `○` for one that was not — the vocabulary the record view already established,
-   * borrowed rather than reinvented so a ticked box and a taken answer look like the same thing at two moments.
+   * `[x]` / `[ ]` when the question takes a set, `(•)` / `( )` when it takes exactly one.
    *
-   * A blank on a single-choice question: there is nothing to tick there, and marking every option `○` would
-   * offer a gesture that does not exist. The custom row is blank on both, because typing is how it is answered.
+   * The shape of the mark is the answer to a question a person has before they touch a key: how many of these
+   * am I allowed to pick? Circles on both said "one" on a question that wanted several — and since a
+   * single-choice question is answered by the cursor and ⏎, its radio simply follows the cursor, which is what
+   * a radio does everywhere else.
+   *
+   * A settled record uses the same rule, from its own `multiple`: what was ticked and what was taken are the
+   * same claim about the same option at two moments, so they must not be drawn with two vocabularies.
+   *
+   * The custom row is never marked — typing is how it is answered — but it is padded to the same width so the
+   * labels stay in one column.
    */
-  const rowMark = (row: PaneRow) => {
-    if (answered()) return isChosen(row.label) ? "●" : "○"
-    if (multiple() && !row.custom) return isTicked(row.label) ? "●" : "○"
-    return " "
+  const rowMark = (row: PaneRow, index: number) => {
+    if (row.custom) return CHOICE_MARKS.none
+    const marks = question()?.multiple === true ? CHOICE_MARKS.multiple : CHOICE_MARKS.single
+    if (answered()) return isChosen(row.label) ? marks.on : marks.off
+    if (multiple()) return isTicked(row.label) ? marks.on : marks.off
+    // Single choice: the option under the cursor is the one ⏎ would send, so it is the one that reads as taken.
+    return index === props.selected() ? marks.on : marks.off
   }
 
   return (
@@ -317,11 +356,12 @@ export default function InteractionPane(props: InteractionPaneProps) {
                   backgroundColor={rowBackground(index())}
                   onMouseUp={() => props.onSelect(index())}
                 >
-                  <text fg={rowLabel(row, index())}>{`${rowMark(row)} ${row.label}`}</text>
+                  <text fg={rowLabel(row, index())}>{`${rowMark(row, index())} ${row.label}`}</text>
                   {/* The description under the label, because a choice that explains itself is the difference
-                      between an informed answer and a guess — and the host's shape carries one already. */}
+                      between an informed answer and a guess — and the host's shape carries one already. Indented
+                      to the label's own column: the mark is three cells wide and a space follows it. */}
                   <Show when={row.description}>
-                    <text fg={theme().textMuted}>{`   ${row.description}`}</text>
+                    <text fg={theme().textMuted}>{`    ${row.description}`}</text>
                   </Show>
                 </box>
               )}

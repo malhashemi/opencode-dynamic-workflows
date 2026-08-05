@@ -379,6 +379,46 @@ describe("answer pane render", () => {
     }
   })
 
+  /**
+   * The regression that shipped: you could not type into the answer field.
+   *
+   * The route registered ONE keymap layer for the life of the screen, claiming `h j k l f x s q n` among
+   * others. The host `preventDefault()`s any key its keymap matched and OpenTUI then skips the focused
+   * renderable, so those letters never reached the input — `chicago` typed nothing but `ci`, and no test
+   * noticed, because none of them ever opened the field and looked at what was still bound.
+   *
+   * So that is what this asserts: while the field is open, the layer claims only what the field cannot do for
+   * itself. It is deliberately written against the KEYS rather than the layer's identity — the bug was never
+   * about which module the bindings came from, it was about which letters were taken.
+   */
+  it("gives the answer field the keyboard: no letter stays bound while it is open", async () => {
+    const custom = live({ questions: [{ ...interaction().questions[0]!, custom: true }] })
+    const { view, press, fake } = await mountPane([run({ interactions: [custom] })])
+    try {
+      const bound = () => (fake.keymapLayers.at(-1)?.bindings ?? []).flatMap((b) => b.key.split(","))
+
+      // Before: the browser's own vocabulary, every letter of it claimed.
+      expect(bound()).toEqual(expect.arrayContaining(["h", "j", "k", "l", "f", "x", "s", "q", "n"]))
+
+      for (let i = 0; i < 3; i++) await press("down")
+      await press("drill")
+      expect(view.text()).toContain("Your answer")
+
+      // After: every letter a person might type is free. `chicago`, `flask` and `banjo` between them cover
+      // every letter the full layer used to take, which is the point of naming them.
+      const claimed = bound()
+      for (const letter of [..."chicagoflaskbanjo"]) expect(claimed).not.toContain(letter)
+      // Only the two the field genuinely cannot provide itself survive.
+      expect(claimed.slice().sort()).toEqual(["escape", "return"])
+
+      // And closing it hands the vocabulary straight back.
+      await press("back")
+      expect(bound()).toEqual(expect.arrayContaining(["h", "f", "x", "q"]))
+    } finally {
+      view.unmount()
+    }
+  })
+
   it("opens a free-text field on the custom row, and `esc` closes the field before leaving", async () => {
     const custom = live({ questions: [{ ...interaction().questions[0]!, custom: true }] })
     const { view, press, sent } = await mountPane([run({ interactions: [custom] })])
@@ -507,23 +547,24 @@ describe("answer pane: choosing more than one", () => {
   it("gives every option a box of its own, and ticks the one under the cursor", async () => {
     const { view, press } = await mountPane([asking()], { width: 120 })
     try {
-      // `○` on every option before anything is chosen: the shape of the question is visible before the answer
-      // is. The vocabulary is the record view's, not a new one.
-      expect(view.text()).toMatch(/○ EU/)
-      expect(view.text()).toMatch(/○ US/)
+      // A BOX on every option before anything is chosen, so the shape of the marker says how many answers the
+      // question wants before you try one. Squares are the multi-select convention — circles read as "pick one",
+      // which is exactly the confusion this replaced.
+      expect(view.text()).toMatch(/\[ \] EU/)
+      expect(view.text()).toMatch(/\[ \] US/)
 
       await press("toggle")
-      expect(view.text()).toMatch(/● EU/)
-      expect(view.text()).toMatch(/○ US/)
+      expect(view.text()).toMatch(/\[x\] EU/)
+      expect(view.text()).toMatch(/\[ \] US/)
 
       await press("down")
       await press("toggle")
-      expect(view.text()).toMatch(/● EU/)
-      expect(view.text()).toMatch(/● US/)
+      expect(view.text()).toMatch(/\[x\] EU/)
+      expect(view.text()).toMatch(/\[x\] US/)
 
       // And back off again — the same key, because a set you cannot correct is worse than a single choice.
       await press("toggle")
-      expect(view.text()).toMatch(/○ US/)
+      expect(view.text()).toMatch(/\[ \] US/)
     } finally {
       view.unmount()
     }
@@ -585,13 +626,13 @@ describe("answer pane: choosing more than one", () => {
       const frame = single.view.text()
       expect(frame).not.toContain("space toggle")
       expect(frame).toContain("⏎ answer")
-      expect(frame).not.toMatch(/[●○] APA/)
+      expect(frame).not.toMatch(/\[[x ]\] APA/)
     } finally {
       single.view.unmount()
     }
 
-    expect(questionBindings(true).map((binding) => binding.key)).toContain("space")
-    expect(questionBindings(false).map((binding) => binding.key)).not.toContain("space")
+    expect(questionBindings({ multiple: true }).map((binding) => binding.key)).toContain("space")
+    expect(questionBindings({ multiple: false }).map((binding) => binding.key)).not.toContain("space")
     expect(QUESTION_BINDINGS.map((binding) => binding.key)).not.toContain("space")
   })
 
@@ -601,7 +642,7 @@ describe("answer pane: choosing more than one", () => {
       await press("toggle")
       await press("down")
       await press("toggle")
-      expect(view.text()).toMatch(/● US/)
+      expect(view.text()).toMatch(/\[x\] US/)
 
       // Out to the run — to check on the unit that asked, say — and back in through its row.
       await press("back")
@@ -609,9 +650,9 @@ describe("answer pane: choosing more than one", () => {
       await press("drill")
 
       const frame = view.text()
-      expect(frame).toMatch(/● EU/)
-      expect(frame).toMatch(/● US/)
-      expect(frame).toMatch(/○ APAC/)
+      expect(frame).toMatch(/\[x\] EU/)
+      expect(frame).toMatch(/\[x\] US/)
+      expect(frame).toMatch(/\[ \] APAC/)
     } finally {
       view.unmount()
     }
@@ -624,18 +665,18 @@ describe("answer pane: choosing more than one", () => {
     const { view, press, sent } = await mountPane([asking({ custom: true })], { width: 120 })
     try {
       await press("toggle")
-      expect(view.text()).toMatch(/● EU/)
+      expect(view.text()).toMatch(/\[x\] EU/)
 
       for (let i = 0; i < 3; i++) await press("down")
       await press("drill")
       expect(view.text()).toContain("Your answer")
 
       // A click puts the cursor back on an option without closing the field.
-      const row = view.lineOf(/● EU/)
+      const row = view.lineOf(/\[x\] EU/)
       expect(row).toBeGreaterThan(-1)
       await view.click(4, row)
       await press("toggle")
-      expect(view.text()).toMatch(/● EU/)
+      expect(view.text()).toMatch(/\[x\] EU/)
       expect(view.text()).toContain("Your answer")
       expect(sent).toEqual([])
     } finally {
@@ -714,9 +755,10 @@ describe("answer pane: reading back what was answered", () => {
       // Every option, not just the answer: `["MLA"]` on its own is meaningless without the set it came from.
       expect(frame).toContain("APA")
       expect(frame).toContain("Chicago")
-      // `●` marks the one that was taken, `○` the ones that were not.
-      expect(frame).toMatch(/● MLA/)
-      expect(frame).toMatch(/○ APA/)
+      // A RADIO marks the one that was taken, because this question only ever admitted one. The record reads
+      // back in the same vocabulary the question was asked in — a multi-select record uses boxes.
+      expect(frame).toMatch(/\(•\) MLA/)
+      expect(frame).toMatch(/\( \) APA/)
       expect(frame).toContain("question (answered)")
       expect(frame).toContain("You answered this.")
       // Read-only: no countdown, because there is nothing left to run out.

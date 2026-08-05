@@ -18,6 +18,7 @@ import type { RunSnapshot, UnitSnapshot } from "../../src/runs"
 import type { RunControlClient } from "../../src/tui/control"
 import {
   commandName,
+  FIELD_BINDINGS,
   footerHint,
   OPEN_COMMAND,
   openWorkflowRoute,
@@ -129,6 +130,10 @@ describe("workflow keymap", () => {
       "down,j",
       "return,right,l",
       "space",
+      // `n`, not the `tab` the design asked for: the host binds `tab` to `agent_cycle` and advertises it in its
+      // own startup tips. Whether a mode-scoped plugin layer outranks a host default is not this plugin's call
+      // to make, and a key the user already has muscle memory for is not ours to gamble with.
+      "n",
       "escape,left,h",
       "f",
       "x",
@@ -140,20 +145,20 @@ describe("workflow keymap", () => {
     expect(layer?.bindings?.some((binding) => binding.key === "r")).toBe(false)
 
     /**
-     * `space` is the one binding that does not consume its keystroke, and that is what makes it safe to claim.
+     * Every binding consumes its key, and that is only safe because the FIELD gets a layer of its own.
      *
      * The host's keymap prepends its listener to the renderer's key stream and `preventDefault()`s anything it
-     * matched; OpenTUI then skips the focused renderable's own handler on a default-prevented key. A bound
-     * printable key therefore never reaches the pane's free-text field. Registered this way, the space still
-     * lands in the answer being typed — and `route.tsx` makes the toggle inert while that field is open.
+     * matched; OpenTUI then skips the focused renderable's own handler on a default-prevented key. So while
+     * this layer is installed, none of `h j k l f x s q n` can be typed — which is precisely why it is swapped
+     * for {@link FIELD_BINDINGS} the moment the answer field opens. Letting keys through instead
+     * (`preventDefault: false` on every binding) was the other option, and it makes `q` both close the route
+     * and type a `q`.
      */
-    const toggle = layer?.bindings?.find((binding) => binding.key === "space")
-    expect((toggle as { preventDefault?: boolean } | undefined)?.preventDefault).toBe(false)
-    // …and no other binding gives its key away.
     for (const binding of layer?.bindings ?? []) {
-      if (binding.key === "space") continue
       expect((binding as { preventDefault?: boolean }).preventDefault).toBeUndefined()
     }
+    // The field's own layer is small on purpose: anything it does not claim reaches the input.
+    expect(FIELD_BINDINGS.map((binding) => binding.key)).toEqual(["escape", "return"])
 
     fake.runCommand(commandName("stop"))
     expect(seen).toEqual(["stop"])
