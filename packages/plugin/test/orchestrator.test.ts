@@ -6,6 +6,7 @@ import type { Journal } from "../src/journal"
 import { createControlRegistry } from "../src/control"
 import {
   loadWorkflowConfig,
+  resolveAskGrace,
   resolveQuestionPolicy,
   resolveUnitTimeout,
   runWorkflow,
@@ -674,7 +675,8 @@ describe("resolveQuestionPolicy", () => {
       permissions: "auto",
       fallback: { kind: "tiered", standInSubagent: "explore" },
     })
-    expect(policy.kind === "human-first" && policy.graceMs).toBe(300_000)
+    // No deadline unless the author asked for one — see `resolveAskGrace`.
+    expect(policy.kind === "human-first" && policy.graceMs).toBeNull()
   })
 
   it("honours every `meta.interaction` override", () => {
@@ -688,6 +690,28 @@ describe("resolveQuestionPolicy", () => {
     expect(resolveQuestionPolicy({ ...bare, interaction: { graceMs: -1 } }, () => true)).toMatchObject({
       graceMs: 0,
     })
+  })
+})
+
+/**
+ * The rule that a question has NO deadline unless someone asked for one.
+ *
+ * Asserted the way `resolveUnitTimeout` is, and for the same reason: a default expressed as a `??` in two call
+ * sites is a default the next person reinstates by reflex. It was five minutes; a real user watched their run
+ * hand a decision to automation while they were in another window, and the correct framing is theirs — most
+ * questions are too important to be answered by a clock.
+ */
+describe("resolveAskGrace", () => {
+  it("has no default: absent means the question waits", () => {
+    expect(resolveAskGrace(undefined)).toBeNull()
+  })
+
+  it("keeps a declared grace, floors a typo, and refuses a non-finite one", () => {
+    expect(resolveAskGrace(40_000)).toBe(40_000)
+    expect(resolveAskGrace(0)).toBe(0)
+    expect(resolveAskGrace(-1)).toBe(0)
+    expect(resolveAskGrace(Number.NaN)).toBeNull()
+    expect(resolveAskGrace(Number.POSITIVE_INFINITY)).toBeNull()
   })
 })
 
@@ -739,6 +763,65 @@ export default defineWorkflow({
     expect(result).toEqual({ ok: true })
     expect((await running).result).toEqual(["thorough"])
     expect(store.get("run-ask")?.interactions).toEqual([])
+
+    // …and the run KEEPS the record. The question, the options it offered, the answer, and who gave it — all of
+    // it survives on the run, because "what was I asked and what did I say?" is a question people ask thirty
+    // seconds later and the answer used to simply vanish.
+    const record = store.get("run-ask")?.resolved ?? []
+    expect(record).toHaveLength(1)
+    expect(record[0]).toMatchObject({ origin: "script", by: "human", answers: [["thorough"]] })
+    expect(record[0]?.questions[0]?.options.map((option) => option.label)).toEqual(["fast", "thorough"])
+  })
+
+  it("waits indefinitely for a human when no grace was declared", async () => {
+    const store = createRunStore()
+    const control = createControlRegistry()
+    // No `graceMs` anywhere: not on `meta.interaction`, not on the ask. The question is the human's until they
+    // answer it — the whole point of making the deadline opt-in.
+    const source = `
+import { defineWorkflow } from "@opencode-ai/workflow"
+export default defineWorkflow({
+  meta: { name: "asks-patiently", description: "asks and waits" },
+  async run({ ask }) {
+    const [answer] = await ask(
+      { header: "Depth", prompt: "fast or thorough?", options: [
+        { label: "fast", description: "" }, { label: "thorough", description: "" },
+      ] },
+      { fallback: [["fast"]] },
+    )
+    return answer
+  },
+})`
+    const running = runWorkflow({
+      source,
+      client: makeFakeClient(),
+      parentSessionID: "p",
+      runId: "run-patient",
+      store,
+      control,
+      attached: () => true,
+    })
+
+    let pending: RunSnapshot["interactions"] = []
+    for (let i = 0; i < 100 && pending.length === 0; i++) {
+      await Bun.sleep(5)
+      pending = store.get("run-patient")?.interactions ?? []
+    }
+    // No deadline: nothing to render a countdown from, and nothing to expire.
+    expect(pending[0]?.graceEndsAt).toBeNull()
+
+    // Long enough that the old five-minute default would not have fired either — the claim is that NO timer
+    // exists, so the only thing that can settle this is the answer below.
+    await Bun.sleep(120)
+    expect(store.get("run-patient")?.interactions).toHaveLength(1)
+
+    await control.dispatch({
+      action: "question.reply",
+      runId: "run-patient",
+      requestID: pending[0]!.requestID,
+      answers: [["thorough"]],
+    })
+    expect((await running).result).toEqual(["thorough"])
   })
 
   it("resolves `ctx.ask` to its fallback with nothing attached, without waiting", async () => {

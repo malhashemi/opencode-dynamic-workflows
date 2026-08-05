@@ -19,6 +19,7 @@ function snapshot(): RunSnapshot {
     logs: [],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 0,
     startedAt: Date.now(),
     endedAt: null,
@@ -328,6 +329,7 @@ describe("workflow endpoint: interaction control", () => {
       sessionID: "ses_child",
       unitId: null,
       depth: 2,
+      phase: null,
       questions: [
         {
           header: "Region",

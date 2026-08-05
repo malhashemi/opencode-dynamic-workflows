@@ -46,6 +46,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     logs: [],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 0,
     startedAt: 1_000,
     endedAt: null,
@@ -115,6 +116,66 @@ describe("journal round-trip", () => {
 
   it("answers null for a run it has never seen", async () => {
     expect(await journal.read("nobody")).toBeNull()
+  })
+
+  /**
+   * Answers have to outlive the process that asked.
+   *
+   * Two independent paths, deliberately: the terminal `run.json` carries the whole record, and each resolution
+   * is ALSO appended as it happens — because the case a resumed run exists for is a host that died, where
+   * `finish` never ran and the append is the only thing that was ever written.
+   */
+  it("keeps what the human answered, in the record and in the transition log", async () => {
+    const answered = {
+      requestID: "req-1",
+      kind: "question" as const,
+      origin: "script" as const,
+      sessionID: "parent",
+      unitId: null,
+      depth: 1,
+      phase: "gather",
+      questions: [
+        {
+          header: "Focus",
+          prompt: "which area?",
+          options: [
+            { label: "alpha", description: "" },
+            { label: "beta", description: "" },
+          ],
+          multiple: false,
+          custom: false,
+        },
+      ],
+      raisedAt: 1_500,
+      answers: [["beta"]],
+      by: "human" as const,
+      resolvedAt: 2_500,
+    }
+    await journal.begin(run(), { source: SOURCE, args: undefined })
+    await journal.append({
+      type: "interaction.resolved",
+      runId: "run-1",
+      requestID: "req-1",
+      by: "human",
+      answers: [["beta"]],
+    })
+    await journal.finish(run({ status: "done", endedAt: 5_000, resolved: [answered] }), "ok")
+
+    const record = await journal.read("run-1")
+    expect(record?.run.resolved).toHaveLength(1)
+    expect(record?.run.resolved[0]).toMatchObject({ answers: [["beta"]], by: "human", phase: "gather" })
+    // …and in ask order, which is how a replay matches an answer to the question about to be asked again.
+    expect(record?.transitions.map((event) => event.type)).toEqual(["interaction.resolved"])
+  })
+
+  it("reads a record written before answers were kept as one with none", async () => {
+    await journal.begin(run(), { source: SOURCE, args: undefined })
+    await journal.finish(run({ status: "done", endedAt: 4_000 }), "ok")
+    const file = path.join(root, "runs", "run-1", "run.json")
+    const parsed = JSON.parse(await readFile(file, "utf8")) as { run: Record<string, unknown> }
+    delete parsed.run.resolved
+    await writeFile(file, JSON.stringify(parsed), "utf8")
+    expect((await journal.read("run-1"))?.run.resolved).toEqual([])
   })
 
   it("serializes writes so an append can never overtake the begin that made room for it", async () => {

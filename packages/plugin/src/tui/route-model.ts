@@ -12,7 +12,13 @@
 import { formatClock, formatElapsed, formatTokens, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { ControlAction } from "../control"
 import type { RunSummary } from "../journal"
-import type { PendingInteraction, RunSnapshot, UnitSnapshot } from "../runs"
+import type {
+  InteractionRecord,
+  PendingInteraction,
+  ResolvedInteraction,
+  RunSnapshot,
+  UnitSnapshot,
+} from "../runs"
 
 export type RunStatusFilter = "all" | "active" | "done" | "failed"
 
@@ -26,6 +32,10 @@ export type RouteLevel =
    * Being a level is what keeps `esc` meaning the same thing here as everywhere else in the route, and what
    * lets a question be reached the same way a unit is: select the row, press ⏎. `custom` is the free-text
    * buffer, and `null` when the user is choosing from the offered options rather than typing.
+   *
+   * The same level renders an ANSWERED question read-only, which is why it survives the interaction leaving
+   * the pending list: what you were asked and what you said is a thing to go back and look at, not something
+   * that should evaporate the instant you answer it.
    */
   | { kind: "question"; runId: string; requestID: string; selected: number; custom: string | null }
 
@@ -79,7 +89,15 @@ export interface RunLevelRow {
   kind: "phase" | "unit" | "interaction"
   /** Phase title, unitId, or requestID — whatever addresses this row. */
   id: string
-  glyph: "queued" | "running" | "ok" | "failed" | "replayed" | "question"
+  /**
+   * `stopped` and `answered` are not decoration.
+   *
+   * `stopped` exists because a phase or unit left mid-flight by a run that FAILED or was stopped must not
+   * render as `running` — a settled run with a spinning phase is the browser lying about what it knows.
+   * `answered` is a question that has been settled: kept, navigable, and visibly distinct from the `❓` of one
+   * that is still waiting.
+   */
+  glyph: "queued" | "running" | "ok" | "failed" | "stopped" | "replayed" | "question" | "answered"
   indent: 0 | 1
   label: string
   detail: string
@@ -138,6 +156,11 @@ function interactionsOf(run: RunSnapshot): readonly PendingInteraction[] {
   return Array.isArray(run.interactions) ? run.interactions : []
 }
 
+/** Same tolerance for the answered list: an engine that never recorded one is saying "none". */
+export function resolvedInteractions(run: RunSnapshot): readonly ResolvedInteraction[] {
+  return Array.isArray(run.resolved) ? run.resolved : []
+}
+
 /**
  * Every interaction waiting on a human, across every run, oldest first.
  *
@@ -163,6 +186,31 @@ export function findInteraction(
 ): PendingInteraction | null {
   const run = runs.find((candidate) => candidate.runId === runId)
   return run ? (interactionsOf(run).find((candidate) => candidate.requestID === requestID) ?? null) : null
+}
+
+/** The answered record for a request, once nobody is waiting on it any more. */
+export function findResolved(
+  runs: readonly RunSnapshot[],
+  runId: string,
+  requestID: string,
+): ResolvedInteraction | null {
+  const run = runs.find((candidate) => candidate.runId === runId)
+  return run ? (resolvedInteractions(run).find((candidate) => candidate.requestID === requestID) ?? null) : null
+}
+
+/**
+ * Either half of a question's life, addressed the same way.
+ *
+ * The pane, the breadcrumb, and the reducer all want "the thing this level points at" without caring whether it
+ * is still waiting — that distinction belongs in exactly one place (whether the pane accepts a keystroke), not
+ * in every lookup on the way to it.
+ */
+export function findInteractionRecord(
+  runs: readonly RunSnapshot[],
+  runId: string,
+  requestID: string,
+): PendingInteraction | ResolvedInteraction | null {
+  return findInteraction(runs, runId, requestID) ?? findResolved(runs, runId, requestID)
 }
 
 /**
@@ -330,14 +378,23 @@ function unitElapsed(unit: UnitSnapshot, now: number): string {
   return formatElapsed((unit.endedAt ?? now) - unit.startedAt)
 }
 
-function unitRow(unit: UnitSnapshot, indent: 0 | 1, now: number): RunLevelRow {
+/**
+ * `runStatus` is non-null only when the run has SETTLED, and it exists for one row: a unit still marked
+ * `running` in the last snapshot of a run that is over. Left alone it spins forever.
+ */
+function unitRow(
+  unit: UnitSnapshot,
+  indent: 0 | 1,
+  now: number,
+  runStatus: Exclude<RunSnapshot["status"], "running"> | null,
+): RunLevelRow {
   const glyph: RunLevelRow["glyph"] =
     isReplayed(unit) && unit.status === "ok"
       ? "replayed"
       : unit.status === "queued"
         ? "queued"
         : unit.status === "running"
-          ? "running"
+          ? (runStatus ? terminalGlyph(runStatus) : "running")
           : unit.status === "ok"
             ? "ok"
             : "failed"
@@ -366,11 +423,19 @@ function unitRow(unit: UnitSnapshot, indent: 0 | 1, now: number): RunLevelRow {
  * The unit when the engine could attribute one — `#1 nested asker` is what a person recognizes, and the depth
  * is only interesting when there is no unit to name. A script's question comes from the run itself.
  */
-export function interactionSource(run: RunSnapshot, interaction: PendingInteraction): string {
+export function interactionSource(run: RunSnapshot, interaction: InteractionRecord): string {
   if (interaction.origin === "script") return "the workflow script"
   const unit = interaction.unitId ? run.units.find((candidate) => candidate.unitId === interaction.unitId) : undefined
   if (unit) return `#${unit.ordinal} ${unit.label ?? unit.subagent}`
   return `a unit at depth ${interaction.depth}`
+}
+
+/** The chosen labels as one readable phrase — `EU`, or `EU, US` for a multi-part form. */
+export function answerSummary(interaction: ResolvedInteraction): string {
+  return interaction.answers
+    .map((row) => row.join(", "))
+    .filter((row) => row.length > 0)
+    .join(" · ")
 }
 
 /** How long a request has been waiting, or how long is left before automation takes it. */
@@ -389,10 +454,45 @@ function interactionRow(run: RunSnapshot, interaction: PendingInteraction, now: 
   }
 }
 
+/**
+ * An answered question, as a row you can open again.
+ *
+ * The row says WHAT was chosen rather than leaving the glyph to carry it, per the same rule the replayed-unit
+ * glyph follows: a mark nobody can decode is decoration. `Automated` rather than `Answered` when nobody chose —
+ * a grace that lapsed, a ladder that grounded it, a run that ended — because those are genuinely different
+ * events and merging them is how a record starts flattering itself.
+ */
+function resolvedRow(run: RunSnapshot, interaction: ResolvedInteraction, indent: 0 | 1): RunLevelRow {
+  const chosen = answerSummary(interaction)
+  return {
+    kind: "interaction",
+    id: interaction.requestID,
+    glyph: "answered",
+    indent,
+    label: interaction.by === "human" ? "Answered" : "Automated",
+    detail: [interaction.questions[0]?.header ?? "", chosen || "answer not recorded"].filter(Boolean).join(" · "),
+    elapsed: formatElapsed(Math.max(0, interaction.resolvedAt - interaction.raisedAt)),
+  }
+}
+
+/**
+ * The terminal glyph for a phase or unit a settled run left behind.
+ *
+ * `queued`/`running` on a run that is over is the browser asserting something it can see is false — the bug a
+ * phase with no units of its own produced, spinning forever after `finish` because the glyph chain only ever
+ * consulted `currentPhase`.
+ */
+function terminalGlyph(status: RunSnapshot["status"]): RunLevelRow["glyph"] {
+  if (status === "done") return "ok"
+  if (status === "aborted") return "stopped"
+  return "failed"
+}
+
 export function runRows(run: RunSnapshot): RunLevelRow[] {
   const now = Date.now()
   const rows: RunLevelRow[] = []
   const currentIndex = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
+  const settledRun = run.status !== "running"
 
   // Pinned above the phases: something waiting on a person is the most actionable thing on the screen, and a
   // question buried under a forty-unit fan-out is a question nobody answers.
@@ -410,17 +510,52 @@ export function runRows(run: RunSnapshot): RunLevelRow[] {
     unphased.push(unit)
   }
 
+  // Answered questions are filed where they were RAISED: a unit's question sits directly under that unit, a
+  // script's under the phase the run was in. Anything the run cannot place falls through to the tail, which is
+  // where an unphased unit goes too — the alternative is a record the browser holds and never shows.
+  const answersByUnit = new Map<string, ResolvedInteraction[]>()
+  const answersByPhase = new Map<string, ResolvedInteraction[]>()
+  const looseAnswers: ResolvedInteraction[] = []
+  for (const interaction of resolvedInteractions(run)) {
+    const unit = interaction.unitId
+      ? run.units.find((candidate) => candidate.unitId === interaction.unitId)
+      : undefined
+    if (unit) {
+      const bucket = answersByUnit.get(unit.unitId)
+      if (bucket) bucket.push(interaction)
+      else answersByUnit.set(unit.unitId, [interaction])
+      continue
+    }
+    if (interaction.phase !== null && run.phases.includes(interaction.phase)) {
+      const bucket = answersByPhase.get(interaction.phase)
+      if (bucket) bucket.push(interaction)
+      else answersByPhase.set(interaction.phase, [interaction])
+      continue
+    }
+    looseAnswers.push(interaction)
+  }
+
+  const pushUnit = (unit: UnitSnapshot, indent: 0 | 1) => {
+    rows.push(unitRow(unit, indent, now, run.status === "running" ? null : run.status))
+    for (const answer of answersByUnit.get(unit.unitId) ?? []) rows.push(resolvedRow(run, answer, 1))
+  }
+
   run.phases.forEach((title, index) => {
     const units = byPhase.get(title) ?? []
     const settled = units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
+    const unfinished = units.some((unit) => unit.status === "running" || unit.status === "queued")
     const glyph: RunLevelRow["glyph"] = units.some((unit) => unit.status === "failed")
       ? "failed"
-      : units.some((unit) => unit.status === "running" || unit.status === "queued")
-        ? "running"
+      : unfinished
+        ? settledRun
+          ? terminalGlyph(run.status)
+          : "running"
         : units.length > 0
           ? "ok"
           : index === currentIndex
-            ? "running"
+            ? settledRun
+              ? terminalGlyph(run.status)
+              : "running"
             : index < currentIndex
               ? "ok"
               : "queued"
@@ -433,12 +568,14 @@ export function runRows(run: RunSnapshot): RunLevelRow[] {
       detail: units.length > 0 ? `${settled}/${units.length}` : glyph === "queued" ? "queued" : "",
       elapsed: "",
     })
-    for (const unit of units) rows.push(unitRow(unit, 1, now))
+    for (const unit of units) pushUnit(unit, 1)
+    for (const answer of answersByPhase.get(title) ?? []) rows.push(resolvedRow(run, answer, 1))
   })
 
   // Units the script launched outside any declared phase still have to be reachable — otherwise `x` on a
   // phaseless run has nothing to target and the browser silently omits real work.
-  for (const unit of unphased) rows.push(unitRow(unit, run.phases.length > 0 ? 1 : 0, now))
+  for (const unit of unphased) pushUnit(unit, run.phases.length > 0 ? 1 : 0)
+  for (const answer of looseAnswers) rows.push(resolvedRow(run, answer, run.phases.length > 0 ? 1 : 0))
   return rows
 }
 
@@ -485,6 +622,8 @@ function rowCount(
     return run ? runRows(run).length : 0
   }
   if (level.kind === "question") {
+    // An ANSWERED question has no selectable rows: it is a record, not a form, and a cursor on it would offer
+    // a choice that has already been made.
     const interaction = findInteraction(runs, level.runId, level.requestID)
     return interaction ? questionRowCount(interaction) : 0
   }
@@ -530,10 +669,11 @@ export function normalizeRoute(
       continue
     }
     if (level.kind === "question") {
-      // An answered question is GONE, and the pane goes with it. That is the point of making the pane a level:
-      // whoever answered — this terminal, a dashboard, or the watcher's grace running out — the surface unwinds
-      // to the run instead of sitting on a form nothing is listening to.
-      if (!findInteraction(runs, level.runId, level.requestID)) break
+      // An answered question is not gone — it becomes a read-only record, and the level stays valid so it can
+      // be opened again from its row. What the pane must never do is sit on a form nothing is listening to,
+      // which is why ANSWERING navigates away immediately (`route.tsx`) rather than waiting to be evicted here.
+      // A request that is neither pending nor recorded never existed as far as this snapshot knows.
+      if (!findInteractionRecord(runs, level.runId, level.requestID)) break
       stack.push({
         kind: "question",
         runId: level.runId,
@@ -630,8 +770,9 @@ function drill(state: RouteState, runs: readonly RunSnapshot[], history: readonl
     if (!run) return state
     const row = runRows(run)[top.selected]
     if (!row) return state
-    // A waiting question opens its answer pane — the same ⏎ that opens a unit, because from the user's side
-    // both are "show me this row".
+    // A question opens its pane — the same ⏎ that opens a unit, because from the user's side both are "show me
+    // this row". Answered ones open too, read-only: "what did I say to this?" is exactly the question a record
+    // exists to answer.
     if (row.kind === "interaction") {
       return {
         ...state,
@@ -681,8 +822,10 @@ export function breadcrumb(state: RouteState, runs: readonly RunSnapshot[]): str
       continue
     }
     if (level.kind === "question") {
-      const interaction = findInteraction(runs, level.runId, level.requestID)
-      parts.push(interaction?.kind === "permission" ? "permission" : "question")
+      const interaction = findInteractionRecord(runs, level.runId, level.requestID)
+      const answered = interaction !== null && findInteraction(runs, level.runId, level.requestID) === null
+      const noun = interaction?.kind === "permission" ? "permission" : "question"
+      parts.push(answered ? `${noun} (answered)` : noun)
       continue
     }
     const unit = run?.units.find((candidate) => candidate.unitId === level.unitId)
@@ -697,6 +840,12 @@ export function breadcrumb(state: RouteState, runs: readonly RunSnapshot[]): str
  * `stop` is contextual by design: on the list and on a phase row it means the run, on a unit row it means that
  * unit. Whether the target is actually stoppable is the registry's answer, not this function's — returning the
  * action for a settled run is what lets the surface say "that run already finished" instead of nothing at all.
+ *
+ * On the ANSWER PANE `stop` means hand this question to automation, which is the one place the key changes
+ * verb rather than target. That is deliberate and it replaced a much worse arrangement: handing a question back
+ * used to be `back`, and `back` is bound to `escape,left,h` — the universal "I want out of here". A user who
+ * pressed `esc` to step out of a pane silently gave their decision away to a machine. Abandoning a question now
+ * requires reaching for the same destructive key that stops a run, and `esc` does what `esc` does everywhere.
  *
  * `save` is never contextual: it always addresses the RUN, because what it promotes is the run's script, and a
  * unit does not have one of its own.
@@ -718,9 +867,12 @@ export function selectedControl(
   if (action === "save") return { action: "save.run", runId: selectedRunId }
   if (top.kind === "list") return { action: "stop.run", runId: selectedRunId }
   if (top.kind === "unit") return { action: "stop.unit", runId: top.runId, unitId: top.unitId }
-  // On the answer pane, `x` still means "stop the run" — the run this question is holding up is the thing the
-  // user can act on, and a question has nothing of its own to stop.
-  if (top.kind === "question") return { action: "stop.run", runId: top.runId }
+  if (top.kind === "question") {
+    // Only while it is still yours to give away. An answered question has nothing to hand back, and offering to
+    // do it anyway would be a key that appears to work and does nothing.
+    if (!findInteraction(runs, top.runId, top.requestID)) return null
+    return { action: "question.reject", runId: top.runId, requestID: top.requestID }
+  }
   const run = runs.find((candidate) => candidate.runId === top.runId)
   if (!run) return null
   const row = runRows(run)[top.selected]

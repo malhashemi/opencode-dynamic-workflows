@@ -180,27 +180,35 @@ by keystroke.
 
 | Leg | Host | What it proves |
 |---|---|---|
-| A | `opencode .` (tmux) | An **agent** question: the sidebar badge, the `/workflow-answer` deep link, the pane's asker/depth/draining countdown, and `⏎` unblocking the agent so the run finishes `done` with its sentinel |
-| B | `opencode .` (tmux) | `esc` hands the same question back — the watcher's ladder resolves it and the run still completes, with nothing left pending |
+| A | `opencode .` (tmux) | An **agent** question: the sidebar badge, the `/workflow-answer` deep link, the pane naming its asker with **no invented countdown**, `⏎` unblocking the agent, the pane LEAVING the moment the answer lands, and the run keeping a record of what was asked and answered |
+| B | `opencode .` (tmux) | `esc` decides **nothing** — the question is still pending afterwards — and then `x` hands it to automation, the ladder resolves it, and the run still completes |
 | C | `opencode serve` | The same fixture with **no subscriber**: the headless ladder, unchanged, no stall, nothing orphaned |
-| D | `opencode .` (tmux) | A **script** question (`ctx.ask`) whose options the run computed from a unit's answer; answering the second one changes the script's own branch |
+| D | `opencode .` (tmux) | A **script** question (`ctx.ask`) whose options the run computed from a unit's answer; answering the second one changes the script's own branch, and the answer is filed under the phase it was asked in |
 | E | `opencode serve` | The same script question with nobody attached — its declared fallback, immediately, and nothing ever published |
 
-- **`esc` is not `question.reject`.** Declining to be the one who answers is not declining the question: the
-  hand-off expires the grace so the proxy → escalate → reject ladder takes over, and leg B asserts the run
-  still ends `done`.
+- **Neither fixture declares a grace, on purpose.** That is the default: a published question waits until a
+  person answers it, hands it off, or the run stops. So leg A asserts the pane draws **no** countdown and no
+  meter, and leg E asserts a headless run still resolves at once — the safety lives in "nothing is published
+  with nobody attached", not in a clock.
+- **`esc` is navigation, `x` is a decision.** `back` is bound to `escape,left,h`; when it sent
+  `question.reject`, the key everyone presses to step out of a screen silently handed a pending decision to a
+  machine. Leg B presses `esc`, asserts the interaction is STILL pending, re-enters through its row, and only
+  then presses `x`. Handing off is still not the host's `question.reject`: it expires the grace so the
+  proxy → escalate → reject ladder takes over, and the run ends `done`.
 - **The script leg is the justification for the primitive.** `meta.args` is fixed before a run starts, so it
   could never have carried the option labels the pane shows — they come out of a unit's answer. The labels are
   read off the published interaction rather than hardcoded, so a model's phrasing cannot masquerade as an
   engine defect.
 - **Legs A–C depend on a model's mood.** A grandchild that answers its own question produces a valid run with
   no question in it. `waitForQuestion` fails with that spelled out, so a flake reads as a flake.
-- **The toast is UNVERIFIED, and marked `todo` rather than removed.** It never appeared in a captured frame
-  across three live cycles — from a `createRoot` watcher, from an `app`-slot watcher, and at a ten-second
-  duration. Our half is accounted for by `test/tui/announce.test.tsx`, which composes the announcer through the
-  real slot registry and asserts `attention.notify` and `ui.toast` both fire. What the host does after that
-  call is not something a tmux frame settles. The sidebar badge is the durable announcement, and it IS
-  asserted. When a frame under `.artifacts/` is named `15-interactions-no-toast`, that is this.
+- **The toast is still UNVERIFIED, but no longer unexplained.** Two facts, read out of the `1.18.10` binary
+  rather than guessed at: the host mounts `<Toast />` **only** inside its own `home` and `session` route
+  bodies, so a toast raised from a plugin route paints on nothing; and `attention.notify` refuses to raise a
+  desktop notification while the renderer's focus state is `unknown`, which is its state until a focus or blur
+  event arrives — i.e. always, under tmux. `announce.tsx` now gates the toast on the route and reads the
+  notify RESULT instead of discarding it. What remains unproven is only whether the toast paints in a session
+  route on a real host; `test/tui/announce.test.tsx` covers our half. The sidebar badge is the durable
+  announcement and IS asserted. A frame named `15-interactions-no-toast` under `.artifacts/` is this.
 
 Costs five parent prompts, five child sessions, and three `task`-spawned grandchildren.
 

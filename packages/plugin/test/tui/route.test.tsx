@@ -60,6 +60,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     logs: ["gathered 9/20 sources"],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 41_200,
     startedAt: Date.now() - 130_000,
     endedAt: null,
@@ -572,6 +573,106 @@ describe("workflow route render", () => {
       for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(80)
     } finally {
       narrow.view.unmount()
+    }
+  })
+})
+
+/**
+ * Every strip separates its fields with real spaces, at every width.
+ *
+ * The user's own terminal rendered `⠦ running▰▰▰▱phase 2/3 choose▰▰▰▰1/1 units2m26s` and
+ * `Workflows›asks-the-human›question`. These rows separated their fields with flex `gap`, which does render in
+ * this harness at every width tested — so the fix is not a tweak but the removal of the variable: the
+ * separators are in the text now, and there is exactly one source of them.
+ */
+describe("route spacing: separators live in the text, not in a flex gap", () => {
+  const settled = run({
+    status: "done",
+    endedAt: Date.now(),
+    units: [unit({ status: "ok", endedAt: Date.now() })],
+  })
+
+  for (const width of [140, 116, 100, 92, 80, 60] as const) {
+    it(`keeps every field apart at ${width} columns`, async () => {
+      const harness = await mountRoute([settled], { width, height: 24 })
+      try {
+        const frame = harness.view.text()
+        // The breadcrumb, and the list row's glyph, name, meter and phase.
+        expect(frame).not.toMatch(/\w›/)
+        expect(frame).not.toMatch(/›\w/)
+        expect(frame).not.toMatch(/[▰▱](?=[A-Za-z0-9])/)
+        expect(frame).not.toMatch(/[A-Za-z0-9][▰▱]/)
+        // `units` and the elapsed clock that follows it.
+        expect(frame).not.toMatch(/units\d/)
+        // Never doubled either: one source of separation means one space's worth of it.
+        expect(frame).not.toContain("Workflows  ›")
+      } finally {
+        harness.view.unmount()
+      }
+    })
+  }
+
+  it("puts two spaces between the run's vital signs, and one inside each figure", async () => {
+    const harness = await mountRoute([run()], { params: { runId: "run-1" }, width: 120 })
+    try {
+      const strip = harness.view.text().split("\n").find((line) => line.includes("running")) ?? ""
+      expect(strip).toMatch(/running {2}[▰▱]{4} phase 2\/3 gather {2}[▰▱]{4} 0\/1 units {2}\d/)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("puts two spaces between footer hints, and one between a key and its label", async () => {
+    const harness = await mountRoute([run()], { width: 140 })
+    try {
+      const footer = harness.view.text().split("\n").find((line) => line.includes("select")) ?? ""
+      expect(footer).toContain("↑↓ select  ⏎ open  esc back  f filter  x stop")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+})
+
+/**
+ * The run level must not claim anything is running once the run is over.
+ *
+ * The regression: `asks-the-human`'s `finish` phase launches no units of its own, so the glyph chain fell
+ * through to `index === currentIndex ? "running"` and spun forever after the run had finished.
+ */
+describe("run level: a settled run has nothing spinning on it", () => {
+  it("renders a unit-less final phase with the run's own outcome", async () => {
+    const finished = run({
+      status: "done",
+      endedAt: Date.now(),
+      phases: ["choose", "finish"],
+      currentPhase: "finish",
+      units: [unit({ phase: "choose", status: "ok", endedAt: Date.now() })],
+    })
+    const harness = await mountRoute([finished], { params: { runId: "run-1" }, width: 120 })
+    try {
+      const line = harness.view.text().split("\n").find((row) => row.includes("finish")) ?? ""
+      expect(line).toContain("✓")
+      // The spinner frames — a settled run must show none of them, anywhere.
+      expect(harness.view.text()).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("marks a stopped run's open phase `⊘`, not `✗` — it did not fail, it was stopped", async () => {
+    const stopped = run({
+      status: "aborted",
+      endedAt: Date.now(),
+      phases: ["choose", "finish"],
+      currentPhase: "finish",
+      units: [unit({ phase: "choose", status: "ok", endedAt: Date.now() })],
+    })
+    const harness = await mountRoute([stopped], { params: { runId: "run-1" }, width: 120 })
+    try {
+      const line = harness.view.text().split("\n").find((row) => row.includes("finish")) ?? ""
+      expect(line).toContain("⊘")
+    } finally {
+      harness.view.unmount()
     }
   })
 })

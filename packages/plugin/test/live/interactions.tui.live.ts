@@ -9,7 +9,7 @@
  * Five legs, each proving something the previous one could not:
  *
  *   A  TUI    an AGENT question — badge, deep link, pane, answered with ⏎; the unit unblocks and the run ends
- *   B  TUI    the same question handed back with `esc`; the watcher's ladder resolves it and the run still ends
+ *   B  TUI    the same question handed back with `x`; the watcher's ladder resolves it and the run still ends
  *   C  serve  the same fixture with NO subscriber — the headless ladder, unchanged, nothing left pending
  *   D  TUI    a SCRIPT question (`ctx.ask`) whose options the run computed; answering changes the branch
  *   E  serve  the same script question with nobody attached — its declared fallback, immediately
@@ -39,8 +39,16 @@ const NESTED_SENTINEL = "NESTED-QUESTION-SETTLED"
 const BOOT_TIMEOUT_MS = 180_000
 const RUN_TIMEOUT_MS = 300_000
 
-/** The answer pane, identified by the footer wording only it uses. */
-const PANE_FOOTER = /⏎ answer\s+esc leave for automation/
+/**
+ * The answer pane, identified by the footer wording only it uses.
+ *
+ * `⏎ answer` is the tell. `esc` reads `back` here exactly as it does on every other level — it used to say
+ * `leave for automation`, which is how a user pressing the universal "get me out of here" key ended up handing
+ * their decision to a machine. Giving a question away is `x` now, and the footer says so.
+ */
+const PANE_FOOTER = /⏎ answer\s+esc back/
+/** The relabelled destructive key, which is the only thing on this level that disposes of a question. */
+const PANE_HANDOFF = /x leave for automation/
 /** The sidebar badge. Durable for as long as the question is pending, unlike the toast beside it. */
 const SIDEBAR_BADGE = /❓ \d+ question(s)? waiting/
 
@@ -219,10 +227,14 @@ describeTui("live: a human answers a question raised inside a run", () => {
   let badgeFrame = ""
   let toastFrame = ""
   let paneFrame = ""
+  /** The frame right after ⏎ — which must be the RUN, not the pane the user just finished with. */
+  let afterAnswerFrame = ""
   let answeredRun: RunSnapshot | undefined
   let answeredDepth = 0
 
-  /** Leg B — the same question handed back to automation. */
+  /** Leg B — `esc` first (which must decide nothing), then `x` (which hands it to automation). */
+  let escapeFrame = ""
+  let stillPendingAfterEscape = false
   let handOffFrame = ""
   let handedRun: RunSnapshot | undefined
 
@@ -293,6 +305,11 @@ describeTui("live: a human answers a question raised inside a run", () => {
         // Second option (`EU`), so the answer is distinguishable from a default.
         await press(tui, "Down")
         await press(tui, "Enter")
+        // Captured immediately: answering must navigate, not park the user on a form they have finished with
+        // until an unrelated event happens along and evicts them.
+        await Bun.sleep(1_200)
+        afterAnswerFrame = stripAnsi(await tui.capture())
+        await saveFrame("25-interactions-after-answer", afterAnswerFrame)
         answeredRun = await waitForRun(descriptor, NESTED_KEY, (run) => run.status !== "running", RUN_TIMEOUT_MS)
         await saveFrame("30-interactions-answered", stripAnsi(await tui.capture()))
       } finally {
@@ -301,7 +318,7 @@ describeTui("live: a human answers a question raised inside a run", () => {
       }
     }
 
-    // ── Leg B — `esc` hands the question back, and the ladder finishes the job ────────────────────────────
+    // ── Leg B — `esc` decides nothing; `x` hands the question back and the ladder finishes the job ────────
     {
       const tui = await startTui({
         cwd: scratch.root,
@@ -317,7 +334,23 @@ describeTui("live: a human answers a question raised inside a run", () => {
         const descriptor = await waitForLiveDescriptor(scratch.statePath, { worktree: scratch.worktree })
         await waitForQuestion(descriptor, NESTED_KEY, RUN_TIMEOUT_MS)
         await openAnswerPane(tui)
+
+        // `esc` FIRST. It must leave the pane and change nothing — the regression a real user hit, where the
+        // key everyone presses to step out of a screen silently gave the decision to automation.
         await press(tui, "Escape")
+        await Bun.sleep(1_500)
+        escapeFrame = stripAnsi(await tui.capture())
+        await saveFrame("35-interactions-escape", escapeFrame)
+        stillPendingAfterEscape = ((await readState(descriptor)).runs.find(
+          (run) => run.workflow === NESTED_KEY,
+        )?.interactions.length ?? 0) > 0
+
+        // Back in through the row — which is where `esc` left the cursor, and proof the question survived it.
+        // (Not through the palette: the route holds a keymap MODE while it is on screen.)
+        await press(tui, "Enter")
+        await tui.waitFor(PANE_FOOTER, { timeoutMs: 20_000, intervalMs: 200 })
+        // Then `x`, the deliberate key.
+        await press(tui, "x")
         handOffFrame = stripAnsi(await tui.waitFor(/left for automation/, { timeoutMs: 30_000, intervalMs: 200 }))
         await saveFrame("40-interactions-handoff", handOffFrame)
         handedRun = await waitForRun(descriptor, NESTED_KEY, (run) => run.status !== "running", RUN_TIMEOUT_MS)
@@ -396,9 +429,10 @@ describeTui("live: a human answers a question raised inside a run", () => {
     }
   }, BOOT_TIMEOUT_MS * 5 + RUN_TIMEOUT_MS * 5)
 
+  // Teardown gets a budget of its own — see `route.tui.live.ts` for why five seconds is not one.
   afterAll(async () => {
     await scratch?.cleanup()
-  })
+  }, 60_000)
 
   it("announces a waiting question in the sidebar, where it survives the toast", () => {
     expect(badgeFrame).toMatch(SIDEBAR_BADGE)
@@ -407,35 +441,52 @@ describeTui("live: a human answers a question raised inside a run", () => {
   })
 
   /**
-   * UNVERIFIED, deliberately left visible rather than deleted or weakened.
+   * STILL UNVERIFIED, but no longer unexplained — and the explanation changed what the plugin does.
    *
-   * The toast never appeared in a captured frame across three live cycles — from a `createRoot` watcher, from
-   * an `app`-slot watcher, and with the duration raised to ten seconds. Our own side is accounted for:
-   * `test/tui/announce.test.tsx` composes the announcer through the REAL slot registry as an `app` slot and
-   * asserts both `attention.notify` and `ui.toast` fire on a question arriving, which is the only part of this
-   * that is ours. What happens to the call after `api.ui.toast` — the host renders `<Toast />` only inside its
-   * own `home` and `session` routes, from a provider whose context the plugin adapter captured elsewhere — is
-   * not something this probe can settle.
+   * Two facts were read out of the `1.18.10` binary rather than guessed at:
    *
-   * The durable announcement is the sidebar badge, which IS asserted above and does appear. The sound and
-   * desktop notification are unobservable through tmux by construction.
+   * 1. `<Toast />` is mounted inside the host's HOME and SESSION route bodies and nowhere else. A toast raised
+   *    while the user is in a plugin route — including our own run browser — paints on nothing. `announce.tsx`
+   *    therefore raises one only where one can appear, and says so in code.
+   * 2. `attention.notify` refuses to raise a desktop notification while the renderer's focus state is
+   *    `unknown`, which is its state until a focus or blur event arrives — the normal condition of a terminal
+   *    under tmux. So the probe's own harness suppresses the channel it would most like to observe.
+   *
+   * What remains unproven here is only whether the toast PAINTS in a session route on a real host, which a
+   * frame at a 200ms poll against a 10s toast should catch and has not in four cycles. The durable
+   * announcement is the sidebar badge, asserted above and reliably present; sound and desktop notifications
+   * are unobservable through tmux by construction. Left as a `todo` rather than deleted, because the frame is
+   * still saved on every run and the day it appears this becomes a real assertion.
    */
   it.todo("raises the host's attention with a toast that names the way back", () => {
     expect(toastFrame).toContain("waiting on an answer")
     expect(toastFrame).toContain("/workflow-answer")
   })
 
-  it("opens the pane on a deep link, showing the question, the asker, and a live countdown", () => {
+  it("opens the pane on a deep link, showing the question and the asker, and no invented deadline", () => {
     expect(paneFrame).toMatch(PANE_FOOTER)
+    expect(paneFrame).toMatch(PANE_HANDOFF)
     expect(paneFrame).toContain("deployment region")
     // The UNIT that is blocked on it, by name — resolved through the session one hop below the run root, since
     // a running unit's own session is not yet a root. `a unit at depth n` is the fallback when it cannot be named.
     expect(paneFrame).toMatch(/from (#\d+ \S+|a unit at depth \d)/)
-    // The grace, draining — the thing a transient dialog cannot show and the reason the pane is a level.
-    expect(paneFrame).toMatch(/\d+m\d+s left|\d+s left/)
-    expect(paneFrame).toMatch(/[▰▱]{4}/)
+    // The fixture declares no grace, which is the default — so there is no countdown, because there is no
+    // deadline. A bar drawn here would be inventing urgency the system does not have.
+    const header = paneFrame.split("\n").find((line) => line.includes("❓ question")) ?? ""
+    expect(header).not.toMatch(/[▰▱]/)
+    expect(header).not.toContain("left")
     expect(paneFrame).toContain("US")
     expect(paneFrame).toContain("EU")
+    // Fields separated by real spaces, in a real terminal — the thing the user's own emulator got wrong.
+    expect(paneFrame).toMatch(/❓ question {2}from /)
+    expect(paneFrame).not.toMatch(/\w›|›\w/)
+  })
+
+  it("leaves the pane the moment the answer lands, showing the confirmation on the run", () => {
+    // The user called this out twice: after replying, the pane stayed — a `running` stat strip above a dead
+    // form — until an event happened to arrive. Answering navigates now.
+    expect(afterAnswerFrame).not.toMatch(PANE_FOOTER)
+    expect(afterAnswerFrame).toContain("answered")
   })
 
   it("unblocks the agent when the answer is sent, and the run finishes", () => {
@@ -445,7 +496,25 @@ describeTui("live: a human answers a question raised inside a run", () => {
     expect(answeredRun?.units.some((unit) => unit.output?.includes(NESTED_SENTINEL))).toBe(true)
   })
 
-  it("hands a question back to automation on `esc`, and the run still completes", () => {
+  it("keeps what was asked and what was answered on the finished run", () => {
+    // A resolved interaction used to simply disappear. The record — the question, the options it offered, the
+    // chosen answer, and who chose it — now outlives the answering, which is what makes it navigable.
+    const record = answeredRun?.resolved ?? []
+    expect(record.length).toBeGreaterThanOrEqual(1)
+    const question = record.find((entry) => entry.questions[0]?.prompt.includes("deployment region"))
+    expect(question).toBeDefined()
+    expect(question?.questions[0]?.options.map((option) => option.label).sort()).toEqual(["EU", "US"])
+    expect(question?.by).toBe("human")
+    expect(question?.answers).toEqual([["EU"]])
+  })
+
+  it("leaves the question alone when the user presses `esc` — navigation is not a decision", () => {
+    // Out of the pane, back on the run — and the question is still waiting, still theirs.
+    expect(escapeFrame).not.toMatch(PANE_FOOTER)
+    expect(stillPendingAfterEscape).toBe(true)
+  })
+
+  it("hands a question back to automation on `x`, and the run still completes", () => {
     expect(handOffFrame).toContain("left for automation")
     expect(handedRun?.status).toBe("done")
     // Nothing left waiting: the ladder resolved it, and the pending list is empty rather than orphaned.
@@ -475,6 +544,11 @@ describeTui("live: a human answers a question raised inside a run", () => {
     // The second option, not the declared fallback (the first) — which is the whole point of asking.
     expect(askResult).toContain(`focusing on ${askOptions[1]}`)
     expect(askResult).not.toContain(`focusing on ${askOptions[0]}`)
+    // …and the run remembers it, filed under the phase it was asked in, so `choose` has an answer under it.
+    const record = askRun?.resolved.find((entry) => entry.origin === "script")
+    expect(record).toBeDefined()
+    expect(record?.answers).toEqual([[askOptions[1] as string]])
+    expect(record?.phase).toBe("choose")
   })
 
   it("resolves a script question to its declared fallback, immediately, with nobody attached", () => {
@@ -482,7 +556,8 @@ describeTui("live: a human answers a question raised inside a run", () => {
     // Nothing was ever published: a run with no surface does not offer a question to an empty room.
     expect(headlessAskRun?.interactions).toEqual([])
     expect(headlessAskRun?.logs.join("\n")).toContain(`focusing on ${askOptions[0]}`)
-    // The grace is 90s; a headless run must not spend a second of it.
+    // The fixture declares NO grace, so an attached run would wait forever. A headless one must not wait at
+    // all — which is the entire reason `fallback` is required rather than optional.
     expect(headlessAskElapsedMs).toBeLessThan(60_000)
   })
 })

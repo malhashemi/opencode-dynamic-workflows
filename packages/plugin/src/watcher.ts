@@ -14,7 +14,13 @@ export type QuestionResolutionPolicy =
    */
   | {
       kind: "human-first"
-      graceMs: number
+      /**
+       * How long the human has before automation takes it back, or `null` for no deadline at all.
+       *
+       * `null` is the default — see `resolveAskGrace`. A published question with no grace waits for the person
+       * it was published to; the run's own abort is what releases it if nobody ever comes.
+       */
+      graceMs: number | null
       /** Whether any surface is currently subscribed. Read per poll, because surfaces come and go mid-run. */
       attached: () => boolean
       /**
@@ -181,8 +187,9 @@ export function startWatcher(deps: WatcherDeps): Watcher {
    * they let the grace lapse. Re-asking them through a different surface is not an escalation, it is the same
    * question again in a worse place, and it hangs the run until that dialog is answered.
    *
-   * Found live: `esc leave for automation` left a run sitting for five minutes on a native dialog nobody had
-   * asked for. `esc` means automation.
+   * Found live: handing a question back left a run sitting for five minutes on a native dialog nobody had
+   * asked for. (The key is `x` now, not `esc` — the human pass found that `esc`, being `back`, was giving
+   * questions away by accident — but the rule is the same: a hand-off means automation, full stop.)
    */
   const automationPolicy: Exclude<QuestionResolutionPolicy, { kind: "human-first" }> =
     resolutionPolicy.kind === "human-first"
@@ -256,6 +263,8 @@ export function startWatcher(deps: WatcherDeps): Watcher {
     const deadline = published.get(requestID)
     if (deadline === undefined) {
       const interaction = build()
+      // `Infinity` is the no-grace case, and it is the DEFAULT: with no deadline declared the question stays
+      // the human's until they answer it, hand it back with `x`, or stop the run.
       published.set(requestID, interaction.graceEndsAt ?? Number.POSITIVE_INFINITY)
       emit({ kind: "pending", interaction })
       return "wait"
@@ -450,6 +459,8 @@ export function toPendingInteraction(
     sessionID: request.sessionID,
     unitId: opts.unitId ?? null,
     depth,
+    // The watcher has no idea what a phase is; the store stamps it on publish, from the run it belongs to.
+    phase: null,
     questions: isQuestion
       ? request.questions.map((question) => ({
           header: question.header,

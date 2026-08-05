@@ -5,7 +5,7 @@ import path from "node:path"
 import { writeDescriptor } from "../../src/discovery"
 import type { RunSummary } from "../../src/journal"
 import type { RunEvent, RunSnapshot } from "../../src/runs"
-import { createRunClient, type RunClientFetch } from "../../src/tui/client"
+import { createRunClient, reduceRunEvent, type RunClientFetch } from "../../src/tui/client"
 import { createControlClient } from "../../src/tui/control"
 
 function snapshot(): RunSnapshot {
@@ -22,6 +22,7 @@ function snapshot(): RunSnapshot {
     logs: ["already in snapshot"],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 0,
     startedAt: 1,
     endedAt: null,
@@ -335,6 +336,71 @@ describe("TUI control client", () => {
       },
     })
     expect(await client.send({ action: "stop.run", runId: "run-1" })).toEqual({ ok: false, reason: "unsupported" })
+  })
+})
+
+/**
+ * The SSE reducer folds a resolution the same way the store does.
+ *
+ * It has to. If the surface merely removed the pending row, a user would watch every answer they gave vanish
+ * while an identical engine three feet away kept the record — the state the two are supposed to share.
+ */
+describe("reduceRunEvent: interactions", () => {
+  const pending = {
+    requestID: "req-1",
+    kind: "question" as const,
+    origin: "agent" as const,
+    sessionID: "child-1",
+    unitId: "unit-1",
+    depth: 2,
+    phase: null,
+    questions: [
+      {
+        header: "Region",
+        prompt: "which region?",
+        options: [
+          { label: "US", description: "" },
+          { label: "EU", description: "" },
+        ],
+        multiple: false,
+        custom: false,
+      },
+    ],
+    raisedAt: 1_000,
+    graceEndsAt: null,
+  }
+
+  const withPending = () => {
+    const runs = new Map<string, RunSnapshot>([["run-race", { ...snapshot(), currentPhase: "gather" }]])
+    reduceRunEvent(runs, { type: "interaction.pending", runId: "run-race", interaction: pending })
+    return runs
+  }
+
+  it("stamps the phase the run was in, so an answer has somewhere to live", () => {
+    expect(withPending().get("run-race")?.interactions[0]?.phase).toBe("gather")
+  })
+
+  it("keeps the whole record when the question is answered", () => {
+    const runs = withPending()
+    reduceRunEvent(runs, {
+      type: "interaction.resolved",
+      runId: "run-race",
+      requestID: "req-1",
+      by: "human",
+      answers: [["EU"]],
+    })
+    const run = runs.get("run-race")!
+    expect(run.interactions).toEqual([])
+    expect(run.resolved[0]).toMatchObject({ requestID: "req-1", by: "human", answers: [["EU"]] })
+    expect(run.resolved[0]?.questions[0]?.options).toHaveLength(2)
+  })
+
+  it("files one record however many times the resolution arrives", () => {
+    const runs = withPending()
+    for (let i = 0; i < 3; i++) {
+      reduceRunEvent(runs, { type: "interaction.resolved", runId: "run-race", requestID: "req-1", by: "human" })
+    }
+    expect(runs.get("run-race")?.resolved).toHaveLength(1)
   })
 })
 

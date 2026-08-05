@@ -258,11 +258,20 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
     serve = await startServe(scratch.root, scratch.hostEnv)
   }, BOOT_TIMEOUT_MS + RUN_TIMEOUT_MS)
 
+  /**
+   * Teardown gets a budget of its own.
+   *
+   * Bun's default hook timeout is five seconds, and this hook kills a `serve` host, kills a tmux session, and
+   * removes a worktree — three things whose cost depends on what else is winding down beside them. Run alone,
+   * this probe passes in 87s with the default; run as the third of five, its teardown blew the budget and
+   * reported as a nameless failure with every assertion green. A teardown timeout that fails the suite is
+   * telling you about the machine, not about the code.
+   */
   afterAll(async () => {
     serve?.stop()
     await tui?.kill()
     await scratch?.cleanup()
-  })
+  }, 60_000)
 
   it("opens from the command palette onto the run list", () => {
     expect(frames.list).toMatch(ROUTE_FOOTER)

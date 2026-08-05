@@ -316,6 +316,7 @@ describe("ctx.ask", () => {
       logs: [],
       errors: [],
       interactions: [],
+      resolved: [],
       tokensSpent: 0,
       startedAt: Date.now(),
       endedAt: null,
@@ -372,6 +373,57 @@ describe("ctx.ask", () => {
 
     // Case-insensitive in, canonical out — the host's own reply contract.
     expect(registry.resolve(requestID, [["THOROUGH"]])).toBe(true)
+    expect(await answered).toEqual([["thorough"]])
+  })
+
+  it("publishes with no deadline when no grace was declared anywhere", async () => {
+    const store = createRunStore()
+    const run: RunSnapshot = {
+      runId: "run-ask",
+      workflow: "planner",
+      provenance: "inline",
+      parentSessionID: "ses_parent",
+      status: "running",
+      phases: ["plan"],
+      phasesDeclared: true,
+      currentPhase: "plan",
+      units: [],
+      logs: [],
+      errors: [],
+      interactions: [],
+      resolved: [],
+      tokensSpent: 0,
+      startedAt: Date.now(),
+      endedAt: null,
+    }
+    store.create(run)
+    const registry = createAskRegistry({
+      store,
+      attached: () => true,
+      signal: new AbortController().signal,
+      // The run declared none, so the ask has none — see `resolveAskGrace`.
+      defaultGraceMs: null,
+    })
+    const ctx = createWorkflowContext({
+      client: makeFakeClient(),
+      parentSessionID: "ses_parent",
+      args: undefined,
+      state: createEngineState(),
+      ask: registry,
+      runId: "run-ask",
+    })
+
+    const answered = ctx.ask(FORM, { fallback: [["fast"]] })
+    await Bun.sleep(5)
+    const pending = store.get("run-ask")?.interactions ?? []
+    expect(pending[0]?.graceEndsAt).toBeNull()
+    // The phase it was raised in, so the answer has somewhere to be filed once it is given.
+    expect(pending[0]?.phase).toBe("plan")
+
+    // No timer exists to settle it. Only an answer can.
+    await Bun.sleep(60)
+    expect(store.get("run-ask")?.interactions).toHaveLength(1)
+    expect(registry.resolve(pending[0]!.requestID, [["thorough"]])).toBe(true)
     expect(await answered).toEqual([["thorough"]])
   })
 

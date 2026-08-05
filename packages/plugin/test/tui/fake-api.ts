@@ -1,5 +1,7 @@
+import { createSignal } from "solid-js"
 import type {
   TuiAttentionNotifyInput,
+  TuiAttentionNotifyResult,
   TuiPluginApi,
   TuiRouteDefinition,
   TuiSlotPlugin,
@@ -77,6 +79,18 @@ export interface FakeTuiApi {
    * is where this plugin's behavior actually lives.
    */
   runCommand(name: string): boolean
+  /**
+   * Move the host's current route, reactively.
+   *
+   * Load-bearing rather than convenience: the announcer reads `api.route.current` INSIDE its effect precisely so
+   * that navigating re-runs it, which is what lets an announcement that reached nobody try again when the user
+   * lands somewhere it can. A non-reactive double would make that untestable, which is how it got missed.
+   */
+  navigateTo(name: string, params?: Record<string, unknown>): void
+  /** What the host says came of an `attention.notify` — the answer the announcer must not throw away. */
+  setNotifyResult(result: TuiAttentionNotifyResult | (() => never)): void
+  /** The user's own attention configuration, which the plugin respects rather than overrides. */
+  setAttentionEnabled(enabled: boolean): void
   dispose(): Promise<void>
 }
 
@@ -94,7 +108,11 @@ export function createFakeTuiApi(
   const modes: string[] = []
   const disposers: Array<() => void | Promise<void>> = []
   const controller = new AbortController()
-  let current: { name: string; params?: Record<string, unknown> } = { name: "home" }
+  // A signal, not a plain variable: the host's route is a Solid store, so a component that reads it inside an
+  // effect is subscribed to navigation. A double that is not reactive silently makes that behaviour untestable.
+  const [current, setCurrent] = createSignal<{ name: string; params?: Record<string, unknown> }>({ name: "home" })
+  let notifyResult: TuiAttentionNotifyResult | (() => never) = { ok: true, notification: true, sound: true }
+  let attentionEnabled = true
 
   const api = {
     slots: {
@@ -105,7 +123,7 @@ export function createFakeTuiApi(
     },
     route: {
       get current() {
-        return current
+        return current()
       },
       register(definitions: TuiRouteDefinition[]) {
         routes.push(definitions)
@@ -113,7 +131,7 @@ export function createFakeTuiApi(
       },
       navigate(name: string, params?: Record<string, unknown>) {
         navigations.push({ name, params })
-        current = { name, params }
+        setCurrent({ name, params })
       },
     },
     keymap: {
@@ -146,8 +164,14 @@ export function createFakeTuiApi(
     attention: {
       async notify(input: TuiAttentionNotifyInput) {
         attention.push(input)
-        return { ok: true, notification: false, sound: false }
+        // A thrower stands in for a missing sound pack or a platform with no notifications — the case that must
+        // read as "nothing reached them" rather than crash the announcer.
+        if (typeof notifyResult === "function") return notifyResult()
+        return notifyResult
       },
+    },
+    get tuiConfig() {
+      return { attention: { enabled: attentionEnabled, notifications: true, sound: true, volume: 1 } }
     },
     lifecycle: {
       signal: controller.signal,
@@ -179,6 +203,15 @@ export function createFakeTuiApi(
         }
       }
       return false
+    },
+    navigateTo(name, params) {
+      setCurrent({ name, params })
+    },
+    setNotifyResult(result) {
+      notifyResult = result
+    },
+    setAttentionEnabled(enabled) {
+      attentionEnabled = enabled
     },
     async dispose() {
       controller.abort()

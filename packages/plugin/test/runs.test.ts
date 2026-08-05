@@ -15,6 +15,7 @@ function run(): RunSnapshot {
     logs: [],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 0,
     startedAt: 100,
     endedAt: null,
@@ -100,6 +101,93 @@ describe("createRunStore", () => {
     expect(store.get("run-1")?.units).toEqual([])
     expect(second[0]).toMatchObject({ type: "run.started", run: { logs: [] } })
     expect(second[1]).toEqual({ type: "run.log", runId: "run-1", value: "stored" })
+  })
+
+  /**
+   * A resolved interaction is FOLDED, not deleted.
+   *
+   * Before this the store simply filtered the pending row out, so the question, the options it offered, and the
+   * answer a person gave all ceased to exist the moment they gave it.
+   */
+  describe("interactions", () => {
+    const pending = (requestID: string) => ({
+      requestID,
+      kind: "question" as const,
+      origin: "script" as const,
+      sessionID: "parent",
+      unitId: null,
+      depth: 1,
+      phase: null,
+      questions: [
+        {
+          header: "Focus",
+          prompt: "which area?",
+          options: [
+            { label: "alpha", description: "" },
+            { label: "beta", description: "" },
+          ],
+          multiple: false,
+          custom: false,
+        },
+      ],
+      raisedAt: 1_000,
+      graceEndsAt: null,
+    })
+
+    it("stamps the phase the run was in when the question was raised", () => {
+      const store = createRunStore()
+      store.create(run())
+      store.apply({ type: "run.phase", runId: "run-1", value: "plan" })
+      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
+      // The publisher does not know what a phase is; the store does, and an answer filed under no phase is an
+      // answer nobody finds again.
+      expect(store.get("run-1")?.interactions[0]?.phase).toBe("plan")
+    })
+
+    it("keeps the question, the options, the answer, and who gave it", () => {
+      const store = createRunStore()
+      store.create(run())
+      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
+      store.apply({
+        type: "interaction.resolved",
+        runId: "run-1",
+        requestID: "req-1",
+        by: "human",
+        answers: [["beta"]],
+      })
+
+      const current = store.get("run-1")!
+      expect(current.interactions).toEqual([])
+      expect(current.resolved).toHaveLength(1)
+      expect(current.resolved[0]).toMatchObject({
+        requestID: "req-1",
+        origin: "script",
+        by: "human",
+        answers: [["beta"]],
+      })
+      expect(current.resolved[0]?.questions[0]?.options.map((option) => option.label)).toEqual(["alpha", "beta"])
+      expect(current.resolved[0]?.resolvedAt).toBeGreaterThanOrEqual(current.resolved[0]!.raisedAt)
+    })
+
+    it("records a resolution with no known answer as exactly that", () => {
+      const store = createRunStore()
+      store.create(run())
+      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
+      // The watcher observing a question leave the host's list knows THAT it went, not what was said.
+      store.apply({ type: "interaction.resolved", runId: "run-1", requestID: "req-1", by: "automation" })
+      expect(store.get("run-1")?.resolved[0]).toMatchObject({ by: "automation", answers: [] })
+    })
+
+    it("files one record however many parties observe the same resolution", () => {
+      const store = createRunStore()
+      store.create(run())
+      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
+      store.apply({ type: "interaction.resolved", runId: "run-1", requestID: "req-1", by: "human", answers: [["alpha"]] })
+      // The surface that answered and the watcher noticing it left both report it; neither should have to check.
+      store.apply({ type: "interaction.resolved", runId: "run-1", requestID: "req-1", by: "automation" })
+      expect(store.get("run-1")?.resolved).toHaveLength(1)
+      expect(store.get("run-1")?.resolved[0]).toMatchObject({ by: "human", answers: [["alpha"]] })
+    })
   })
 
   it("rejects duplicate and unknown run transitions", () => {

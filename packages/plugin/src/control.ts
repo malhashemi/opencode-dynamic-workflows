@@ -283,10 +283,16 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
   const find = (runId: string, requestID: string): PendingInteraction | null =>
     store.get(runId)?.interactions.find((candidate) => candidate.requestID === requestID) ?? null
 
-  /** Drop the row now rather than waiting for the watcher's next poll to notice it left the host's list. */
-  const settle = (runId: string, requestID: string) => {
+  /**
+   * Drop the row now rather than waiting for the watcher's next poll to notice it left the host's list.
+   *
+   * The `answers` go with it. This is the only moment anyone in this process knows what the person chose for an
+   * AGENT question — the reply went straight to the host — so a resolution recorded without them would leave
+   * the run's own record saying "answered" and nothing else.
+   */
+  const settle = (runId: string, requestID: string, answers?: string[][]) => {
     try {
-      store.apply({ type: "interaction.resolved", runId, requestID, by: "human" })
+      store.apply({ type: "interaction.resolved", runId, requestID, by: "human", answers })
     } catch {
       // The run is gone; the answer still reached the host, which is the part that mattered.
     }
@@ -312,7 +318,7 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
         } else {
           await client.question.reply({ requestID, answers })
         }
-        settle(runId, requestID)
+        settle(runId, requestID, answers)
         return { ok: true }
       } catch (error) {
         return failed(error)
@@ -339,7 +345,7 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
       }
       try {
         await client.permission.reply({ requestID, reply })
-        settle(runId, requestID)
+        settle(runId, requestID, [[reply]])
         return { ok: true }
       } catch (error) {
         return failed(error)

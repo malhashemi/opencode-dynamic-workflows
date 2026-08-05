@@ -199,11 +199,12 @@ describe("live: phase gate on a real 1.18.x host", () => {
     host = await startHost(scratch.root, scratch.hostEnv)
   }, BOOT_TIMEOUT_MS + 60_000)
 
+  // Teardown gets a budget of its own — see `route.tui.live.ts` for why five seconds is not one.
   afterAll(async () => {
     abort.abort()
     host?.stop()
     await scratch?.cleanup()
-  })
+  }, 60_000)
 
   it(
     "activates the server target: the host registers the `workflow` tool",

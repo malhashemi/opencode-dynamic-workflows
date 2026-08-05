@@ -141,6 +141,18 @@ function isUnitEvent(event: RunEvent): boolean {
   return event.type === "unit.queued" || event.type === "unit.started" || event.type === "unit.settled"
 }
 
+/**
+ * What goes into `units.jsonl` — unit transitions, plus every answered interaction.
+ *
+ * The answers are appended as they happen rather than relying on the terminal `run.json` alone, because the
+ * case a resumed run exists for is a host that DIED: `finish` never ran, so the only record of what the human
+ * already said is the line that was written the moment they said it. It also preserves ASK ORDER, which is how
+ * a replay matches an answer to the question the script is about to ask again.
+ */
+function isJournaledEvent(event: RunEvent): boolean {
+  return isUnitEvent(event) || event.type === "interaction.resolved"
+}
+
 function eventRunId(event: RunEvent): string {
   return event.type === "run.started" || event.type === "run.ended" ? event.run.runId : event.runId
 }
@@ -178,6 +190,10 @@ function parseRunDocument(value: unknown): RunDocument | null {
       // Always empty on read: a journaled run is over, so nothing in it is still waiting on a person. Records
       // written before Phase 4 have no such field at all, which is the same statement.
       interactions: [],
+      // ANSWERED interactions are the opposite: they are exactly what a record is for. A resumed run reads them
+      // so it does not re-interrogate the human it already asked, and the browser reads them so "what did I say
+      // to this run?" survives the process that asked. Absent in a pre-Phase-4 record, which means "none".
+      resolved: Array.isArray(run.resolved) ? (run.resolved as RunSnapshot["resolved"]) : [],
       tokensSpent: typeof run.tokensSpent === "number" && Number.isFinite(run.tokensSpent) ? run.tokensSpent : 0,
       startedAt: run.startedAt,
       endedAt: typeof run.endedAt === "number" && Number.isFinite(run.endedAt) ? run.endedAt : null,
@@ -260,7 +276,7 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
     },
 
     append(event) {
-      if (!isUnitEvent(event)) return Promise.resolve()
+      if (!isJournaledEvent(event)) return Promise.resolve()
       const runId = eventRunId(event)
       if (!opened.has(runId)) return Promise.resolve()
       return chain(
@@ -355,7 +371,7 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
  */
 export function subscribeJournal(store: RunStore, journal: Journal): () => void {
   return store.subscribe((event) => {
-    if (!isUnitEvent(event)) return
+    if (!isJournaledEvent(event)) return
     void journal.append(event)
   })
 }

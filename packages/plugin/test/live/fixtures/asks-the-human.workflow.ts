@@ -22,9 +22,9 @@ export default defineWorkflow({
     description: "Live gate: computes its options from a unit's result, then asks a human to choose.",
     whenToUse: "Verification only. Run it to prove `ctx.ask` on a real host.",
     phases: [{ title: "plan" }, { title: "choose" }, { title: "finish" }],
-    // Short enough that the headless leg does not sit through a five-minute default, long enough that a human
-    // (or a probe driving one) has time to walk into the pane and answer.
-    interaction: { graceMs: 90_000 },
+    // No `interaction.graceMs` ON PURPOSE. That is the default now — a question waits for the person it was
+    // asked of — and this fixture is what proves it against a real host. The headless leg is unaffected: with
+    // nothing attached the ask never publishes at all, it resolves to `fallback` immediately.
   },
   async run({ agent, ask, phase, log }) {
     phase("plan")

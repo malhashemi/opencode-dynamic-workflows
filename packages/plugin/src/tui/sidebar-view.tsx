@@ -51,11 +51,13 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
             // rendering accident rather than as one item.
             <box onMouseUp={() => props.onOpen?.(row.runId)}>
               <box flexDirection="row" justifyContent="space-between">
-                <box flexDirection="row" gap={1} flexShrink={1}>
+                {/* The space between the glyph and the name is IN THE TEXT, not a flex `gap` — one source of
+                    horizontal spacing, so it cannot vary with the host's flex implementation. */}
+                <box flexDirection="row" flexShrink={1}>
                   <text flexShrink={0} fg={glyphColor(row)}>
                     {glyph(row)}
                   </text>
-                  <text fg={nameColor(row)}>{row.workflow}</text>
+                  <text fg={nameColor(row)}>{` ${row.workflow}`}</text>
                 </box>
                 <text flexShrink={0} fg={theme().textMuted}>
                   {`${row.counts} · ${row.elapsed}`}

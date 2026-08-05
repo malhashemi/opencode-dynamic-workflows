@@ -30,6 +30,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     logs: [],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 0,
     startedAt: Date.now(),
     endedAt: null,
@@ -47,6 +48,7 @@ function withInteractions(base: RunSnapshot, count: number): RunSnapshot {
       sessionID: "ses_child",
       unitId: null,
       depth: 3,
+      phase: null,
       questions: [{ header: "Pick", prompt: "Which?", options: [], multiple: false, custom: false }],
       // Ascending, so "oldest waiting" is `q-0` — the request the badge deep-links to.
       raisedAt: 1_000 + i,

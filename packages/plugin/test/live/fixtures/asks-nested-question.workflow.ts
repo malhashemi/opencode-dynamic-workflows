@@ -25,8 +25,9 @@ export default defineWorkflow({
     description: "Live gate: a depth-2 grandchild raises a question a human is given first refusal on.",
     whenToUse: "Verification only. Run it to prove human-first interaction routing on a real host.",
     phases: [{ title: "ask" }, { title: "finish" }],
-    // Long enough to drive the TUI by hand; the hand-off leg presses `esc` rather than waiting this out.
-    interaction: { graceMs: 90_000 },
+    // No `interaction.graceMs`: the deadline is opt-in and this workflow does not opt in, so the question is
+    // the human's until they answer it or press `x`. The hand-off leg does exactly that rather than waiting
+    // out a clock, which is also why it never needed one.
   },
   async run({ agent, phase, log }) {
     phase("ask")

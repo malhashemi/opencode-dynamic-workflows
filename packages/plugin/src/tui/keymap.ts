@@ -39,13 +39,19 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
 /**
  * The same bindings, relabelled for the answer pane.
  *
- * Same keys, same order, same footer positions — only the words change, because on that level `⏎` sends an
- * answer and `esc` hands the question back to automation. Deriving them rather than writing a second table is
- * what guarantees the two can never drift into different vocabularies.
+ * Same keys, same order, same footer positions — only the words change. Deriving them rather than writing a
+ * second table is what guarantees the two can never drift into different vocabularies.
+ *
+ * **`esc` no longer gives a question away.** It used to: `back` was relabelled `leave for automation`, and
+ * `back` is bound to `escape,left,h`. So the three keys everyone reaches for to step out of a screen quietly
+ * handed a pending decision to a machine — which a user duly did, by pressing `esc`. Leaving a question to
+ * automation is a real decision and now costs a real key: `x`, the same one that stops a run, relabelled here
+ * because on this level the destructive thing is not the run but the question. `esc` pops the level and leaves
+ * the question exactly where it was, like every other level in the browser.
  */
 export const QUESTION_BINDINGS: readonly WorkflowBinding[] = WORKFLOW_BINDINGS.map((binding) => {
   if (binding.action === "drill") return { ...binding, label: "answer" }
-  if (binding.action === "back") return { ...binding, label: "leave for automation" }
+  if (binding.action === "stop") return { ...binding, label: "leave for automation" }
   return binding
 })
 

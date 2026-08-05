@@ -72,9 +72,6 @@ export function runOwnedRoots(state: EngineState, parentSessionID: string): Read
   return roots
 }
 
-/** The default a run gives `ctx.ask` when the workflow declares no `meta.interaction.graceMs`. */
-export const DEFAULT_ASK_GRACE_MS = 300_000
-
 /**
  * The script half of the interaction system: `ctx.ask` published as run state and settled from a surface.
  *
@@ -141,7 +138,8 @@ export function createAskRegistry(input: {
   store: RunStore
   attached: () => boolean
   signal: AbortSignal
-  defaultGraceMs: number
+  /** The run's own grace, or `null` for no deadline at all — see `resolveAskGrace`. */
+  defaultGraceMs: number | null
 }): AskRegistry {
   const waiting = new Map<string, PendingAsk & { runId: string }>()
 
@@ -151,7 +149,9 @@ export function createAskRegistry(input: {
     waiting.delete(requestID)
     if (entry.timer) clearTimeout(entry.timer)
     try {
-      input.store.apply({ type: "interaction.resolved", runId: entry.runId, requestID, by })
+      // The answers ride along: a script ask is settled HERE, so this is the only moment anyone knows what the
+      // person chose, and the run's own record of it would otherwise be a resolution with a blank answer.
+      input.store.apply({ type: "interaction.resolved", runId: entry.runId, requestID, by, answers })
     } catch {
       // The run may already be gone from the store (a terminal run drops nothing, but a store can be swapped in
       // a test). The waiting script still has to be released, which is what happens next.
@@ -185,7 +185,11 @@ export function createAskRegistry(input: {
       if (!run) return Promise.resolve(fallback)
 
       const requestID = crypto.randomUUID()
-      const graceMs = Math.max(0, options.graceMs ?? input.defaultGraceMs)
+      // `null` all the way down means "no deadline": the ask waits until a person answers it or the run stops.
+      // A per-ask `graceMs` overrides the run's, and a run with none has none.
+      const declared = options.graceMs ?? input.defaultGraceMs
+      const graceMs =
+        declared === null || declared === undefined || !Number.isFinite(declared) ? null : Math.max(0, declared)
       const now = Date.now()
       const interaction: PendingInteraction = {
         requestID,
@@ -196,6 +200,7 @@ export function createAskRegistry(input: {
         // and `depth: 1` were defined for.
         unitId: null,
         depth: 1,
+        phase: run.currentPhase,
         questions: form.map((question) => ({
           header: question.header,
           prompt: question.prompt,
@@ -204,15 +209,17 @@ export function createAskRegistry(input: {
           custom: question.custom === true,
         })),
         raisedAt: now,
-        graceEndsAt: now + graceMs,
+        graceEndsAt: graceMs === null ? null : now + graceMs,
       }
 
       return new Promise<string[][]>((settle) => {
         const entry = { runId, form, fallback, settle, timer: null as ReturnType<typeof setTimeout> | null }
         waiting.set(requestID, entry)
         // The grace timer is the ONLY deadline on this path, and its expiry falls back rather than failing:
-        // a question nobody answered is not an error, it is the default the author already wrote down.
-        entry.timer = setTimeout(() => finish(requestID, fallback, "automation"), graceMs)
+        // a question nobody answered is not an error, it is the default the author already wrote down. With no
+        // grace declared there is no timer at all — the question waits for the person it was asked of, and the
+        // run's abort is what releases it if nobody ever comes.
+        if (graceMs !== null) entry.timer = setTimeout(() => finish(requestID, fallback, "automation"), graceMs)
         try {
           input.store.apply({ type: "interaction.pending", runId, interaction })
         } catch {

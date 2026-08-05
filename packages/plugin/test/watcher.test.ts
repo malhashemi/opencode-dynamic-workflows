@@ -1130,10 +1130,10 @@ describe("watcher: human-first interactions", () => {
     { id: "grandchild", parentID: "unit-session", title: "Grandchild" },
   ]
 
-  function humanFirstPolicy(overrides: Partial<{ graceMs: number; attached: () => boolean; questions: "human" | "proxy-then-human"; permissions: "auto" | "human" }> = {}) {
+  function humanFirstPolicy(overrides: Partial<{ graceMs: number | null; attached: () => boolean; questions: "human" | "proxy-then-human"; permissions: "auto" | "human" }> = {}) {
     return {
       kind: "human-first" as const,
-      graceMs: overrides.graceMs ?? 10_000,
+      graceMs: overrides.graceMs === undefined ? 10_000 : overrides.graceMs,
       attached: overrides.attached ?? (() => true),
       questions: overrides.questions ?? ("human" as const),
       permissions: overrides.permissions ?? ("auto" as const),
@@ -1200,6 +1200,66 @@ describe("watcher: human-first interactions", () => {
       expect(client.promptCalls).toHaveLength(0)
       expect(client.questionReplies).toHaveLength(0)
       expect(client.questionRejects).toHaveLength(0)
+    } finally {
+      session.stop()
+    }
+  })
+
+  /**
+   * The default, since the grace became opt-in: no deadline at all.
+   *
+   * The old five-minute default handed a decision to automation while the person it was asked of was in another
+   * window. A published question with no grace is the human's until they answer it, hand it back with `x`, or
+   * stop the run — and the watcher must never take it back on its own.
+   */
+  it("with no grace declared, the question stays the human's indefinitely", async () => {
+    const client = makeFakeClient({
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("do the thing") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: null }), events })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "no interaction was published")
+      const published = events.find((event) => event.kind === "pending") as { interaction: PendingInteraction }
+      // Nothing to count down from, so no surface renders a countdown either.
+      expect(published.interaction.graceEndsAt).toBeNull()
+
+      // Far longer than the polling interval, and long enough that any deadline shorter than the old default
+      // would have fired: the ladder must not have run.
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      expect(client.promptCalls).toHaveLength(0)
+      expect(client.questionReplies).toHaveLength(0)
+      expect(client.questionRejects).toHaveLength(0)
+      expect(events.some((event) => event.kind === "resolved")).toBe(false)
+    } finally {
+      session.stop()
+    }
+  })
+
+  it("hands a grace-less question back the moment `x` says so", async () => {
+    const client = makeFakeClient({
+      responses: [{ text: "EU" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: {
+        "run-root": firstUserMessage("Launch in the EU."),
+        "unit-session": firstUserMessage("Launch region answer: EU"),
+        grandchild: firstUserMessage("Launch region answer: EU"),
+      },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const events: InteractionEvent[] = []
+    const session = start({ client, policy: humanFirstPolicy({ graceMs: null }), events })
+    try {
+      await waitFor(() => events.some((event) => event.kind === "pending"), "no interaction was published")
+      // No timer means the only way out is a person deciding there is one — which is the whole design.
+      expect(session.watcher.handOff("q-1")).toBe(true)
+      await waitFor(
+        () => client.questionReplies.length + client.questionRejects.length >= 1,
+        "the ladder never took over after the hand-off",
+        1_000,
+      )
     } finally {
       session.stop()
     }

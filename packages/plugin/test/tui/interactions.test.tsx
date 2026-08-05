@@ -15,7 +15,7 @@
 import { createSignal } from "solid-js"
 import { describe, expect, it } from "bun:test"
 import type { ControlAction } from "../../src/control"
-import type { PendingInteraction, RunSnapshot } from "../../src/runs"
+import type { PendingInteraction, ResolvedInteraction, RunSnapshot } from "../../src/runs"
 import type { RunControlClient } from "../../src/tui/control"
 import InteractionPane, {
   buildAnswer,
@@ -37,6 +37,7 @@ function interaction(overrides: Partial<PendingInteraction> = {}): PendingIntera
     sessionID: "ses_child",
     unitId: "unit-1",
     depth: 3,
+    phase: null,
     questions: [
       {
         header: "Citation style",
@@ -81,6 +82,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     logs: [],
     errors: [],
     interactions: [live()],
+    resolved: [],
     tokensSpent: 0,
     startedAt: Date.now() - 60_000,
     endedAt: null,
@@ -150,7 +152,12 @@ interface Harness {
  */
 async function mountPane(
   initial: readonly RunSnapshot[] = [run()],
-  options: { themeOverrides?: Partial<Record<string, string>>; width?: number } = {},
+  options: {
+    themeOverrides?: Partial<Record<string, string>>
+    width?: number
+    /** Override the control result, for the case where a reply does NOT land. */
+    control?: RunControlClient["send"]
+  } = {},
 ): Promise<Harness> {
   const fake = createFakeTuiApi("/tmp/state", options.themeOverrides ?? {})
   const [runs, setRuns] = createSignal<readonly RunSnapshot[]>(initial)
@@ -158,7 +165,7 @@ async function mountPane(
   const control: RunControlClient = {
     async send(action) {
       sent.push(action)
-      return { ok: true }
+      return options.control ? options.control(action) : { ok: true }
     },
   }
   const view = await mountView(
@@ -205,13 +212,49 @@ describe("answer pane render", () => {
     }
   })
 
-  it("names who is asking, and drains a meter toward the hand-off", async () => {
+  it("names who is asking, and drains a meter wide enough to read as a clock", async () => {
     const { view } = await mountPane()
     try {
       const frame = view.text()
       expect(frame).toContain("a unit at depth 3")
-      expect(frame).toMatch(/[▰▱]{4}/)
+      // The documented exception to `METER_WIDTH` 4: at four cells a countdown has five states and reads as
+      // stalled, then jumpy. This is the one meter whose job is continuous drain, and the pane has the room.
+      expect(frame).toMatch(/[▰▱]{20}/)
       expect(frame).toMatch(/\d+m\d+s left|\d+s left/)
+      // …with real space around the meter, carried in the text rather than by a flex `gap`.
+      expect(frame).toMatch(/[▰▱] \d+m\d+s left|[▰▱] \d+s left/)
+      expect(frame).toMatch(/ {2}[▰▱]{20}/)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("shows no countdown at all when the question has no deadline — the default", async () => {
+    const { view } = await mountPane([run({ interactions: [live({ graceEndsAt: null })] })])
+    try {
+      const frame = view.text()
+      const header = frame.split("\n").find((line) => line.includes("❓ question")) ?? ""
+      // A bar drawn where there is no deadline invents urgency the system does not have. (The run's own phase
+      // meter is a different strip, one line up, and stays.)
+      expect(header).not.toMatch(/[▰▱]/)
+      expect(header).not.toContain("left")
+      expect(frame).toContain("Which citation style should the report use?")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("separates every field in the header strip with real spaces", async () => {
+    // The user's terminal rendered `⠦ running▰▰▰▱phase 2/3 choose▰▰▰▰1/1 units2m26s` and
+    // `Workflows›asks-the-human›question`. Our harness could not reproduce it, so the fix removes the variable
+    // entirely: no flex `gap` in these strips, the separators live in the text.
+    const { view } = await mountPane()
+    try {
+      const frame = view.text()
+      expect(frame).toContain("Workflows › deep-research › question")
+      // Never doubled either: one source of separation means exactly one space's worth of it.
+      expect(frame).not.toContain("Workflows  › ")
+      expect(frame).toMatch(/❓ question {2}from a unit at depth 3/)
     } finally {
       view.unmount()
     }
@@ -226,7 +269,7 @@ describe("answer pane render", () => {
     }
   })
 
-  it("answers on ⏎ with the label the cursor is on", async () => {
+  it("answers on ⏎ with the label the cursor is on, and LEAVES", async () => {
     const { view, press, sent } = await mountPane()
     try {
       await press("down")
@@ -234,6 +277,24 @@ describe("answer pane render", () => {
       expect(sent).toEqual([
         { action: "question.reply", runId: "run-1", requestID: "req-1", answers: [["MLA"]] },
       ])
+      // The regression this exists for: a successful reply used to leave the user parked on the pane they had
+      // just finished with, waiting for an unrelated event to arrive and evict them. Answering navigates.
+      const frame = view.text()
+      expect(frame).not.toContain("Which citation style should the report use?")
+      expect(frame).toContain("deep-research")
+      // …and the confirmation appears where the user now is.
+      expect(frame).toContain("answered")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("stays put when the reply did not land, so the answer is not silently lost", async () => {
+    const { view, press } = await mountPane([run()], { control: async () => ({ ok: false, reason: "unsupported" }) })
+    try {
+      await press("drill")
+      // Navigating away on a failure would hide both the question and the fact that nothing happened to it.
+      expect(view.text()).toContain("Which citation style should the report use?")
     } finally {
       view.unmount()
     }
@@ -254,29 +315,36 @@ describe("answer pane render", () => {
     }
   })
 
-  it("hands the question back to automation on `esc`, and leaves the pane", async () => {
+  /**
+   * The regression a test should have caught, and the one a real user hit.
+   *
+   * `back` is bound to `escape,left,h`. It used to send `question.reject` from the pane, so `esc` — the
+   * universal "get me out of here" — silently handed a pending decision to automation. Navigation must never
+   * dispose of a question.
+   */
+  it("leaves the pane on `esc` WITHOUT deciding anything", async () => {
     const { view, press, sent } = await mountPane()
     try {
       await press("back")
-      // NOT the host's `question.reject`: the person declining to answer is declining to be the one who
-      // answers it, and the watcher's ladder may still ground it from the run's own context.
-      expect(sent).toEqual([{ action: "question.reject", runId: "run-1", requestID: "req-1" }])
-      expect(view.text()).not.toContain("Which citation style")
+      expect(sent).toEqual([])
+      const frame = view.text()
+      expect(frame).not.toContain("Which citation style should the report use?")
+      expect(frame).toContain("deep-research")
+      // Still waiting: the row is on the run level where it was, and the question is still the user's.
+      expect(frame).toContain("Question")
     } finally {
       view.unmount()
     }
   })
 
-  it("unwinds by itself when someone else answers — the payoff for being a level, not a modal", async () => {
-    const { view, setRuns } = await mountPane()
+  it("hands the question to automation on `x` — the deliberate key", async () => {
+    const { view, press, sent } = await mountPane()
     try {
-      expect(view.text()).toContain("Which citation style")
-      setRuns([run({ interactions: [] })])
-      await view.flush()
-      const frame = view.text()
-      expect(frame).not.toContain("Which citation style")
-      // Back on the run it belonged to, rather than dumped at the list.
-      expect(frame).toContain("deep-research")
+      await press("stop")
+      // NOT the host's `question.reject`: the person declining to answer is declining to be the one who
+      // answers it, and the watcher's ladder may still ground it from the run's own context.
+      expect(sent).toEqual([{ action: "question.reject", runId: "run-1", requestID: "req-1" }])
+      expect(view.text()).not.toContain("Which citation style should the report use?")
     } finally {
       view.unmount()
     }
@@ -288,9 +356,11 @@ describe("answer pane render", () => {
       const frame = view.text()
       expect(frame).toContain("answer")
       expect(frame).toContain("leave for automation")
-      // Same keys, same order — only the words change.
+      // Same keys, same order — only the words change. `esc` keeps meaning `back` here, exactly as it does
+      // everywhere else in the browser; `x` is what gives a question away.
       expect(footerHint(QUESTION_BINDINGS)).toContain("⏎ answer")
-      expect(footerHint(QUESTION_BINDINGS)).toContain("esc leave for automation")
+      expect(footerHint(QUESTION_BINDINGS)).toContain("esc back")
+      expect(footerHint(QUESTION_BINDINGS)).toContain("x leave for automation")
       expect(QUESTION_BINDINGS.map((binding) => binding.key)).toEqual([
         "up,k",
         "down,j",
@@ -307,7 +377,7 @@ describe("answer pane render", () => {
     }
   })
 
-  it("opens a free-text field on the custom row, and `esc` closes the field before the question", async () => {
+  it("opens a free-text field on the custom row, and `esc` closes the field before leaving", async () => {
     const custom = live({ questions: [{ ...interaction().questions[0]!, custom: true }] })
     const { view, press, sent } = await mountPane([run({ interactions: [custom] })])
     try {
@@ -319,9 +389,10 @@ describe("answer pane render", () => {
       await press("back")
       expect(view.text()).not.toContain("Your answer")
       expect(sent).toEqual([])
-      // The second hands it back.
+      // The second leaves the pane — and still decides nothing.
       await press("back")
-      expect(sent).toEqual([{ action: "question.reject", runId: "run-1", requestID: "req-1" }])
+      expect(sent).toEqual([])
+      expect(view.text()).not.toContain("Which citation style should the report use?")
     } finally {
       view.unmount()
     }
@@ -393,7 +464,6 @@ describe("answer pane render", () => {
           onSelect={() => {}}
           onCustomInput={() => {}}
           onAnswer={() => {}}
-          onHandOff={() => {}}
         />
       ),
       { width: 80, height: 20 },
@@ -401,6 +471,99 @@ describe("answer pane render", () => {
     try {
       expect(view.text()).toContain("Which citation style should the report use?")
       expect(view.text()).toContain("2m30s left")
+    } finally {
+      view.unmount()
+    }
+  })
+})
+
+/**
+ * The record, once nobody is waiting on it.
+ *
+ * *"the answers are not navigable once answered"*, and *"the run surface should show any questions asked and
+ * what was the options and the answers"*. A resolved interaction used to disappear from every surface at once,
+ * so the record of a decision a person made mid-run lasted exactly as long as the frame it was on.
+ */
+describe("answer pane: reading back what was answered", () => {
+  function answered(overrides: Partial<ResolvedInteraction> = {}): ResolvedInteraction {
+    const { graceEndsAt: _grace, ...record } = interaction()
+    return { ...record, answers: [["MLA"]], by: "human", resolvedAt: Date.now(), ...overrides }
+  }
+
+  it("shows the question, every option it offered, and the one that was chosen", async () => {
+    const { view } = await mountPane([run({ interactions: [], resolved: [answered()] })])
+    try {
+      const frame = view.text()
+      expect(frame).toContain("Which citation style should the report use?")
+      // Every option, not just the answer: `["MLA"]` on its own is meaningless without the set it came from.
+      expect(frame).toContain("APA")
+      expect(frame).toContain("Chicago")
+      // `●` marks the one that was taken, `○` the ones that were not.
+      expect(frame).toMatch(/● MLA/)
+      expect(frame).toMatch(/○ APA/)
+      expect(frame).toContain("question (answered)")
+      expect(frame).toContain("You answered this.")
+      // Read-only: no countdown, because there is nothing left to run out.
+      expect(frame).not.toContain("left")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("refuses to re-answer a question that is already settled", async () => {
+    const { view, press, sent } = await mountPane([run({ interactions: [], resolved: [answered()] })])
+    try {
+      await press("drill")
+      expect(sent).toEqual([])
+      expect(view.text()).toContain("this question was already answered")
+      await press("stop")
+      expect(sent).toEqual([])
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("shows a free-text answer, which is not among the options by construction", async () => {
+    const { view } = await mountPane([
+      run({ interactions: [], resolved: [answered({ answers: [["Vancouver"]] })] }),
+    ])
+    try {
+      const frame = view.text()
+      expect(frame).toContain("Vancouver")
+      expect(frame).toContain("Your answer")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("says so when automation took it, rather than showing a choice nobody made", async () => {
+    const { view } = await mountPane([
+      run({ interactions: [], resolved: [answered({ by: "automation", answers: [] })] }),
+    ])
+    try {
+      const frame = view.text()
+      expect(frame).toContain("Settled without a recorded answer")
+      expect(frame).not.toMatch(/● /)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("is reachable from the run level, as a row, after the question is gone", async () => {
+    const settled = run({
+      interactions: [],
+      resolved: [answered({ unitId: null, origin: "script", depth: 1, phase: "gather" })],
+    })
+    const { view, press } = await mountPane([settled])
+    try {
+      // Walk out to the run, then back in through the row — the path a user takes when they wonder what they
+      // said ten minutes ago.
+      await press("back")
+      expect(view.text()).toContain("Answered")
+      expect(view.text()).toContain("MLA")
+      await press("down")
+      await press("drill")
+      expect(view.text()).toContain("Which citation style should the report use?")
     } finally {
       view.unmount()
     }

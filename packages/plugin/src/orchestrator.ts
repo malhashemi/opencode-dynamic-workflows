@@ -16,7 +16,6 @@ import {
   createEngineState,
   createWorkflowContext,
   runOwnedRoots,
-  DEFAULT_ASK_GRACE_MS,
   type EngineEvents,
   type EngineState,
 } from "./context"
@@ -50,6 +49,30 @@ const DEFAULT_TMP_DIR = path.join(import.meta.dir, "..", ".wf-tmp")
  */
 export function resolveUnitTimeout(fromRun: number | undefined, fromMeta: number | undefined): number | undefined {
   return fromRun ?? fromMeta
+}
+
+/**
+ * There is deliberately NO default grace on a question: a deadline is opt-in, per Workflow
+ * (`meta.interaction.graceMs`) or per ask (`ctx.ask({ graceMs })`). Absent both, a published question waits
+ * until a human answers it or the run is stopped.
+ *
+ * This is the same decision `resolveUnitTimeout` above records, for the same reason, and it is the third time
+ * this project has made it. A five-minute default was chosen so a question could not hold a run open forever;
+ * what it actually did was hand a decision to automation while the person it was asked of was in another
+ * window. Most questions worth interrupting someone for are worth waiting for — the user's own framing, and
+ * the correct one: *"most questions are critical to be left unanswered or for automations"*.
+ *
+ * The thing a timeout was guarding against is already covered, and better: nothing is published at all unless a
+ * surface is attached (a headless run resolves to its declared `fallback` immediately, which is the whole point
+ * of `fallback` being required), `esc`'s successor `x` hands a question to automation on purpose, and
+ * `stop.run` ends a run a person has abandoned. A timer is not needed to cover a door with a lock on it.
+ *
+ * Exported so "no default" is an assertable rule rather than a `??` buried in two call sites.
+ */
+export function resolveAskGrace(fromMeta: number | undefined): number | null {
+  if (fromMeta === undefined || !Number.isFinite(fromMeta)) return null
+  // A negative grace is a typo, not a request to skip the human entirely.
+  return Math.max(0, fromMeta)
 }
 
 export interface RunWorkflowInput {
@@ -146,7 +169,7 @@ export function resolveQuestionPolicy(
   if (interaction.questions === "proxy") return tiered
   return {
     kind: "human-first",
-    graceMs: Math.max(0, interaction.graceMs ?? DEFAULT_ASK_GRACE_MS),
+    graceMs: resolveAskGrace(interaction.graceMs),
     attached,
     questions: interaction.questions === "proxy-then-human" ? "proxy-then-human" : "human",
     permissions: interaction.permissions === "human" ? "human" : "auto",
@@ -268,7 +291,8 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         tokensSpent: state.tokensSpent,
         // A terminal run has nobody waiting on it: whatever was pending has been answered, handed back, or
         // orphaned by the run ending. Carrying it into the record would leave a question badge on a run that
-        // finished, which is the kind of thing a user only learns to distrust.
+        // finished, which is the kind of thing a user only learns to distrust. `current.resolved` rides through
+        // the spread untouched — what was ASKED and ANSWERED is exactly the part worth keeping.
         interactions: [],
         endedAt: Date.now(),
       },
@@ -307,6 +331,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       logs: [],
       errors: [],
       interactions: [],
+      resolved: [],
       tokensSpent: 0,
       startedAt,
       endedAt: null,
@@ -353,7 +378,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       store,
       attached: input.attached ?? (() => false),
       signal,
-      defaultGraceMs: Math.max(0, config.meta.interaction?.graceMs ?? DEFAULT_ASK_GRACE_MS),
+      defaultGraceMs: resolveAskGrace(config.meta.interaction?.graceMs),
     })
     // One sink for both origins, so `POST /control` never has to know which kind it is settling. `handOff`
     // tries the script side first (its fallback is the author's own), then the watcher's published grace.

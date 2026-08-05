@@ -18,7 +18,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, 
 import type { ControlAction, ControlResult } from "../control"
 import type { RunSummary } from "../journal"
 import { formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
-import type { PendingInteraction, RunSnapshot } from "../runs"
+import type { PendingInteraction, ResolvedInteraction, RunSnapshot } from "../runs"
 import type { RunControlClient } from "./control"
 import InteractionPane, { buildAnswer, paneRows } from "./interactions"
 import {
@@ -32,6 +32,7 @@ import {
 import {
   breadcrumb,
   findInteraction,
+  findResolved,
   initialRouteState,
   interactionSource,
   listRows,
@@ -53,7 +54,18 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 
 /** Settled outcomes, all single-width so a row never shifts as a run or unit ends. */
 const LIST_GLYPHS = { done: "✓", failed: "✗", aborted: "⊘" } as const
-const ROW_GLYPHS = { queued: "·", ok: "✓", failed: "✗", replayed: "↺", question: "❓" } as const
+const ROW_GLYPHS = {
+  queued: "·",
+  ok: "✓",
+  failed: "✗",
+  // The same `⊘` the list uses for a stopped run, because it means the same thing one level down.
+  stopped: "⊘",
+  replayed: "↺",
+  question: "❓",
+  // Deliberately the tick rather than a new glyph: an answered question IS a completed thing, and its ROW says
+  // `Answered`/`Automated` with the choice beside it, so the mark never has to carry the meaning alone.
+  answered: "✓",
+} as const
 
 /** How much of the run's log tail the run level shows. Enough for context, never enough to become the screen. */
 const RECENT_LOGS = 5
@@ -215,6 +227,12 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     const top = questionLevel()
     return top ? findInteraction(props.runs(), top.runId, top.requestID) : null
   }
+  /** The same request once it is settled — the level stays open on the record rather than evaporating. */
+  const currentAnswer = (): ResolvedInteraction | null => {
+    const top = questionLevel()
+    if (!top || currentInteraction()) return null
+    return findResolved(props.runs(), top.runId, top.requestID)
+  }
 
   /** Rewrite the question level in place — the only level whose state the reducer does not own outright. */
   const patchQuestion = (patch: { selected?: number; custom?: string | null }) => {
@@ -227,8 +245,24 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     })
   }
 
-  const send = (target: ControlAction) => {
-    void props.control.send(target).then((result) => setNotice(controlNotice(target, result)))
+  /** Pop one level, the way `esc` would — used after a question stops being the user's to answer. */
+  const leaveLevel = () => {
+    setState((current) => reduceRoute(current, "back", props.runs(), history()))
+  }
+
+  /**
+   * `onOk` runs only when the control action actually landed, and it is how answering LEAVES.
+   *
+   * Before this, a successful reply left the user parked on the pane they had just finished with: the run's
+   * stat strip above a dead form, a small `answered` notice, and nothing to do — until an unrelated event
+   * happened to arrive and `normalizeRoute` evicted them. Navigating on the reply itself means the confirmation
+   * appears where the user now is, which is the run the question was holding up.
+   */
+  const send = (target: ControlAction, onOk?: () => void) => {
+    void props.control.send(target).then((result) => {
+      if (result.ok) onOk?.()
+      setNotice(controlNotice(target, result))
+    })
   }
 
   /**
@@ -270,10 +304,10 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         setNotice("choose `once` or `reject`")
         return
       }
-      send({ action: "permission.reply", runId: top.runId, requestID: top.requestID, reply })
+      send({ action: "permission.reply", runId: top.runId, requestID: top.requestID, reply }, leaveLevel)
       return
     }
-    send({ action: "question.reply", runId: top.runId, requestID: top.requestID, answers })
+    send({ action: "question.reply", runId: top.runId, requestID: top.requestID, answers }, leaveLevel)
   }
 
   const dispatch = (action: WorkflowBinding["action"]) => {
@@ -284,19 +318,37 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     }
     const question = questionLevel()
     if (question) {
-      // ⏎ answers. `esc` steps out of the free-text field first, and only then hands the question back — so a
-      // mistyped answer costs one keystroke rather than the whole question.
+      // ⏎ answers.
       if (action === "drill") {
+        if (currentAnswer()) {
+          setNotice("this question was already answered")
+          return
+        }
         answer()
         return
       }
-      if (action === "back") {
-        if (question.custom !== null) {
-          patchQuestion({ custom: null })
+      /**
+       * `esc` LEAVES. It does not decide anything.
+       *
+       * It used to send `question.reject` — and `back` is bound to `escape,left,h`, so the three keys everyone
+       * reaches for to step out of a screen silently handed a pending decision to automation. A user pressed
+       * `esc` expecting to go back and gave their answer away. Now it pops the level like every other level in
+       * the browser, the question stays pending, and the badge is still there when they come back for it.
+       * Inside the free-text field it closes the field first, so a mistyped answer costs one keystroke.
+       */
+      if (action === "back" && question.custom !== null) {
+        patchQuestion({ custom: null })
+        return
+      }
+      // Handing a question to automation is a deliberate act and costs the deliberate key. `x` is relabelled
+      // `leave for automation` on this level through the same `QUESTION_BINDINGS` derivation that relabels ⏎.
+      if (action === "stop") {
+        const target = selectedControl(state(), props.runs(), action, history())
+        if (!target) {
+          setNotice("this question was already answered")
           return
         }
-        send({ action: "question.reject", runId: question.runId, requestID: question.requestID })
-        setState((current) => reduceRoute(current, "back", props.runs(), history()))
+        send(target, leaveLevel)
         return
       }
       // While the field is open every printable key belongs to it; navigation would move a cursor the user
@@ -354,6 +406,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
 
   const level = createMemo(() => state().stack[state().stack.length - 1])
   const crumb = createMemo(() => breadcrumb(state(), props.runs()))
+  const crumbSegments = createMemo(() => crumb().split(" ▸ "))
   const rows = createMemo<ListRow[]>(() => {
     now() // re-render elapsed on the tick
     return listRows(props.runs(), history(), state().filter)
@@ -458,9 +511,13 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   const rowGlyphColor = (row: RunLevelRow) => {
     if (row.glyph === "running") return theme().accent
     if (row.glyph === "failed") return theme().error
+    if (row.glyph === "stopped") return theme().warning
     if (row.glyph === "ok" || row.glyph === "replayed") return theme().success
     // A waiting question is the one row on this screen that is asking for something.
     if (row.glyph === "question") return theme().warning
+    // An answered one is settled news: the same tick as a finished unit, in `info` rather than `success`, so
+    // the two read as different KINDS of done rather than as the same one.
+    if (row.glyph === "answered") return theme().info
     return theme().textMuted
   }
   const selectedIndex = () => {
@@ -507,27 +564,32 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         paddingRight={1}
         backgroundColor={theme().backgroundPanel}
       >
-        <box flexDirection="row" gap={1} flexShrink={1}>
-          <For each={crumb().split(" ▸ ")}>
+        {/* No flex `gap` anywhere in this bar. The separators are IN THE TEXT — ` › ` between segments, two
+            spaces before a figure — so there is exactly one source of horizontal spacing and it cannot come out
+            doubled in one terminal and absent in another. A user reported reading `Workflows›asks-the-human`
+            and `⠦ running▰▰▰▱phase 2/3` in their own emulator, which a gap-based strip can produce and a
+            text-based one cannot. */}
+        <box flexDirection="row" flexShrink={1}>
+          <For each={crumbSegments()}>
             {(segment: string, index) => (
-              <box flexDirection="row" gap={1} flexShrink={index() === 0 ? 0 : 1}>
+              <box flexDirection="row" flexShrink={index() === 0 ? 0 : 1}>
                 <Show when={index() > 0}>
                   <text flexShrink={0} fg={theme().borderSubtle}>
-                    ›
+                    {" › "}
                   </text>
                 </Show>
                 <text
                   flexShrink={1}
-                  fg={index() === crumb().split(" ▸ ").length - 1 ? theme().accent : theme().textMuted}
+                  fg={index() === crumbSegments().length - 1 ? theme().accent : theme().textMuted}
                 >
-                  {index() === crumb().split(" ▸ ").length - 1 ? <b>{segment}</b> : segment}
+                  {index() === crumbSegments().length - 1 ? <b>{segment}</b> : segment}
                 </text>
               </box>
             )}
           </For>
         </box>
-        <box flexDirection="row" gap={1} flexShrink={0}>
-          <text fg={theme().textMuted}>filter</text>
+        <box flexDirection="row" flexShrink={0}>
+          <text fg={theme().textMuted}>{"filter "}</text>
           <text fg={theme().info}>
             <b>{state().filter}</b>
           </text>
@@ -539,7 +601,6 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         {(run: Accessor<RunSnapshot>) => (
           <box
             flexDirection="row"
-            gap={2}
             paddingLeft={1}
             paddingRight={1}
             backgroundColor={theme().backgroundElement}
@@ -547,18 +608,20 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             <text flexShrink={0} fg={statusColor(run().status)}>
               <b>{run().status === "running" ? `${spinner()} running` : `${statusGlyph(run().status)} ${run().status}`}</b>
             </text>
+            {/* Two spaces between figures, one between a meter and the label it belongs to — carried in the
+                text rather than by a flex `gap`, for the reason on the header bar above. */}
             <For each={runStats(run(), now())}>
               {(stat: Stat) => (
-                <box flexDirection="row" gap={1} flexShrink={1}>
+                <box flexDirection="row" flexShrink={1}>
                   <Show when={stat.meter}>
                     {(bar: Accessor<string>) => (
                       <text flexShrink={0} fg={theme().accent}>
-                        {bar()}
+                        {`  ${bar()}`}
                       </text>
                     )}
                   </Show>
                   <text flexShrink={1} fg={theme().textMuted}>
-                    {stat.label}
+                    {stat.meter ? ` ${stat.label}` : `  ${stat.label}`}
                   </text>
                 </box>
               )}
@@ -581,11 +644,11 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                 <box flexDirection="column">
                   {/* Drawn once, above the first journal-only row: everything below it outlived its engine. */}
                   <Show when={index() === firstHistoryRow()}>
-                    <box flexDirection="row" gap={1} marginTop={index() === 0 ? 0 : 1}>
+                    <box flexDirection="row" marginTop={index() === 0 ? 0 : 1}>
                       <text fg={theme().textMuted}>
                         <b>History</b>
                       </text>
-                      <text fg={theme().borderSubtle}>earlier sessions</text>
+                      <text fg={theme().borderSubtle}>{" earlier sessions"}</text>
                     </box>
                   </Show>
                   <box
@@ -594,37 +657,37 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                     backgroundColor={rowBackground(index())}
                     onMouseUp={() => clickRow(index())}
                   >
-                    <box flexDirection="row" gap={1} flexShrink={1}>
+                    <box flexDirection="row" flexShrink={1}>
                       <text flexShrink={0} fg={listGlyphColor(row)}>
                         {` ${listGlyph(row)}`}
                       </text>
                       <text flexShrink={0} fg={rowName(row, index())}>
-                        <b>{row.workflow.padEnd(nameColumn())}</b>
+                        <b>{` ${row.workflow.padEnd(nameColumn())}`}</b>
                       </text>
                       <Show when={density() !== "minimal" && row.phaseRatio !== null}>
                         <text flexShrink={0} fg={theme().accent}>
-                          {meter(row.phaseRatio ?? 0, METER_WIDTH)}
+                          {` ${meter(row.phaseRatio ?? 0, METER_WIDTH)}`}
                         </text>
                       </Show>
                       <text flexShrink={1} fg={rowMuted(index())}>
-                        {[row.position, row.phase].filter(Boolean).join(" ")}
+                        {` ${[row.position, row.phase].filter(Boolean).join(" ")}`}
                       </text>
                     </box>
-                    <box flexDirection="row" gap={2} flexShrink={0}>
+                    <box flexDirection="row" flexShrink={0}>
                       <text flexShrink={0} fg={rowMuted(index())}>
-                        {rightAlign(`${row.units} units`, 12)}
+                        {`  ${rightAlign(`${row.units} units`, 12)}`}
                       </text>
                       <Show when={density() === "full"}>
                         <text flexShrink={0} fg={rowMuted(index())}>
-                          {rightAlign(row.tokens ? `${row.tokens} tok` : "", 9)}
+                          {`  ${rightAlign(row.tokens ? `${row.tokens} tok` : "", 9)}`}
                         </text>
                       </Show>
                       <text flexShrink={0} fg={rowMuted(index())}>
-                        {rightAlign(row.elapsed, 7)}
+                        {`  ${rightAlign(row.elapsed, 7)}`}
                       </text>
                       <Show when={density() !== "minimal"}>
                         <text flexShrink={0} fg={theme().borderSubtle}>
-                          {rightAlign(row.startedAt, 5)}
+                          {`  ${rightAlign(row.startedAt, 5)}`}
                         </text>
                       </Show>
                     </box>
@@ -648,19 +711,19 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                   backgroundColor={rowBackground(index())}
                   onMouseUp={() => clickRow(index())}
                 >
-                  <box flexDirection="row" gap={1} flexShrink={1}>
+                  <box flexDirection="row" flexShrink={1}>
                     <text flexShrink={0} fg={rowGlyphColor(row)}>
                       {`${row.indent === 1 ? "   " : " "}${rowGlyph(row)}`}
                     </text>
                     <text flexShrink={0} fg={row.indent === 0 ? rowText(index()) : rowMuted(index())}>
-                      {row.indent === 0 ? <b>{row.label}</b> : row.label}
+                      {row.indent === 0 ? <b>{` ${row.label}`}</b> : ` ${row.label}`}
                     </text>
                     <text flexShrink={1} fg={rowMuted(index())}>
-                      {row.detail}
+                      {row.detail ? ` ${row.detail}` : ""}
                     </text>
                   </box>
                   <text flexShrink={0} fg={rowMuted(index())}>
-                    {rightAlign(row.elapsed, 7)}
+                    {`  ${rightAlign(row.elapsed, 7)}`}
                   </text>
                 </box>
               )}
@@ -688,6 +751,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         <Show when={level()?.kind === "question"}>
           <InteractionPane
             interaction={() => currentInteraction() ?? undefined}
+            answered={() => currentAnswer() ?? undefined}
             theme={props.api.theme}
             now={now}
             selected={() => questionLevel()?.selected ?? 0}
@@ -695,17 +759,18 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             index={formIndex}
             source={() => {
               const run = activeRun()
-              const current = currentInteraction()
+              const current = currentInteraction() ?? currentAnswer()
               return run && current ? interactionSource(run, current) : ""
             }}
             onSelect={(index: number) => {
+              // A record has nothing to choose; a click on one is a click on a page, not a button.
+              if (currentAnswer()) return
               // Click to select, click again to answer — the same two steps the keyboard takes everywhere else.
               if (index === (questionLevel()?.selected ?? -1)) answer()
               else patchQuestion({ selected: index })
             }}
             onCustomInput={(value: string) => patchQuestion({ custom: value })}
             onAnswer={answer}
-            onHandOff={() => dispatch("back")}
           />
         </Show>
 
@@ -714,23 +779,23 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             <Show when={unit()}>
               {(detail: Accessor<UnitDetail>) => (
                 <box flexDirection="column" gap={1}>
-                  <box flexDirection="row" gap={2}>
+                  <box flexDirection="row">
                     <text flexShrink={1} fg={theme().accent}>
                       <b>{`#${detail().ordinal} ${detail().label ?? detail().subagent}`}</b>
                     </text>
                     <text flexShrink={0} fg={unitStatusColor(detail().status)}>
-                      {detail().status}
+                      {`  ${detail().status}`}
                     </text>
                     <Show when={detail().elapsed}>
                       <text flexShrink={0} fg={theme().textMuted}>
-                        {detail().elapsed}
+                        {`  ${detail().elapsed}`}
                       </text>
                     </Show>
                   </box>
-                  <box flexDirection="row" gap={2}>
+                  <box flexDirection="row">
                     <text fg={theme().textMuted}>{`subagent ${detail().subagent}`}</text>
-                    <text fg={theme().textMuted}>{`phase ${detail().phase ?? "(none)"}`}</text>
-                    <text fg={theme().info}>{`session ${detail().sessionID ?? "(none)"}`}</text>
+                    <text fg={theme().textMuted}>{`  phase ${detail().phase ?? "(none)"}`}</text>
+                    <text fg={theme().info}>{`  session ${detail().sessionID ?? "(none)"}`}</text>
                   </box>
                   <box
                     flexDirection="column"
@@ -817,18 +882,17 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       {/* Footer bar — keys in accent against muted labels, so the vocabulary is scannable rather than prose. */}
       <box
         flexDirection="row"
-        gap={2}
         paddingLeft={1}
         paddingRight={1}
         backgroundColor={theme().backgroundPanel}
       >
         <For each={footer()}>
-          {(group: FooterGroup) => (
-            <box flexDirection="row" gap={1} flexShrink={0}>
+          {(group: FooterGroup, index) => (
+            <box flexDirection="row" flexShrink={0}>
               <text fg={group.enabled ? theme().accent : theme().borderSubtle}>
-                <b>{group.keys}</b>
+                <b>{index() === 0 ? group.keys : `  ${group.keys}`}</b>
               </text>
-              <text fg={group.enabled ? theme().textMuted : theme().borderSubtle}>{group.label}</text>
+              <text fg={group.enabled ? theme().textMuted : theme().borderSubtle}>{` ${group.label}`}</text>
             </box>
           )}
         </For>

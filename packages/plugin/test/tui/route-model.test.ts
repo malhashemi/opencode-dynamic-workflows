@@ -7,10 +7,12 @@
  */
 import { describe, expect, it } from "bun:test"
 import { toRunSummary, type RunSummary } from "../../src/journal"
-import type { PendingInteraction, RunSnapshot, UnitSnapshot } from "../../src/runs"
+import type { PendingInteraction, ResolvedInteraction, RunSnapshot, UnitSnapshot } from "../../src/runs"
 import {
+  answerSummary,
   breadcrumb,
   findInteraction,
+  findResolved,
   initialRouteState,
   listRows,
   normalizeRoute,
@@ -55,6 +57,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     logs: [],
     errors: [],
     interactions: [],
+    resolved: [],
     tokensSpent: 0,
     startedAt: 1_000,
     endedAt: null,
@@ -254,6 +257,142 @@ describe("runRows", () => {
     const rows = runRows(run({ phases: [], currentPhase: null, units: [unit({ phase: null })] }))
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ kind: "unit", indent: 0 })
+  })
+})
+
+/**
+ * A settled run must not have anything on it still claiming to be running.
+ *
+ * The regression: the phase glyph chain ended `index === currentIndex ? "running" : …` and never consulted
+ * `run.status`, so a phase with no units of its own — `finish` in `asks-the-human`, which only calls `ask` —
+ * spun forever after the run had finished. A phase row is one of the two places a user looks to answer "is this
+ * over?", and it was answering "no" about a run that was done.
+ */
+describe("runRows: nothing spins on a run that is over", () => {
+  const phaseless = (status: RunSnapshot["status"]) =>
+    run({
+      status,
+      endedAt: 9_000,
+      phases: ["plan", "finish"],
+      currentPhase: "finish",
+      units: [unit({ unitId: "u1", phase: "plan", status: "ok", endedAt: 2_000 })],
+    })
+
+  it("closes a unit-less current phase with the run's own outcome", () => {
+    expect(runRows(phaseless("done")).find((row) => row.id === "finish")?.glyph).toBe("ok")
+    expect(runRows(phaseless("failed")).find((row) => row.id === "finish")?.glyph).toBe("failed")
+    // `⊘`, not `✗`: a run the user stopped did not fail, and the list level has said so since Phase 2.
+    expect(runRows(phaseless("aborted")).find((row) => row.id === "finish")?.glyph).toBe("stopped")
+  })
+
+  it("leaves a live run's current phase running, which is the whole point of the glyph", () => {
+    expect(runRows(phaseless("running")).find((row) => row.id === "finish")?.glyph).toBe("running")
+  })
+
+  it("closes a unit the run left mid-flight, rather than spinning it forever", () => {
+    const killed = run({
+      status: "aborted",
+      endedAt: 9_000,
+      units: [unit({ unitId: "u1", phase: "gather", status: "running" })],
+    })
+    expect(runRows(killed).find((row) => row.id === "u1")?.glyph).toBe("stopped")
+    expect(runRows(killed).find((row) => row.id === "gather")?.glyph).toBe("stopped")
+  })
+
+  it("never renders `running` anywhere on a settled run", () => {
+    for (const status of ["done", "failed", "aborted"] as const) {
+      const rows = runRows(
+        run({
+          status,
+          endedAt: 9_000,
+          units: [
+            unit({ unitId: "u1", phase: "plan", status: "ok", endedAt: 2_000 }),
+            unit({ unitId: "u2", phase: "gather", status: "running" }),
+            unit({ unitId: "u3", phase: "synthesize", status: "queued", startedAt: null }),
+          ],
+        }),
+      )
+      expect(rows.some((row) => row.glyph === "running")).toBe(false)
+    }
+  })
+})
+
+/**
+ * Answered questions, as rows you can find again.
+ *
+ * The user's words: *"the answers are not navigable once answered"* and *"the run surface should show any
+ * questions asked and what was the options and the answers"*. A resolved interaction used to simply disappear,
+ * so the entire record of a decision a person made mid-run lasted exactly as long as the frame it was on.
+ */
+describe("runRows: answered questions are kept, filed, and navigable", () => {
+  it("attaches an agent question to the unit that raised it, directly beneath it", () => {
+    const rows = runRows(
+      run({
+        units: [unit({ unitId: "unit-1", ordinal: 1, phase: "gather" })],
+        resolved: [resolved()],
+      }),
+    )
+    const unitIndex = rows.findIndex((row) => row.id === "unit-1")
+    expect(rows[unitIndex + 1]).toMatchObject({ kind: "interaction", id: "req-1", glyph: "answered", indent: 1 })
+    // The row says what was chosen: a mark nobody can decode is decoration.
+    expect(rows[unitIndex + 1]?.label).toBe("Answered")
+    expect(rows[unitIndex + 1]?.detail).toContain("MLA")
+    expect(rows[unitIndex + 1]?.detail).toContain("Citations")
+  })
+
+  it("files a script question under the phase the run was in when it asked", () => {
+    const rows = runRows(
+      run({
+        units: [unit({ unitId: "u1", phase: "plan", status: "ok", endedAt: 2_000 })],
+        resolved: [resolved({ origin: "script", unitId: null, depth: 1, phase: "plan" })],
+      }),
+    )
+    const phaseIndex = rows.findIndex((row) => row.id === "plan")
+    const answerIndex = rows.findIndex((row) => row.kind === "interaction")
+    const nextPhase = rows.findIndex((row) => row.id === "gather")
+    // Inside the `plan` block, after its units — not stranded at the top or the bottom of the run.
+    expect(answerIndex).toBeGreaterThan(phaseIndex)
+    expect(answerIndex).toBeLessThan(nextPhase)
+    expect(rows[answerIndex]?.indent).toBe(1)
+  })
+
+  it("keeps an answer whose phase the run no longer knows, rather than dropping it", () => {
+    const rows = runRows(run({ units: [], resolved: [resolved({ origin: "script", unitId: null, phase: "gone" })] }))
+    expect(rows.filter((row) => row.kind === "interaction")).toHaveLength(1)
+  })
+
+  it("says when nobody chose, rather than pretending an answer was given", () => {
+    const rows = runRows(run({ units: [], resolved: [resolved({ unitId: null, phase: null, by: "automation", answers: [] })] }))
+    const row = rows.find((candidate) => candidate.kind === "interaction")
+    expect(row?.label).toBe("Automated")
+    expect(row?.detail).toContain("answer not recorded")
+  })
+
+  it("keeps waiting questions pinned above everything, answered ones in place", () => {
+    const rows = runRows(
+      run({
+        units: [unit({ unitId: "unit-1", phase: "gather" })],
+        interactions: [interaction({ requestID: "req-2" })],
+        resolved: [resolved()],
+      }),
+    )
+    expect(rows[0]).toMatchObject({ kind: "interaction", id: "req-2", glyph: "question" })
+    expect(rows.findIndex((row) => row.id === "req-1")).toBeGreaterThan(0)
+  })
+
+  it("opens an answered question with the same ⏎ that opens a waiting one", () => {
+    const answered = run({ units: [], resolved: [resolved({ unitId: null, phase: null })] })
+    const rows = runRows(answered)
+    const index = rows.findIndex((row) => row.kind === "interaction")
+    const opened = drive(initialRouteState("run-1"), Array(index).fill("down").concat("drill"), [answered])
+    expect(opened.stack.at(-1)).toMatchObject({ kind: "question", requestID: "req-1" })
+    expect(findResolved([answered], "run-1", "req-1")?.answers).toEqual([["MLA"]])
+    expect(findInteraction([answered], "run-1", "req-1")).toBeNull()
+  })
+
+  it("summarises a multi-part answer as the phrase a row can show", () => {
+    expect(answerSummary(resolved({ answers: [["MLA"], ["EU", "US"]] }))).toBe("MLA · EU, US")
+    expect(answerSummary(resolved({ answers: [] }))).toBe("")
   })
 })
 
@@ -505,40 +644,63 @@ describe("selectIndex — what a mouse click means", () => {
   })
 })
 
+function questionForm(): PendingInteraction["questions"] {
+  return [
+    {
+      header: "Citations",
+      prompt: "Which citation style?",
+      options: [
+        { label: "APA", description: "American Psychological Association" },
+        { label: "MLA", description: "Modern Language Association" },
+      ],
+      multiple: false,
+      custom: false,
+    },
+  ]
+}
+
+function interaction(overrides: Partial<PendingInteraction> = {}): PendingInteraction {
+  return {
+    requestID: "req-1",
+    kind: "question",
+    origin: "agent",
+    sessionID: "child-1",
+    unitId: "unit-1",
+    depth: 2,
+    phase: null,
+    questions: questionForm(),
+    raisedAt: 2_000,
+    graceEndsAt: 302_000,
+    ...overrides,
+  }
+}
+
+function resolved(overrides: Partial<ResolvedInteraction> = {}): ResolvedInteraction {
+  return {
+    requestID: "req-1",
+    kind: "question",
+    origin: "agent",
+    sessionID: "child-1",
+    unitId: "unit-1",
+    depth: 2,
+    phase: "gather",
+    questions: questionForm(),
+    raisedAt: 2_000,
+    answers: [["MLA"]],
+    by: "human",
+    resolvedAt: 5_000,
+    ...overrides,
+  }
+}
+
 /**
  * The `question` level — the answer pane as a member of the drill stack.
  *
  * Making the pane a level rather than a modal buys three things that are all asserted here: it is reached by
  * the same ⏎ that opens a unit, `esc` walks out of it the way it walks out of everything else, and — the one
- * that only a level can do — it UNWINDS BY ITSELF when the question is answered somewhere else.
+ * that only a level can do — it survives the question being ANSWERED, as a record rather than a form.
  */
 describe("route model: the answer pane as a level", () => {
-  function interaction(overrides: Partial<PendingInteraction> = {}): PendingInteraction {
-    return {
-      requestID: "req-1",
-      kind: "question",
-      origin: "agent",
-      sessionID: "child-1",
-      unitId: "unit-1",
-      depth: 2,
-      questions: [
-        {
-          header: "Citations",
-          prompt: "Which citation style?",
-          options: [
-            { label: "APA", description: "American Psychological Association" },
-            { label: "MLA", description: "Modern Language Association" },
-          ],
-          multiple: false,
-          custom: false,
-        },
-      ],
-      raisedAt: 2_000,
-      graceEndsAt: 302_000,
-      ...overrides,
-    }
-  }
-
   const asking = run({ interactions: [interaction()] })
 
   it("pins waiting interactions above the phases, where they cannot be missed", () => {
@@ -573,17 +735,52 @@ describe("route model: the answer pane as a level", () => {
     expect(questionRowCount(interaction({ questions: [{ ...interaction().questions[0]!, custom: true }] }))).toBe(3)
   })
 
-  it("unwinds the moment the question is answered, whoever answered it", () => {
+  it("drops the pane when the request leaves without leaving a record behind", () => {
     const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
     expect(opened.stack).toHaveLength(3)
-    // Another surface, or the watcher's grace running out: either way the interaction is gone from the run.
-    const answered = normalizeRoute(opened, [run({ interactions: [] })])
-    expect(answered.stack.map((level) => level.kind)).toEqual(["list", "run"])
+    // Nothing pending and nothing recorded: as far as this snapshot knows, the request never existed.
+    const gone = normalizeRoute(opened, [run({ interactions: [] })])
+    expect(gone.stack.map((level) => level.kind)).toEqual(["list", "run"])
   })
 
-  it("targets the RUN when `x` is pressed on the pane — a question has nothing of its own to stop", () => {
+  it("keeps the level on the RECORD once the question is answered", () => {
     const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
-    expect(selectedControl(opened, [asking], "stop")).toEqual({ action: "stop.run", runId: "run-1" })
+    const answered = normalizeRoute(opened, [run({ interactions: [], resolved: [resolved()] })])
+    // Still three levels: the pane becomes a read-only record rather than evaporating. Answering NAVIGATES
+    // (see `route.tsx`); it does not rely on being evicted from under the user.
+    expect(answered.stack.map((level) => level.kind)).toEqual(["list", "run", "question"])
+    expect(breadcrumb(answered, [run({ interactions: [], resolved: [resolved()] })])).toContain("question (answered)")
+  })
+
+  /**
+   * The regression that a test should have caught the first time.
+   *
+   * `back` used to send `question.reject`, and `back` is bound to `escape,left,h` — so `esc`, `←` and `h`, the
+   * three keys everyone reaches for to step out of a screen, silently handed a pending decision to automation.
+   * A user hit exactly that. Navigation must never dispose of a question.
+   */
+  it("never turns navigation into a decision: `back` on the pane is not a control action", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
+    expect(selectedControl(opened, [asking], "back" as never)).toBeNull()
+    // …and the level simply pops, leaving the question exactly where it was.
+    const left = drive(opened, ["back"], [asking])
+    expect(left.stack.map((level) => level.kind)).toEqual(["list", "run"])
+    expect(asking.interactions).toHaveLength(1)
+  })
+
+  it("hands the question to automation on `x` — the deliberate key, not the way out", () => {
+    const opened = drive(initialRouteState("run-1"), ["drill"], [asking])
+    expect(selectedControl(opened, [asking], "stop")).toEqual({
+      action: "question.reject",
+      runId: "run-1",
+      requestID: "req-1",
+    })
+  })
+
+  it("offers nothing to hand back once the question has been answered", () => {
+    const answered = run({ interactions: [], resolved: [resolved()] })
+    const opened = openQuestion(initialRouteState(), "run-1", "req-1")
+    expect(selectedControl(opened, [answered], "stop")).toBeNull()
   })
 
   it("counts and orders every waiting interaction across runs, oldest first", () => {

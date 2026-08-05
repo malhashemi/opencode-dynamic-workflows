@@ -330,9 +330,10 @@ describeTui("live: runs survive the engine that ran them", () => {
     }
   }, BOOT_TIMEOUT_MS * 4 + RUN_TIMEOUT_MS * 2)
 
+  // Teardown gets a budget of its own — see `route.tui.live.ts` for why five seconds is not one.
   afterAll(async () => {
     await scratch?.cleanup()
-  })
+  }, 60_000)
 
   it("writes a complete record per run, under the project rather than in a state directory", () => {
     expect(recordFiles).toEqual(["result.json", "run.json", "script.ts", "units.jsonl"])

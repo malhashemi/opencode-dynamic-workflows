@@ -5,7 +5,9 @@ import {
   clonePendingInteraction,
   cloneRunSnapshot,
   cloneUnitSnapshot,
+  toResolvedInteraction,
   type PendingInteraction,
+  type ResolvedInteraction,
   type RunEvent,
   type RunSnapshot,
 } from "../runs"
@@ -88,7 +90,7 @@ function isInteractionQuestion(value: unknown): boolean {
   )
 }
 
-function isPendingInteraction(value: unknown): value is PendingInteraction {
+function isInteractionRecord(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false
   const interaction = value as Partial<PendingInteraction>
   return (
@@ -98,11 +100,38 @@ function isPendingInteraction(value: unknown): value is PendingInteraction {
     typeof interaction.sessionID === "string" &&
     (interaction.unitId === null || typeof interaction.unitId === "string") &&
     Number.isInteger(interaction.depth) &&
+    // Tolerated as absent: `phase` arrived after the shape did, and an engine that never stamped one is saying
+    // "I do not know", which is what `null` means anyway.
+    (interaction.phase === undefined || interaction.phase === null || typeof interaction.phase === "string") &&
     Array.isArray(interaction.questions) &&
     interaction.questions.every(isInteractionQuestion) &&
-    typeof interaction.raisedAt === "number" &&
-    nullableNumber(interaction.graceEndsAt)
+    typeof interaction.raisedAt === "number"
   )
+}
+
+function isPendingInteraction(value: unknown): value is PendingInteraction {
+  return isInteractionRecord(value) && nullableNumber((value as Partial<PendingInteraction>).graceEndsAt)
+}
+
+function isResolvedInteraction(value: unknown): value is ResolvedInteraction {
+  if (!isInteractionRecord(value)) return false
+  const interaction = value as Partial<ResolvedInteraction>
+  return (
+    Array.isArray(interaction.answers) &&
+    interaction.answers.every((row) => Array.isArray(row) && row.every((label) => typeof label === "string")) &&
+    (interaction.by === "human" || interaction.by === "automation") &&
+    typeof interaction.resolvedAt === "number"
+  )
+}
+
+function answersOf(value: unknown): string[][] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const rows: string[][] = []
+  for (const row of value) {
+    if (!Array.isArray(row) || !row.every((label) => typeof label === "string")) return undefined
+    rows.push([...(row as string[])])
+  }
+  return rows
 }
 
 function isRunSnapshot(value: unknown): value is RunSnapshot {
@@ -122,6 +151,7 @@ function isRunSnapshot(value: unknown): value is RunSnapshot {
     // Tolerated as ABSENT, not required: an engine older than this reader publishes no interactions at all, and
     // rejecting its snapshots would drop its runs out of the browser entirely over a field meaning "none".
     (run.interactions === undefined || (Array.isArray(run.interactions) && run.interactions.every(isPendingInteraction))) &&
+    (run.resolved === undefined || (Array.isArray(run.resolved) && run.resolved.every(isResolvedInteraction))) &&
     typeof run.tokensSpent === "number" && Number.isFinite(run.tokensSpent) &&
     typeof run.startedAt === "number" && Number.isFinite(run.startedAt) &&
     nullableNumber(run.endedAt)
@@ -164,7 +194,8 @@ function isRunEvent(value: unknown): value is RunEvent {
       "runId" in event &&
       typeof event.runId === "string" &&
       typeof event.requestID === "string" &&
-      (event.by === "human" || event.by === "automation")
+      (event.by === "human" || event.by === "automation") &&
+      (event.answers === undefined || answersOf(event.answers) !== undefined)
     )
   }
   return (
@@ -194,13 +225,19 @@ export function reduceRunEvent(runs: Map<string, RunSnapshot>, event: RunEvent):
   }
   if (event.type === "interaction.pending") {
     const interaction = clonePendingInteraction(event.interaction)
+    if (interaction.phase === null || interaction.phase === undefined) interaction.phase = run.currentPhase
     const index = run.interactions.findIndex((candidate) => candidate.requestID === interaction.requestID)
     if (index === -1) run.interactions.push(interaction)
     else run.interactions[index] = interaction
     return
   }
   if (event.type === "interaction.resolved") {
+    // The same fold the store performs, for the same reason: a surface that only removed the pending row would
+    // watch every answer it ever gave disappear, while an identical engine three feet away kept the record.
+    const settled = run.interactions.find((candidate) => candidate.requestID === event.requestID)
+    if (!settled) return
     run.interactions = run.interactions.filter((candidate) => candidate.requestID !== event.requestID)
+    run.resolved = [...run.resolved, toResolvedInteraction(settled, { answers: event.answers, by: event.by })]
     return
   }
   const unit = cloneUnitSnapshot(event.unit)

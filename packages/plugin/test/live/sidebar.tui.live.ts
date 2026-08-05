@@ -123,10 +123,11 @@ describeTui("live: workflow sidebar rendered in a real TUI", () => {
     frames = { phased, phasedAnsi, settled: stripAnsi(settled) }
   }, BOOT_TIMEOUT_MS + RUN_TIMEOUT_MS)
 
+  // Teardown gets a budget of its own — see `route.tui.live.ts` for why five seconds is not one.
   afterAll(async () => {
     await tui?.kill()
     await scratch?.cleanup()
-  })
+  }, 60_000)
 
   it("renders the run as two lines directly under a `Workflows` heading", () => {
     const lines = sidebarLines(frames.phased)

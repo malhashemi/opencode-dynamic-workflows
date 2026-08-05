@@ -60,8 +60,8 @@ export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
  * How a Run's interactions are routed — per Workflow, overriding the engine's defaults.
  *
  * The engine's default is human-first: when a surface is attached, a nested Question is published and left for
- * a person for {@link InteractionPolicy.graceMs}; with nobody attached, or once the grace expires, the watcher's
- * proxy → escalate → reject ladder runs exactly as it does headlessly.
+ * a person indefinitely; with nobody attached, or once an opt-in {@link InteractionPolicy.graceMs} expires, the
+ * watcher's proxy → escalate → reject ladder runs exactly as it does headlessly.
  */
 export interface InteractionPolicy {
   /**
@@ -76,7 +76,18 @@ export interface InteractionPolicy {
    * - `human` — an attached person gets first refusal; on grace expiry it falls back to allowing once.
    */
   permissions?: "auto" | "human"
-  /** How long a human has before automation takes an interaction back. Defaults to five minutes. */
+  /**
+   * How long a human has before automation takes an interaction back — **opt-in, with no default**.
+   *
+   * Omit it and a published question waits until a person answers it, hands it to automation on purpose, or
+   * the Run is stopped. That is the right default because most questions worth interrupting someone for are
+   * worth waiting for: a deadline hands the decision to a machine precisely when the person it was asked of
+   * stepped away, which is the situation asking existed to avoid. Set it when the answer genuinely expires —
+   * a deploy window, a batch that must go out tonight.
+   *
+   * A Run with nobody attached never publishes at all: `ctx.ask` resolves to its declared `fallback` at once,
+   * so this knob has nothing to do with headless safety.
+   */
   graceMs?: number
 }
 
@@ -104,7 +115,12 @@ export interface AskOptions {
    * reply: one entry per question, each a list of chosen labels.
    */
   fallback: string[][]
-  /** How long to wait for a human before falling back. Defaults to the Run's `meta.interaction.graceMs`. */
+  /**
+   * How long to wait for a human before falling back, for THIS question only.
+   *
+   * Falls back to the Run's `meta.interaction.graceMs`, and with neither declared there is no deadline: the
+   * question waits for the person it was asked of. See {@link InteractionPolicy.graceMs}.
+   */
   graceMs?: number
 }
 

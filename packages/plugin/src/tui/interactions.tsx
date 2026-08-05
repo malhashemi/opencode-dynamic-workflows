@@ -18,10 +18,19 @@
 import type { TuiTheme } from "@opencode-ai/plugin/tui"
 import { createEffect, createMemo, createSignal, For, Show, type Accessor } from "solid-js"
 import { formatElapsed, meter } from "../progress"
-import type { InteractionQuestion, PendingInteraction } from "../runs"
+import type { InteractionQuestion, PendingInteraction, ResolvedInteraction } from "../runs"
 
-/** Cells in the grace meter — the same four the rest of the route uses, so it reads as one system. */
-const METER_WIDTH = 4
+/**
+ * Cells in the grace meter — and the one documented exception to the Visual language's `METER_WIDTH` of 4.
+ *
+ * Four cells is a rule about RATIO COLUMNS in a list, where a meter is a glanceable proportion sitting beside
+ * eleven other rows and a wider bar would read as a chart nobody asked for. This meter has the opposite job: it
+ * is the only one in the product that DRAINS, it is the sole occupant of its corner of a full-width pane, and
+ * the thing it measures is how long you have left to decide. At four cells a countdown has five states, so it
+ * sits still and then jumps — which reads as broken, and worse, as time you did not know you were losing.
+ * Twenty-one states across a 40-second fuse is one step every two seconds: continuous enough to be a clock.
+ */
+const GRACE_METER_WIDTH = 20
 
 /** Below this fraction of the grace remaining, the meter stops being information and starts being a deadline. */
 const URGENT_FRACTION = 0.25
@@ -51,7 +60,13 @@ export function buildAnswer(
   return rows.slice(0, Math.max(1, interaction.questions.length))
 }
 
-/** `4m52s left`, or `""` when this interaction has no deadline at all. */
+/**
+ * `4m52s left`, or `""` when this interaction has no deadline at all.
+ *
+ * The empty string is now the COMMON case: a grace period is opt-in per workflow, so most questions simply wait
+ * for the person they were asked of. Rendering no countdown for them is the honest thing — a bar drawn where
+ * there is no deadline invents urgency the system does not actually have.
+ */
 export function graceRemaining(interaction: PendingInteraction, now = Date.now()): string {
   if (interaction.graceEndsAt === null) return ""
   const remaining = interaction.graceEndsAt - now
@@ -70,11 +85,21 @@ export function graceRatio(interaction: PendingInteraction, now = Date.now()): n
 /**
  * Everything the pane needs, and nothing about the run browser.
  *
- * `onAnswer` / `onHandOff` rather than a control client, because the route already owns dispatch and owning it
- * twice is how two surfaces come to disagree about what a keystroke did.
+ * `onAnswer` rather than a control client, because the route already owns dispatch and owning it twice is how
+ * two surfaces come to disagree about what a keystroke did. There is deliberately no `onHandOff`: giving a
+ * question to automation is `x`, which the route handles through `selectedControl` like every other control
+ * key, and a pane-local callback for it was how `esc` came to mean something it must never mean.
  */
 export interface InteractionPaneProps {
   interaction: Accessor<PendingInteraction | undefined>
+  /**
+   * The same question after it was settled, when that is what this level addresses.
+   *
+   * Mutually exclusive with `interaction` in practice — a request is either waiting or recorded — but passed as
+   * two accessors rather than one union so the pane's read-only mode is a fact about its props rather than a
+   * type test buried in the render path.
+   */
+  answered?: Accessor<ResolvedInteraction | undefined>
   theme: TuiTheme
   /** Live clock, driven by the route's own tick so the countdown and the run's elapsed move together. */
   now: Accessor<number>
@@ -94,7 +119,6 @@ export interface InteractionPaneProps {
   onSelect: (index: number) => void
   onCustomInput: (value: string) => void
   onAnswer: () => void
-  onHandOff: () => void
 }
 
 /** One selectable row of the pane: an offered option, or the custom-answer entry. */
@@ -117,11 +141,29 @@ export function paneRows(question: InteractionQuestion | undefined): PaneRow[] {
 
 export default function InteractionPane(props: InteractionPaneProps) {
   const theme = () => props.theme.current
-  const question = createMemo<InteractionQuestion | undefined>(
-    () => props.interaction()?.questions[props.index()],
+  /** Whichever half of the question's life this level addresses. */
+  const record = createMemo<PendingInteraction | ResolvedInteraction | undefined>(
+    () => props.interaction() ?? props.answered?.(),
   )
+  const answered = createMemo<ResolvedInteraction | undefined>(() =>
+    props.interaction() ? undefined : props.answered?.(),
+  )
+  const question = createMemo<InteractionQuestion | undefined>(() => record()?.questions[props.index()])
   const rows = createMemo(() => paneRows(question()))
   const [inputValue, setInputValue] = createSignal("")
+
+  /**
+   * The labels chosen for the question on screen, for a record being read back.
+   *
+   * A free-text answer will not be among the offered options; that is not a mismatch to hide but the whole
+   * point of a custom answer, so it gets a row of its own below rather than silently marking nothing.
+   */
+  const chosen = createMemo<readonly string[]>(() => answered()?.answers[props.index()] ?? [])
+  const chosenCustom = createMemo<string | null>(() => {
+    const offered = new Set((question()?.options ?? []).map((option) => option.label.toLowerCase()))
+    const free = chosen().find((label) => !offered.has(label.toLowerCase()))
+    return free ?? null
+  })
 
   // The buffer lives in the route's state (so `esc` can clear it and the reducer can see it), but the input
   // renderable owns a string of its own; keep them in step in the one direction that matters.
@@ -152,44 +194,64 @@ export default function InteractionPane(props: InteractionPaneProps) {
 
   /** Who is asking, in the words the run browser used to get here. */
   const source = createMemo(() => {
-    const interaction = props.interaction()
+    const interaction = record()
     if (!interaction) return ""
     const named = props.source?.()
     if (named) return `from ${named}`
     return `from ${interaction.origin === "script" ? "the workflow script" : `a unit at depth ${interaction.depth}`}`
   })
 
-  const rowBackground = (index: number) => (index === props.selected() ? theme().backgroundElement : undefined)
+  const isChosen = (label: string) => chosen().some((entry) => entry.toLowerCase() === label.toLowerCase())
+
+  // A record has no cursor: there is nothing to choose, so nothing is highlighted as choosable. What IS marked
+  // is the option that was taken.
+  const rowBackground = (index: number) =>
+    !answered() && index === props.selected() ? theme().backgroundElement : undefined
   // Selection changes the BACKGROUND and promotes the label to accent, and nothing else. Never paired with
   // `selectedListItemText`: that token is cut to sit on the host's own selection fill and lands invisible
   // against any other background — it did exactly that in the run browser, on a real host.
-  const rowLabel = (index: number) => (index === props.selected() ? theme().accent : theme().text)
+  const rowLabel = (row: PaneRow, index: number) => {
+    if (answered()) return isChosen(row.label) ? theme().success : theme().textMuted
+    return index === props.selected() ? theme().accent : theme().text
+  }
+  /** `●` for the answer that was given, `○` for the ones that were not. Single-width, like every other glyph. */
+  const rowMark = (row: PaneRow) => (answered() ? (isChosen(row.label) ? "●" : "○") : " ")
 
   return (
-    <Show when={props.interaction()}>
-      {(interaction: Accessor<PendingInteraction>) => (
+    <Show when={record()}>
+      {(interaction: Accessor<PendingInteraction | ResolvedInteraction>) => (
         <box flexDirection="column" gap={1}>
-          <box flexDirection="row" gap={2}>
-            <text flexShrink={0} fg={theme().accent}>
-              <b>{interaction().kind === "permission" ? "⚠ permission" : "❓ question"}</b>
+          {/* No flex `gap` in this strip: the separators live in the text. One source of horizontal spacing
+              means it cannot come out doubled in one terminal and absent in another. */}
+          <box flexDirection="row">
+            <text flexShrink={0} fg={answered() ? theme().textMuted : theme().accent}>
+              <b>
+                {answered()
+                  ? interaction().kind === "permission"
+                    ? "⚠ permission (answered)"
+                    : "❓ question (answered)"
+                  : interaction().kind === "permission"
+                    ? "⚠ permission"
+                    : "❓ question"}
+              </b>
             </text>
             <text flexShrink={1} fg={theme().textMuted}>
-              {source()}
+              {`  ${source()}`}
             </text>
             <Show when={interaction().questions.length > 1}>
               <text flexShrink={0} fg={theme().textMuted}>
-                {`${props.index() + 1}/${interaction().questions.length}`}
+                {`  ${props.index() + 1}/${interaction().questions.length}`}
               </text>
             </Show>
             <Show when={remaining()}>
-              <box flexDirection="row" gap={1} flexShrink={0}>
+              <box flexDirection="row" flexShrink={0}>
                 <Show when={ratio() !== null}>
                   <text flexShrink={0} fg={meterColor()}>
-                    {meter(ratio() ?? 0, METER_WIDTH)}
+                    {`  ${meter(ratio() ?? 0, GRACE_METER_WIDTH)}`}
                   </text>
                 </Show>
                 <text flexShrink={0} fg={meterColor()}>
-                  {remaining()}
+                  {` ${remaining()}`}
                 </text>
               </box>
             </Show>
@@ -218,7 +280,7 @@ export default function InteractionPane(props: InteractionPaneProps) {
                   backgroundColor={rowBackground(index())}
                   onMouseUp={() => props.onSelect(index())}
                 >
-                  <text fg={rowLabel(index())}>{` ${row.label}`}</text>
+                  <text fg={rowLabel(row, index())}>{`${rowMark(row)} ${row.label}`}</text>
                   {/* The description under the label, because a choice that explains itself is the difference
                       between an informed answer and a guess — and the host's shape carries one already. */}
                   <Show when={row.description}>
@@ -228,6 +290,39 @@ export default function InteractionPane(props: InteractionPaneProps) {
               )}
             </For>
           </box>
+
+          {/* A free-text answer is not among the offered options by definition; showing it as its own row is
+              the only way a record of one is a record at all. */}
+          <Show when={chosenCustom()}>
+            {(free: Accessor<string>) => (
+              <box
+                flexDirection="column"
+                paddingLeft={1}
+                paddingRight={1}
+                border
+                borderStyle="rounded"
+                borderColor={theme().borderSubtle}
+                title=" Your answer "
+                titleAlignment="left"
+              >
+                <text fg={theme().success} wrapMode="word">
+                  {free()}
+                </text>
+              </box>
+            )}
+          </Show>
+
+          <Show when={answered()}>
+            {(settled: Accessor<ResolvedInteraction>) => (
+              <text fg={theme().textMuted}>
+                {settled().by === "human"
+                  ? "You answered this."
+                  : settled().answers.length > 0
+                    ? "Automation answered this — nobody was watching, or the grace ran out."
+                    : "Settled without a recorded answer — automation took it."}
+              </text>
+            )}
+          </Show>
 
           <Show when={props.custom() !== null}>
             <box
