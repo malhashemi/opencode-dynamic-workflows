@@ -117,6 +117,28 @@ export function graceRatio(interaction: PendingInteraction, now = Date.now()): n
 }
 
 /**
+ * The one line that says how a settled question ended, in the terms the reader cares about.
+ *
+ * Four endings, four sentences. The fourth used to be the only one automation ever got: an answer the ladder
+ * produced arrived with `answers: []` and read "settled without a recorded answer", which was true of the
+ * record and false about the run — the ladder knew exactly what it had replied. Now the missing case is the one
+ * that genuinely is missing (a person answering in the host's own dialog, which this process never sees), and a
+ * REFUSAL says so in its own words, because a unit that was denied did not get an answer at all.
+ */
+export function settledNote(interaction: ResolvedInteraction): string {
+  if (interaction.outcome === "rejected") {
+    return interaction.by === "human"
+      ? "You declined this — the asker was refused."
+      : "Automation declined this — the asker was refused."
+  }
+  if (interaction.by === "human") return "You answered this."
+  if (interaction.answers.length > 0) {
+    return "Automation answered this — nobody was watching, or the grace ran out."
+  }
+  return "Settled elsewhere; this run never saw the answer."
+}
+
+/**
  * Everything the pane needs, and nothing about the run browser.
  *
  * `onAnswer` rather than a control client, because the route already owns dispatch and owning it twice is how
@@ -391,12 +413,8 @@ export default function InteractionPane(props: InteractionPaneProps) {
 
           <Show when={answered()}>
             {(settled: Accessor<ResolvedInteraction>) => (
-              <text fg={theme().textMuted}>
-                {settled().by === "human"
-                  ? "You answered this."
-                  : settled().answers.length > 0
-                    ? "Automation answered this — nobody was watching, or the grace ran out."
-                    : "Settled without a recorded answer — automation took it."}
+              <text fg={settled().outcome === "rejected" ? theme().warning : theme().textMuted}>
+                {settledNote(settled())}
               </text>
             )}
           </Show>

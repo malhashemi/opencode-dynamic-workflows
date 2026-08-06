@@ -19,9 +19,11 @@ import type { ControlAction, ControlResult } from "../control"
 import type { RunSummary } from "../journal"
 import { formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { PendingInteraction, ResolvedInteraction, RunSnapshot } from "../runs"
+import type { RecordResult } from "./client"
 import type { RunControlClient } from "./control"
 import InteractionPane, { buildAnswer, paneRows } from "./interactions"
 import {
+  archiveBindings,
   FIELD_BINDINGS,
   footerGroups,
   questionBindings,
@@ -48,6 +50,7 @@ import {
   selectedControl,
   selectIndex,
   unitDetail,
+  unitOutput,
   type ListRow,
   type QuestionTab,
   type RouteLevel,
@@ -117,8 +120,33 @@ export interface WorkflowRouteProps {
    */
   history?: Accessor<readonly RunSummary[]>
   control: RunControlClient
+  /**
+   * Read one run's whole journaled record, on demand — the other half of `/state` no longer carrying outputs.
+   *
+   * Two screens need it and neither can be served from live state: the unit level, whose answer was elided, and
+   * a History row, whose `RunSummary` has no phases or units to render. Optional so a mounted test can assert
+   * the loading and unavailable states by simply not supplying one, which is also the honest shape of a client
+   * with no endpoint to ask.
+   */
+  record?: (runId: string) => Promise<RecordResult>
   /** `{ runId }` when entered from the sidebar; `{ returnTo }` carries the session to go back to. */
   params?: Record<string, unknown>
+}
+
+/**
+ * An on-demand read, as the three states a surface must be able to tell apart.
+ *
+ * "Loading", "not available" and "empty" are three different things to say to a user, and a single nullable
+ * value says all three as one blank panel. Naming them here is what lets every consumer below render the right
+ * sentence rather than the absence of one.
+ */
+type Fetched<T> = { status: "loading" } | { status: "ready"; value: T } | { status: "missing"; reason: string }
+
+/** Why an on-demand read failed, in the words the screen will use. */
+function recordFailure(result: Extract<RecordResult, { ok: false }>): string {
+  if (result.reason === "not-found") return "this run is not in the journal"
+  if (result.reason === "unknown-endpoint") return "no running opencode has this run's journal"
+  return "the journal could not be read"
 }
 
 function stringParam(params: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -213,6 +241,45 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   const theme = () => props.api.theme.current
   const spinner = () => SPINNER_FRAMES[frame()] as string
   const history = (): readonly RunSummary[] => props.history?.() ?? []
+
+  /**
+   * The one journaled run currently being read back, if any.
+   *
+   * A single slot rather than a cache, because a person looks at one old run at a time and the slot is what
+   * makes "am I still on it?" answerable — a map would have to guess when to forget, and the wrong guess shows
+   * a stale record next to a live list.
+   */
+  const [archive, setArchive] = createSignal<{ runId: string } & Fetched<RunSnapshot>>()
+  /**
+   * Unit answers fetched one at a time, keyed `runId unitId`.
+   *
+   * Keyed per UNIT rather than per run because that is the unit of work: `/state` elides every answer, and the
+   * screen only ever displays one. Retained across a walk out and back so returning to a unit does not re-read
+   * a file the process has already read.
+   */
+  const [answers, setAnswers] = createSignal<ReadonlyMap<string, Fetched<UnitOutput | null>>>(new Map())
+  const answerKey = (runId: string, unitId: string) => `${runId} ${unitId}`
+
+  /** Runs the journal supplied, offered to the row model exactly as live ones — see `route-model.ts`'s `NONE`. */
+  const archivedIds = createMemo<ReadonlySet<string>>(() => {
+    const slot = archive()
+    return slot?.status === "ready" ? new Set([slot.runId]) : new Set<string>()
+  })
+  /**
+   * Live runs plus whichever journaled run is open.
+   *
+   * Every lookup, row model and pane in `route-model.ts` reads a `RunSnapshot`, and a journaled run is one — so
+   * merging here is what lets a dead run reuse the whole run level rather than growing a second one beside it.
+   * `archivedIds` is what keeps the LIST from showing it twice.
+   */
+  const allRuns = createMemo<readonly RunSnapshot[]>(() => {
+    const slot = archive()
+    return slot?.status === "ready" ? [...props.runs(), slot.value] : props.runs()
+  })
+
+  const updateAnswer = (key: string, next: Fetched<UnitOutput | null>) => {
+    setAnswers((current) => new Map(current).set(key, next))
+  }
 
   const close = () => {
     const returnTo = stringParam(props.params, "returnTo")

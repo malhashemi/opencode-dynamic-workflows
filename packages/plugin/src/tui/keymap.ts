@@ -134,6 +134,23 @@ export function questionBindings(vocabulary: QuestionVocabulary = {}): readonly 
 /** The single-choice answer pane's vocabulary — the common case, kept as a constant for the footer tests. */
 export const QUESTION_BINDINGS: readonly WorkflowBinding[] = questionBindings()
 
+/**
+ * The same bindings on a run read back from the JOURNAL, where the destructive ones cannot work.
+ *
+ * A journaled run is a dead one: its engine exited, possibly sessions ago, so there is nothing for `x` to stop
+ * and nothing for `r` to restart. They are DIMMED rather than removed, which is the rule this table has
+ * followed since `s` shipped inert — a key that vanishes on some screens teaches the user the tool is
+ * inconsistent, where a key that is visibly unavailable teaches them why.
+ *
+ * `s` stays live, and that is not an oversight: saving a run whose engine is long gone is precisely the case
+ * the journal exists for.
+ */
+export function archiveBindings(): readonly WorkflowBinding[] {
+  return BROWSER_BINDINGS.map((binding) =>
+    binding.action === "stop" || binding.action === "restart" ? { ...binding, enabled: false } : binding,
+  )
+}
+
 /** The palette/slash name that opens the browser from anywhere. */
 export const OPEN_COMMAND = "workflow.runs.open"
 

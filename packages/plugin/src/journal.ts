@@ -137,7 +137,9 @@ export function toRunSummary(run: RunSnapshot): RunSummary {
   }
 }
 
-function isUnitEvent(event: RunEvent): boolean {
+type UnitEvent = Extract<RunEvent, { type: "unit.queued" | "unit.started" | "unit.settled" }>
+
+function isUnitEvent(event: RunEvent): event is UnitEvent {
   return event.type === "unit.queued" || event.type === "unit.started" || event.type === "unit.settled"
 }
 
@@ -199,6 +201,33 @@ function parseRunDocument(value: unknown): RunDocument | null {
       endedAt: typeof run.endedAt === "number" && Number.isFinite(run.endedAt) ? run.endedAt : null,
     },
   }
+}
+
+/**
+ * Rebuild a run's unit list from the transitions when `run.json` cannot supply one.
+ *
+ * `run.json` is written twice: at `begin`, when the run has no units at all, and at `finish`, when it has all
+ * of them. So a record whose host DIED — the case the journal exists for — has a `run.json` full of zeroes and
+ * a `units.jsonl` containing everything that actually happened. Reading the record without folding those two
+ * together produces a run that ran nothing, which is both false and useless to the two callers that need this:
+ * the run browser opening a journaled run, and the unit screen fetching the one answer `/state` elided.
+ *
+ * `run.json` WINS wherever it has a unit, because when it has any it was written last and is the terminal
+ * truth. The transitions only fill gaps, in the order they happened, so the last state a unit reached is the
+ * one that survives.
+ */
+function foldTransitions(run: RunSnapshot, transitions: RunEvent[]): RunSnapshot {
+  const known = new Set(run.units.map((unit) => unit.unitId))
+  const recovered = new Map<string, RunSnapshot["units"][number]>()
+  for (const event of transitions) {
+    if (!isUnitEvent(event)) continue
+    // A `units.jsonl` line is whatever JSON survived a kill, so nothing here is trusted to be well formed.
+    const unit = event.unit as RunSnapshot["units"][number] | undefined
+    if (!unit || typeof unit.unitId !== "string" || known.has(unit.unitId)) continue
+    recovered.set(unit.unitId, unit)
+  }
+  if (recovered.size === 0) return run
+  return { ...run, units: [...run.units, ...recovered.values()].sort((a, b) => a.ordinal - b.ordinal) }
 }
 
 function defaultOnError(error: unknown, context: string): void {
@@ -336,7 +365,7 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
         // No result file: the run never settled, or settled without writing one.
       }
 
-      return { run: document.run, source, args: document.args, result, transitions }
+      return { run: foldTransitions(document.run, transitions), source, args: document.args, result, transitions }
     },
 
     async list(listOptions = {}) {

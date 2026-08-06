@@ -176,8 +176,17 @@ export interface UnitDetail {
   elapsed: string
   /** Phase 6 sets this on replayed units; false everywhere today. */
   replayed: boolean
-  /** What the unit answered. `null` while it is still running, or when it produced nothing. */
+  /** What the unit answered. `null` while it is still running, when it produced nothing, or when elided. */
   output: UnitOutput | null
+  /**
+   * The answer exists but did not travel: `/state` elides unit outputs, and this one has to be fetched.
+   *
+   * The reason `output: null` alone will not do. It is already the honest rendering of two states — a unit
+   * still working, and a unit that returned nothing — and "the answer is on disk" is a third. A screen that
+   * cannot tell them apart shows the same empty panel for all three, which the honesty rule forbids and which
+   * a user would read as a bug.
+   */
+  outputElided: boolean
 }
 
 /**
@@ -204,6 +213,22 @@ export function unitOutput(output: string | undefined): UnitOutput | null {
 }
 
 const FILTER_ORDER: readonly RunStatusFilter[] = ["all", "active", "done", "failed"]
+
+/**
+ * Runs the caller read out of the JOURNAL rather than off a live endpoint, by id.
+ *
+ * They arrive mixed into `runs` — a journaled run is a `RunSnapshot` and every lookup, row model, and pane in
+ * this module already knows how to read one, so making them a second kind of thing would double every
+ * signature here to describe a difference that only matters twice. It matters in exactly two places: they must
+ * not appear in the LIST as live rows (their own History row is where they belong), and nothing on them is
+ * stoppable, because their engine has gone. This set is what those two places consult.
+ */
+const NONE: ReadonlySet<string> = new Set<string>()
+
+/** A run the caller can address, live or read back from the journal. */
+function findRun(runs: readonly RunSnapshot[], runId: string): RunSnapshot | undefined {
+  return runs.find((candidate) => candidate.runId === runId)
+}
 
 /** Phase 6 adds `UnitSnapshot.replayed`; read defensively so the glyph vocabulary is settled from day one. */
 function isReplayed(unit: UnitSnapshot): boolean {
@@ -417,10 +442,18 @@ export function listRows(
   filter: RunStatusFilter,
   /** Injectable so a test that asserts "today" / "yesterday" is not a test that passes only today. */
   atTime: number = Date.now(),
+  /**
+   * Ids in `runs` that came from the journal, so they are rendered from their History row and not twice.
+   *
+   * Opening a history row loads its record and puts the snapshot into `runs` — that is what makes the run level
+   * work — and without this the row would jump out of History and up into the live group the moment it was
+   * opened, then jump back on the way out.
+   */
+  archived: ReadonlySet<string> = NONE,
 ): ListRow[] {
   const now = atTime
   const live = runs
-    .filter((run) => matchesFilter(run.status, filter))
+    .filter((run) => !archived.has(run.runId) && matchesFilter(run.status, filter))
     .slice()
     .sort((a, b) => {
       if (a.status === "running" && b.status !== "running") return -1
@@ -429,7 +462,7 @@ export function listRows(
     })
     .map((run) => toListRow(fromRun(run), now))
 
-  const known = new Set(runs.map((run) => run.runId))
+  const known = new Set(runs.filter((run) => !archived.has(run.runId)).map((run) => run.runId))
   const past = history
     .filter((summary) => !known.has(summary.runId))
     .map(fromSummary)
@@ -505,19 +538,54 @@ export function answerSummary(interaction: ResolvedInteraction): string {
     .join(" · ")
 }
 
+/**
+ * What a settled interaction says in one phrase — the answer when there is one, otherwise what happened instead.
+ *
+ * Three distinct endings, three distinct sentences, because they are three different facts about the run. A
+ * refusal used to render identically to an unobserved answer (`answer not recorded`), so a question the ladder
+ * declined and a question a person answered in the host's own dialog told the reader the same nothing.
+ */
+export function answerOutcome(interaction: ResolvedInteraction): string {
+  const chosen = answerSummary(interaction)
+  if (chosen) return chosen
+  if (interaction.outcome === "rejected") return "declined — the asker was refused"
+  return "answer not recorded"
+}
+
+/**
+ * A request that has run out of grace is still pending — but it is no longer the reader's to answer.
+ *
+ * The watcher keeps such a request published while its ladder works on it, because the run genuinely is still
+ * blocked on it, and re-stamps `graceEndsAt` to the moment of hand-over. So an expired deadline is the one
+ * field every surface already reads that means "automation has this now".
+ */
+export function handedToAutomation(interaction: PendingInteraction, now = Date.now()): boolean {
+  return interaction.graceEndsAt !== null && interaction.graceEndsAt <= now
+}
+
 /** How long a request has been waiting, or how long is left before automation takes it. */
 function interactionRow(run: RunSnapshot, interaction: PendingInteraction, now: number): RunLevelRow {
   const remaining = interaction.graceEndsAt === null ? null : Math.max(0, interaction.graceEndsAt - now)
+  const handedOver = handedToAutomation(interaction, now)
   return {
     kind: "interaction",
     id: interaction.requestID,
     glyph: "question",
     indent: 0,
     label: interaction.kind === "permission" ? "Permission" : "Question",
-    detail: [interaction.questions[0]?.header ?? "", interactionSource(run, interaction)]
+    detail: [
+      interaction.questions[0]?.header ?? "",
+      interactionSource(run, interaction),
+      // Said in the row rather than left to the countdown, because a bar that has finished draining looks the
+      // same as one that never started.
+      handedOver ? "automation has it" : "",
+    ]
       .filter(Boolean)
       .join(" · "),
-    elapsed: remaining === null ? formatElapsed(now - interaction.raisedAt) : `${formatElapsed(remaining)} left`,
+    elapsed:
+      remaining === null || handedOver
+        ? formatElapsed(now - interaction.raisedAt)
+        : `${formatElapsed(remaining)} left`,
   }
 }
 
@@ -530,14 +598,16 @@ function interactionRow(run: RunSnapshot, interaction: PendingInteraction, now: 
  * events and merging them is how a record starts flattering itself.
  */
 function resolvedRow(run: RunSnapshot, interaction: ResolvedInteraction, indent: 0 | 1): RunLevelRow {
-  const chosen = answerSummary(interaction)
   return {
     kind: "interaction",
     id: interaction.requestID,
     glyph: "answered",
     indent,
-    label: interaction.by === "human" ? "Answered" : "Automated",
-    detail: [interaction.questions[0]?.header ?? "", chosen || "answer not recorded"].filter(Boolean).join(" · "),
+    // `Declined` is its own word for the same reason `Automated` is: a refused question and an answered one are
+    // not the same event, and the row is where a reader decides whether to open it.
+    label:
+      interaction.outcome === "rejected" ? "Declined" : interaction.by === "human" ? "Answered" : "Automated",
+    detail: [interaction.questions[0]?.header ?? "", answerOutcome(interaction)].filter(Boolean).join(" · "),
     elapsed: formatElapsed(Math.max(0, interaction.resolvedAt - interaction.raisedAt)),
   }
 }
@@ -662,6 +732,7 @@ export function unitDetail(run: RunSnapshot, unitId: string): UnitDetail | null 
     elapsed: unitElapsed(unit, Date.now()),
     replayed: isReplayed(unit),
     output: unitOutput(unit.output),
+    outputElided: unit.output === undefined && unit.outputElided === true,
   }
 }
 
@@ -682,10 +753,11 @@ function rowCount(
   runs: readonly RunSnapshot[],
   filter: RunStatusFilter,
   history: readonly RunSummary[],
+  archived: ReadonlySet<string>,
 ): number {
-  if (level.kind === "list") return listRows(runs, history, filter).length
+  if (level.kind === "list") return listRows(runs, history, filter, Date.now(), archived).length
   if (level.kind === "run") {
-    const run = runs.find((candidate) => candidate.runId === level.runId)
+    const run = findRun(runs, level.runId)
     return run ? runRows(run).length : 0
   }
   if (level.kind === "question") {
@@ -720,20 +792,35 @@ export function normalizeRoute(
   state: RouteState,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[] = [],
+  archived: ReadonlySet<string> = NONE,
 ): RouteState {
   const stack: RouteLevel[] = [{ kind: "list", selected: 0 }]
   for (const level of state.stack) {
     if (level.kind === "list") {
-      stack[0] = { kind: "list", selected: clamp(level.selected, rowCount(level, runs, state.filter, history)) }
+      stack[0] = {
+        kind: "list",
+        selected: clamp(level.selected, rowCount(level, runs, state.filter, history, archived)),
+      }
       continue
     }
-    const run = runs.find((candidate) => candidate.runId === level.runId)
-    if (!run) break
+    const run = findRun(runs, level.runId)
+    if (!run) {
+      // A run level whose snapshot has not ARRIVED is still a legitimate place to be: drilling a History row
+      // starts an on-demand read, and dropping the level while that read is in flight would bounce the user
+      // back to the list every time they opened an old run. The level renders its own loading — and, if the
+      // read fails, its own "not available" — which is why it has to survive to be rendered at all.
+      //
+      // Only the run level, and only for a run history actually knows about. A deeper level addresses units
+      // that this snapshot cannot confirm exist, and an id nothing has heard of is a stale stack.
+      if (level.kind !== "run" || !history.some((summary) => summary.runId === level.runId)) break
+      stack.push({ kind: "run", runId: level.runId, selected: 0 })
+      continue
+    }
     if (level.kind === "run") {
       stack.push({
         kind: "run",
         runId: level.runId,
-        selected: clamp(level.selected, rowCount(level, runs, state.filter, history)),
+        selected: clamp(level.selected, rowCount(level, runs, state.filter, history, archived)),
       })
       continue
     }
@@ -752,7 +839,7 @@ export function normalizeRoute(
         kind: "question",
         runId: level.runId,
         requestID: level.requestID,
-        selected: clamp(level.selected, rowCount(clamped, runs, state.filter, history)),
+        selected: clamp(level.selected, rowCount(clamped, runs, state.filter, history, archived)),
         custom: level.custom,
         index,
         answers: level.answers,
@@ -827,6 +914,7 @@ function move(
   delta: number,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[],
+  archived: ReadonlySet<string>,
 ): RouteState {
   const stack = [...state.stack]
   const top = stack[stack.length - 1]
@@ -835,23 +923,31 @@ function move(
     stack[stack.length - 1] = { ...top, scroll: Math.max(0, top.scroll + delta) }
     return { ...state, stack }
   }
-  const count = rowCount(top, runs, state.filter, history)
+  const count = rowCount(top, runs, state.filter, history, archived)
   stack[stack.length - 1] = { ...top, selected: clamp(top.selected + delta, count) }
   return { ...state, stack }
 }
 
-function drill(state: RouteState, runs: readonly RunSnapshot[], history: readonly RunSummary[]): RouteState {
+function drill(
+  state: RouteState,
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[],
+  archived: ReadonlySet<string>,
+): RouteState {
   const top = state.stack[state.stack.length - 1]
   if (!top) return state
   if (top.kind === "list") {
-    const row = listRows(runs, history, state.filter)[top.selected]
-    // A history row has a summary, not a snapshot — there are no phases or units in memory to open. Drilling
-    // one is a deliberate no-op rather than a level rendered from figures the model does not have.
-    if (!row || !row.live) return state
+    const row = listRows(runs, history, state.filter, Date.now(), archived)[top.selected]
+    if (!row) return state
+    // A HISTORY row opens too. It used to be a deliberate no-op with a notice, because a `RunSummary` carries
+    // no phases and no units and a level rendered from figures the model does not have would break the honesty
+    // rule. The figures now exist: the caller reads the run's journaled record on demand and puts the snapshot
+    // into `runs`, so this pushes the same level a live run gets. What the level must not do is offer controls
+    // that cannot work — see `selectedControl`.
     return { ...state, stack: [...state.stack, { kind: "run", runId: row.runId, selected: 0 }] }
   }
   if (top.kind === "run") {
-    const run = runs.find((candidate) => candidate.runId === top.runId)
+    const run = findRun(runs, top.runId)
     if (!run) return state
     const row = runRows(run)[top.selected]
     if (!row) return state
@@ -1054,10 +1150,11 @@ export function popLevel(
   state: RouteState,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[] = [],
+  archived: ReadonlySet<string> = NONE,
 ): RouteState {
   // Closing the route from the list level is the caller's decision, not the reducer's.
-  if (state.stack.length <= 1) return normalizeRoute(state, runs, history)
-  return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history)
+  if (state.stack.length <= 1) return normalizeRoute(state, runs, history, archived)
+  return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history, archived)
 }
 
 export function reduceRoute(
@@ -1065,37 +1162,52 @@ export function reduceRoute(
   action: RouteAction,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[] = [],
+  archived: ReadonlySet<string> = NONE,
 ): RouteState {
-  if (action === "up") return normalizeRoute(move(state, -1, runs, history), runs, history)
-  if (action === "down") return normalizeRoute(move(state, 1, runs, history), runs, history)
-  if (action === "toggle") return normalizeRoute(toggleChoice(state, runs), runs, history)
-  if (action === "next") return normalizeRoute(cycleQuestion(state, runs), runs, history)
-  if (action === "drill") return normalizeRoute(drill(state, runs, history), runs, history)
+  const settle = (next: RouteState) => normalizeRoute(next, runs, history, archived)
+  if (action === "up") return settle(move(state, -1, runs, history, archived))
+  if (action === "down") return settle(move(state, 1, runs, history, archived))
+  if (action === "toggle") return settle(toggleChoice(state, runs))
+  if (action === "next") return settle(cycleQuestion(state, runs))
+  if (action === "drill") return settle(drill(state, runs, history, archived))
   if (action === "back") {
     // Inside a multi-question form, `back` moves within the form before it leaves it.
     const stepped = previousQuestion(state, runs)
-    if (stepped) return normalizeRoute(stepped, runs, history)
-    return popLevel(state, runs, history)
+    if (stepped) return settle(stepped)
+    return popLevel(state, runs, history, archived)
   }
   if (action === "filter") {
     const next = FILTER_ORDER[(FILTER_ORDER.indexOf(state.filter) + 1) % FILTER_ORDER.length] as RunStatusFilter
     // Filtering re-bases the list: keeping an index that pointed into the old set would land the cursor on an
     // arbitrary run. Deeper levels survive, because a filter is about the LIST, not about what you drilled into.
     const stack = state.stack.map((level) => (level.kind === "list" ? { kind: "list" as const, selected: 0 } : level))
-    return normalizeRoute({ stack, filter: next }, runs, history)
+    return normalizeRoute({ stack, filter: next }, runs, history, archived)
   }
   // `stop` and `save`, and Phase 6's `restart`/`resume`, act on the world rather than on navigation — they go
   // through `selectedControl` instead.
-  return normalizeRoute(state, runs, history)
+  return settle(state)
 }
 
-export function breadcrumb(state: RouteState, runs: readonly RunSnapshot[]): string {
+export function breadcrumb(
+  state: RouteState,
+  runs: readonly RunSnapshot[],
+  archived: ReadonlySet<string> = NONE,
+  /** History, so a run whose record has not arrived yet is still named rather than shown as a bare id. */
+  history: readonly RunSummary[] = [],
+): string {
   const parts = ["Workflows"]
   for (const level of state.stack) {
     if (level.kind === "list") continue
-    const run = runs.find((candidate) => candidate.runId === level.runId)
+    const run = findRun(runs, level.runId)
     if (level.kind === "run") {
-      parts.push(run?.workflow ?? level.runId)
+      const summary = history.find((candidate) => candidate.runId === level.runId)
+      const name = run?.workflow ?? summary?.workflow ?? level.runId
+      // Said in the breadcrumb because the breadcrumb is where the user reads what they are looking at, and it
+      // is the same device an answered question already uses. A journaled run is a DEAD one — nothing on this
+      // level can be stopped or restarted — and a level that looked identical to a live one while quietly
+      // refusing its keys would read as broken. A run nothing has heard of gets its bare id and no claim: not
+      // knowing where a run came from is not evidence that it is old.
+      parts.push(archived.has(level.runId) || (!run && summary) ? `${name} (archived)` : name)
       continue
     }
     if (level.kind === "question") {
@@ -1132,16 +1244,23 @@ export function selectedControl(
   runs: readonly RunSnapshot[],
   action: RouteAction,
   history: readonly RunSummary[] = [],
+  archived: ReadonlySet<string> = NONE,
 ): ControlAction | null {
   if (action !== "stop" && action !== "save") return null
   const top = state.stack[state.stack.length - 1]
   if (!top) return null
   const selectedRunId =
-    top.kind === "list" ? listRows(runs, history, state.filter)[top.selected]?.runId : top.runId
+    top.kind === "list"
+      ? listRows(runs, history, state.filter, Date.now(), archived)[top.selected]?.runId
+      : top.runId
   if (!selectedRunId) return null
   // Deliberately reachable for a history row: saving a run whose engine is long gone is the case the journal
   // exists for.
   if (action === "save") return { action: "save.run", runId: selectedRunId }
+  // A journaled run has no engine to talk to, so there is nothing here that `stop` could mean. Returning the
+  // action anyway would send it, get `unknown-run` back, and report a failure the model could have predicted —
+  // and on a level the user opened precisely BECAUSE the run is over.
+  if (archived.has(selectedRunId) || (top.kind !== "list" && !findRun(runs, selectedRunId))) return null
   if (top.kind === "list") return { action: "stop.run", runId: selectedRunId }
   if (top.kind === "unit") return { action: "stop.unit", runId: top.runId, unitId: top.unitId }
   if (top.kind === "question") {
@@ -1150,7 +1269,7 @@ export function selectedControl(
     if (!findInteraction(runs, top.runId, top.requestID)) return null
     return { action: "question.reject", runId: top.runId, requestID: top.requestID }
   }
-  const run = runs.find((candidate) => candidate.runId === top.runId)
+  const run = findRun(runs, top.runId)
   if (!run) return null
   const row = runRows(run)[top.selected]
   if (row?.kind === "unit") return { action: "stop.unit", runId: top.runId, unitId: row.id }

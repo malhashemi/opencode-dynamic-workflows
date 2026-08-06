@@ -1,6 +1,6 @@
 import { createSignal, type Accessor } from "solid-js"
 import { readDescriptors, type EndpointDescriptor } from "../discovery"
-import type { RunSummary } from "../journal"
+import type { JournalRecord, RunSummary } from "../journal"
 import {
   clonePendingInteraction,
   cloneRunSnapshot,
@@ -13,6 +13,22 @@ import {
 } from "../runs"
 
 export type RunClientFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+
+/**
+ * The result of asking for one run's whole journaled record.
+ *
+ * A result type rather than `JournalRecord | null`, because an on-demand read has three endings and a surface
+ * has to be able to say which: it arrived, the journal does not have it, or nobody could be asked. Collapsing
+ * the last two into `null` is what produces an empty panel that means three different things.
+ */
+export type RecordResult =
+  | { ok: true; record: JournalRecord }
+  /** No endpoint claims this run — nothing is running and no host has it in a journal we can see. */
+  | { ok: false; reason: "unknown-endpoint" }
+  /** The endpoint answered, and has no such record. */
+  | { ok: false; reason: "not-found" }
+  /** The endpoint could not be reached, or answered with something this reader cannot use. */
+  | { ok: false; reason: "unreachable" }
 
 export interface RunClientOptions {
   statePath: string | (() => string)
@@ -41,6 +57,18 @@ export interface TuiRunClient {
    * may have exited sessions ago, and the endpoint holding it in its journal is the one that can promote it.
    */
   endpointFor(runId: string): EndpointDescriptor | undefined
+  /**
+   * Read one run's whole journaled record, on demand.
+   *
+   * Two things need this and both are things `/state` deliberately no longer carries. A unit's ANSWER: outputs
+   * are elided from the bootstrap payload, so the screen showing one fetches the one it is showing. And a
+   * HISTORY row's contents: a `RunSummary` has no phases and no units, which is why drilling one used to be a
+   * no-op — the record is what turns that row into a level.
+   *
+   * Deliberately uncached here. The route knows when it is looking at something and when it has moved on; a
+   * cache in the client would have to guess, and the wrong guess is a stale answer on a run that is still going.
+   */
+  record(runId: string): Promise<RecordResult>
 }
 
 interface LiveEndpoint {
@@ -113,6 +141,10 @@ function isPendingInteraction(value: unknown): value is PendingInteraction {
   return isInteractionRecord(value) && nullableNumber((value as Partial<PendingInteraction>).graceEndsAt)
 }
 
+function isOutcome(value: unknown): value is ResolvedInteraction["outcome"] {
+  return value === undefined || value === "answered" || value === "rejected"
+}
+
 function isResolvedInteraction(value: unknown): value is ResolvedInteraction {
   if (!isInteractionRecord(value)) return false
   const interaction = value as Partial<ResolvedInteraction>
@@ -120,6 +152,9 @@ function isResolvedInteraction(value: unknown): value is ResolvedInteraction {
     Array.isArray(interaction.answers) &&
     interaction.answers.every((row) => Array.isArray(row) && row.every((label) => typeof label === "string")) &&
     (interaction.by === "human" || interaction.by === "automation") &&
+    // Tolerated as absent, like `phase` above: a record written before the field existed is saying "we did not
+    // learn what happened", which is what its absence has always meant.
+    isOutcome(interaction.outcome) &&
     typeof interaction.resolvedAt === "number"
   )
 }
@@ -156,6 +191,19 @@ function isRunSnapshot(value: unknown): value is RunSnapshot {
     typeof run.startedAt === "number" && Number.isFinite(run.startedAt) &&
     nullableNumber(run.endedAt)
   )
+}
+
+/**
+ * The narrowest check that makes a fetched record usable.
+ *
+ * Only `run` is validated, and only through the same predicate `/state` uses: `transitions` are Phase 6's
+ * business and `result` is opaque by definition, so demanding a shape from either would reject records this
+ * reader has no complaint about.
+ */
+function isJournalRecord(value: unknown): value is JournalRecord {
+  if (typeof value !== "object" || value === null) return false
+  const record = value as Partial<JournalRecord>
+  return isRunSnapshot(record.run) && (record.transitions === undefined || Array.isArray(record.transitions))
 }
 
 function isRunSummary(value: unknown): value is RunSummary {
@@ -195,7 +243,8 @@ function isRunEvent(value: unknown): value is RunEvent {
       typeof event.runId === "string" &&
       typeof event.requestID === "string" &&
       (event.by === "human" || event.by === "automation") &&
-      (event.answers === undefined || answersOf(event.answers) !== undefined)
+      (event.answers === undefined || answersOf(event.answers) !== undefined) &&
+      isOutcome(event.outcome)
     )
   }
   return (
@@ -237,7 +286,10 @@ export function reduceRunEvent(runs: Map<string, RunSnapshot>, event: RunEvent):
     const settled = run.interactions.find((candidate) => candidate.requestID === event.requestID)
     if (!settled) return
     run.interactions = run.interactions.filter((candidate) => candidate.requestID !== event.requestID)
-    run.resolved = [...run.resolved, toResolvedInteraction(settled, { answers: event.answers, by: event.by })]
+    run.resolved = [
+      ...run.resolved,
+      toResolvedInteraction(settled, { answers: event.answers, by: event.by, outcome: event.outcome }),
+    ]
     return
   }
   const unit = cloneUnitSnapshot(event.unit)
@@ -514,6 +566,27 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
     endpointFor(runId) {
       const descriptor = owners.get(runId) ?? historyOwners.get(runId)
       return descriptor ? { ...descriptor } : undefined
+    },
+
+    async record(runId) {
+      // The same owner lookup a control action uses, and for the same reason: the record read back must come
+      // from the host whose row the user is looking at, not from whichever host answers first.
+      const descriptor = owners.get(runId) ?? historyOwners.get(runId)
+      if (!descriptor) return { ok: false, reason: "unknown-endpoint" }
+      try {
+        const response = await fetcher(`${descriptor.url}/history/${encodeURIComponent(runId)}`, {
+          headers: { authorization: `Bearer ${descriptor.token}` },
+        })
+        if (response.status === 404) return { ok: false, reason: "not-found" }
+        if (!response.ok) return { ok: false, reason: "unreachable" }
+        const body: unknown = await response.json()
+        const record = typeof body === "object" && body !== null ? (body as { record?: unknown }).record : undefined
+        // A payload this reader cannot make sense of is a failed read, not an empty run: rendering it as
+        // "nothing here" would report the journal's contents on the strength of a parse error.
+        return isJournalRecord(record) ? { ok: true, record } : { ok: false, reason: "unreachable" }
+      } catch {
+        return { ok: false, reason: "unreachable" }
+      }
     },
   }
 }

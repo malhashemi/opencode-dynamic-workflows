@@ -1,6 +1,6 @@
 import type { PendingPermission, PendingQuestion, WorkflowClient } from "./client"
 import { runAgent } from "./runner"
-import type { InteractionQuestion, PendingInteraction } from "./runs"
+import { clonePendingInteraction, type InteractionQuestion, type PendingInteraction } from "./runs"
 
 export type QuestionResolutionPolicy =
   | { kind: "reject" }
@@ -44,7 +44,25 @@ export type QuestionResolutionPolicy =
 /** What the watcher observed about one interaction, for the run store to project. */
 export type InteractionEvent =
   | { kind: "pending"; interaction: PendingInteraction }
-  | { kind: "resolved"; requestID: string; by: "human" | "automation" }
+  /**
+   * A published request is no longer waiting on a person.
+   *
+   * `answers` and `outcome` are filled whenever THIS watcher is the party that settled it — the proxy rung's
+   * grounded answer, the escalation rung's, the reject terminus, the one-shot permission allow. They are absent
+   * only when the request simply left the host's pending list, which is a person answering it in the host's own
+   * dialog: real, and genuinely unobservable from here.
+   *
+   * Before this the ladder's answer was dropped on the floor: `resolveQuestion` replied to the host and the
+   * emit path carried nothing back, so every automated resolution was recorded `answers: []` and read
+   * "answer not recorded" — the run browser could say a machine had decided, and never what it decided.
+   */
+  | {
+      kind: "resolved"
+      requestID: string
+      by: "human" | "automation"
+      answers?: string[][]
+      outcome?: "answered" | "rejected"
+    }
   /**
    * An owned permission the watcher allowed without asking anyone.
    *
@@ -199,8 +217,21 @@ export function startWatcher(deps: WatcherDeps): Watcher {
   let polling = false
   let timer: ReturnType<typeof setInterval> | null = null
 
-  /** Requests published to a surface and still waiting: requestID → when automation takes it back. */
-  const published = new Map<string, number>()
+  /**
+   * Requests published to a surface: requestID → when automation takes it back, and what was published.
+   *
+   * The interaction is kept alongside the deadline so a hand-off can RE-publish the same row rather than
+   * rebuilding one — rebuilding would stamp a fresh `raisedAt` and reset the "waiting for" clock at exactly the
+   * moment the waiting stopped.
+   */
+  const published = new Map<string, { deadline: number; interaction: PendingInteraction }>()
+  /**
+   * A deadline that has not merely passed but been consumed: the ladder is working on this request now.
+   *
+   * Distinct from `0` (what {@link Watcher.handOff} writes) so the transition to automation is announced exactly
+   * once, however many polls the ladder takes.
+   */
+  const HANDED_OVER = -1
   /** Requests whose fallback is mid-flight, so a slow ladder is never dispatched twice for one request. */
   const resolving = new Set<string>()
   /** Requests the grounded proxy rung has already abstained on, under `proxy-then-human`. */
@@ -226,10 +257,19 @@ export function startWatcher(deps: WatcherDeps): Watcher {
     return (ownership.root ? resolve(ownership.root) : null) ?? (ownership.unitSession ? resolve(ownership.unitSession) : null)
   }
 
-  /** Drop a published request and tell the store why it went away. */
-  const unpublish = (requestID: string, by: "human" | "automation") => {
+  /**
+   * Drop a published request and tell the store what became of it.
+   *
+   * `settlement` is supplied by whichever rung actually settled the thing; omitted, this says only "it went",
+   * which is all the reconciliation pass ever knows.
+   */
+  const unpublish = (
+    requestID: string,
+    by: "human" | "automation",
+    settlement?: { answers?: string[][]; outcome?: "answered" | "rejected" },
+  ) => {
     if (!published.delete(requestID)) return
-    emit({ kind: "resolved", requestID, by })
+    emit({ kind: "resolved", requestID, by, ...settlement })
   }
 
   const stop = () => {
@@ -246,32 +286,78 @@ export function startWatcher(deps: WatcherDeps): Watcher {
   }
 
   /**
+   * Announce that a published request has stopped being anyone's to answer.
+   *
+   * It stays PUBLISHED while the ladder works on it, and that is deliberate: the request really is still
+   * pending in the host and the run really is still blocked on it, so removing the row would claim the run had
+   * moved on. What changes is whose problem it is — re-stamping `graceEndsAt` to now is how every surface says
+   * so from one field it already reads. The pane draws `handing over to automation…`, the run row reads
+   * `automation has it`, and the sidebar badge — which counts what a PERSON can still act on — stops counting
+   * it.
+   *
+   * Keeping the row is what lets the eventual `resolved` event carry the ladder's actual answer, which is the
+   * whole point: a resolution emitted here, before the ladder has run, could only ever say "answered, somehow".
+   */
+  const handOver = (requestID: string) => {
+    const entry = published.get(requestID)
+    if (!entry || entry.deadline === HANDED_OVER) return
+    entry.deadline = HANDED_OVER
+    entry.interaction = { ...entry.interaction, graceEndsAt: Date.now() }
+    emit({ kind: "pending", interaction: clonePendingInteraction(entry.interaction) })
+  }
+
+  /**
    * Decide what to do with one owned request under the human-first policy.
    *
-   * Returns `"wait"` while it belongs to the human, `"fallback"` once it does not.
+   * Returns `"wait"` while it belongs to the human, `"fallback"` once it does not. It never resolves anything:
+   * the caller runs the automation and then reports what that automation actually did.
    */
   const humanFirstTurn = (
     requestID: string,
     build: () => PendingInteraction,
   ): "wait" | "fallback" => {
     if (!humanFirst) return "fallback"
+    const entry = published.get(requestID)
     if (!humanFirst.attached()) {
-      // No surface: this is the headless path, and a request published to nobody has to come back at once.
-      unpublish(requestID, "automation")
+      // No surface: this is the headless path. Anything already published belongs to automation from now on;
+      // anything never published stays that way, because publishing to an empty room is how a badge appears on
+      // a question nobody was ever offered.
+      handOver(requestID)
       return "fallback"
     }
-    const deadline = published.get(requestID)
-    if (deadline === undefined) {
+    if (!entry) {
       const interaction = build()
       // `Infinity` is the no-grace case, and it is the DEFAULT: with no deadline declared the question stays
       // the human's until they answer it, hand it back with `x`, or stop the run.
-      published.set(requestID, interaction.graceEndsAt ?? Number.POSITIVE_INFINITY)
+      published.set(requestID, { deadline: interaction.graceEndsAt ?? Number.POSITIVE_INFINITY, interaction })
       emit({ kind: "pending", interaction })
       return "wait"
     }
-    if (Date.now() < deadline) return "wait"
-    unpublish(requestID, "automation")
+    if (entry.deadline !== HANDED_OVER && Date.now() < entry.deadline) return "wait"
+    handOver(requestID)
     return "fallback"
+  }
+
+  /**
+   * File what the ladder did, in its own words.
+   *
+   * The three rungs settle three different ways and only one of them is an answer: the grounded proxy and the
+   * depth-1 escalation reply with option labels, and the terminus rejects. Recording a rejection as
+   * `answers: []` made it indistinguishable from "we never saw what was said" — so a run whose question the
+   * ladder refused read back as one whose answer merely went unobserved, which is a materially different story
+   * about the same unit failing.
+   */
+  const settleFromLadder = (requestID: string, outcome: QuestionOutcome) => {
+    if (outcome.kind === "abstained") {
+      // Nothing was sent and nothing was refused; the request is still the host's. Say only that.
+      unpublish(requestID, "automation")
+      return
+    }
+    if (outcome.kind === "rejected") {
+      unpublish(requestID, "automation", { outcome: "rejected" })
+      return
+    }
+    unpublish(requestID, "automation", { answers: outcome.answers, outcome: "answered" })
   }
 
   const poll = async () => {
@@ -312,6 +398,9 @@ export function startWatcher(deps: WatcherDeps): Watcher {
         resolving.add(permission.id)
         try {
           await resolvePermission(permission, deps.client)
+          // `once` IS the answer here — the label the pane would have offered — so a permission the engine
+          // allowed reads back exactly like one a person allowed, rather than as an unexplained "automated".
+          unpublish(permission.id, "automation", { answers: [["once"]], outcome: "answered" })
           emit({
             kind: "auto-allowed",
             requestID: permission.id,
@@ -339,6 +428,7 @@ export function startWatcher(deps: WatcherDeps): Watcher {
         // makes the question a person's problem. Run once per request, then remembered.
         if (humanFirst?.questions === "proxy-then-human" && !proxied.has(question.id)) {
           resolving.add(question.id)
+          let grounded = false
           try {
             const outcome = await resolveQuestion(
               question,
@@ -350,11 +440,15 @@ export function startWatcher(deps: WatcherDeps): Watcher {
               deps.signal,
               "proxy",
             )
-            if (outcome === "resolved") continue
-            proxied.add(question.id)
+            grounded = outcome.kind !== "abstained"
+            if (grounded) settleFromLadder(question.id, outcome)
+            else proxied.add(question.id)
           } finally {
             resolving.delete(question.id)
           }
+          // The run's own context answered it, so nobody was ever interrupted — which is the entire point of
+          // this rung running before the question is offered to a person.
+          if (grounded) continue
           if (stopped || deps.signal.aborted) return
         }
         if (
@@ -369,17 +463,20 @@ export function startWatcher(deps: WatcherDeps): Watcher {
         }
         resolving.add(question.id)
         try {
-          await resolveQuestion(
-            question,
-            walk.ownership.depth,
-            walk.contextChain,
-            deps.client,
-            automationPolicy,
-            deps.parentSessionID,
-            deps.signal,
-            // The proxy already ran and abstained; running it again would spend a second unit to learn the
-            // same thing.
-            proxied.has(question.id) ? "escalate" : "all",
+          settleFromLadder(
+            question.id,
+            await resolveQuestion(
+              question,
+              walk.ownership.depth,
+              walk.contextChain,
+              deps.client,
+              automationPolicy,
+              deps.parentSessionID,
+              deps.signal,
+              // The proxy already ran and abstained; running it again would spend a second unit to learn the
+              // same thing.
+              proxied.has(question.id) ? "escalate" : "all",
+            ),
           )
         } finally {
           resolving.delete(question.id)
@@ -392,10 +489,12 @@ export function startWatcher(deps: WatcherDeps): Watcher {
   }
 
   const handOff = (requestID: string): boolean => {
-    if (!published.has(requestID)) return false
-    // Zero, not delete: the entry has to survive until the next poll so `humanFirstTurn` can emit the
-    // `resolved` that takes the row off every surface at the same moment the ladder picks it up.
-    published.set(requestID, 0)
+    const entry = published.get(requestID)
+    if (!entry) return false
+    // Zero, not delete: the entry has to survive until the ladder settles it, because the ladder's answer is
+    // the thing worth recording and it does not exist yet. The next poll expires this deadline, announces the
+    // hand-over, and runs the ladder.
+    entry.deadline = 0
     void poll().catch(() => {})
     return true
   }
@@ -490,6 +589,22 @@ async function resolvePermission(permission: PendingPermission, client: Workflow
  */
 type LadderStage = "all" | "proxy" | "escalate"
 
+/**
+ * What a rung of the ladder DID, rather than merely that it finished.
+ *
+ * Three members because the ladder has three ways out and they are not interchangeable: it grounded an answer
+ * (and knows the labels), it refused the question outright (and the asking unit will see a denial), or it
+ * declined to act at all — which under `proxy-then-human` is the cue to offer the question to a person.
+ * Collapsing the first two into "resolved" is what discarded every automated answer this project ever gave.
+ */
+type QuestionOutcome =
+  | { kind: "abstained" }
+  | { kind: "answered"; answers: string[][] }
+  | { kind: "rejected" }
+
+const ABSTAINED: QuestionOutcome = { kind: "abstained" }
+const REJECTED: QuestionOutcome = { kind: "rejected" }
+
 async function resolveQuestion(
   question: PendingQuestion,
   depth: number,
@@ -499,18 +614,20 @@ async function resolveQuestion(
   parentSessionID: string | undefined,
   signal: AbortSignal,
   stage: LadderStage = "all",
-): Promise<"resolved" | "abstained"> {
-  if (depth < 2) return "resolved"
+): Promise<QuestionOutcome> {
+  // Depth 1 belongs to the host's own dock; the caller already filters it, and reaching here means doing
+  // nothing rather than deciding anything.
+  if (depth < 2) return ABSTAINED
   if (policy.kind === "reject") {
-    if (stage === "proxy") return "abstained"
+    if (stage === "proxy") return ABSTAINED
     await client.question.reject({ requestID: question.id })
-    return "resolved"
+    return REJECTED
   }
 
   if (!parentSessionID) {
-    if (stage === "proxy") return "abstained"
+    if (stage === "proxy") return ABSTAINED
     await client.question.reject({ requestID: question.id })
-    return "resolved"
+    return REJECTED
   }
 
   const seedContext = accumulatedContext[0] ?? (await readSeedContext(question.sessionID, client))
@@ -522,23 +639,32 @@ async function resolveQuestion(
       signal,
       standInSubagent: policy.standInSubagent,
     })
-    if (signal.aborted) return "resolved"
+    // An abort mid-proxy sent nothing and refused nothing; the run is ending and the record should say only
+    // that the request stopped being ours.
+    if (signal.aborted) return ABSTAINED
 
     if ("answered" in proxyResult) {
       await client.question.reply({ requestID: question.id, answers: proxyResult.answered })
-      return "resolved"
+      return { kind: "answered", answers: proxyResult.answered }
     }
     // The grounded rung had nothing. Under `proxy-then-human` that is the cue to ask a person, not to give up.
-    if (stage === "proxy") return "abstained"
+    if (stage === "proxy") return ABSTAINED
   }
 
   if (policy.humanReachable === true) {
-    await escalateQuestion(question, accumulatedContext.length > 0 ? accumulatedContext : [seedContext], depth, client, policy, parentSessionID, signal)
-    return "resolved"
+    return escalateQuestion(
+      question,
+      accumulatedContext.length > 0 ? accumulatedContext : [seedContext],
+      depth,
+      client,
+      policy,
+      parentSessionID,
+      signal,
+    )
   }
 
   await client.question.reject({ requestID: question.id })
-  return "resolved"
+  return REJECTED
 }
 
 async function readSeedContext(sessionID: string, client: WorkflowClient): Promise<SeedContext> {
@@ -633,36 +759,39 @@ async function escalateQuestion(
   policy: Extract<QuestionResolutionPolicy, { kind: "tiered" }>,
   parentSessionID: string | undefined,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<QuestionOutcome> {
   if (!parentSessionID || hop >= maxEscalationHops(policy)) {
     await client.question.reject({ requestID: question.id })
-    return
+    return REJECTED
   }
 
   const result = await runAgent(client, parentSessionID, buildEscalationPrompt(question, accumulatedContext), {
     signal,
     timeoutMs: DEFAULT_ESCALATION_TIMEOUT_MS,
   })
-  if (signal.aborted) return
+  if (signal.aborted) return ABSTAINED
 
   if (!result.ok || result.kind !== "text") {
     await client.question.reject({ requestID: question.id })
-    return
+    return REJECTED
   }
 
   const parsed = parseAbstainOrAnswer(result.text)
   if ("abstained" in parsed) {
     await client.question.reject({ requestID: question.id })
-    return
+    return REJECTED
   }
 
   const coerced = coerceToQuestionAnswers(parsed.answer, question)
   if ("answered" in coerced) {
     await client.question.reply({ requestID: question.id, answers: coerced.answered })
-    return
+    // The operator's own words, relayed by the depth-1 unit — recorded as the answer it is, so a record cannot
+    // tell you a machine decided something a person actually did.
+    return { kind: "answered", answers: coerced.answered }
   }
 
   await client.question.reject({ requestID: question.id })
+  return REJECTED
 }
 
 function maxEscalationHops(policy: Extract<QuestionResolutionPolicy, { kind: "tiered" }>): number {

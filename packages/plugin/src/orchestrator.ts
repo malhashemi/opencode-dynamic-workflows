@@ -362,7 +362,17 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
           return
         }
         if (event.kind === "resolved") {
-          store.apply({ type: "interaction.resolved", runId, requestID: event.requestID, by: event.by })
+          // `answers` and `outcome` ride through untouched. They are the ladder's own account of what it did,
+          // and this bridge is the only thing between it and the record — dropping them here is exactly how
+          // every automated answer used to arrive at the run browser as "answer not recorded".
+          store.apply({
+            type: "interaction.resolved",
+            runId,
+            requestID: event.requestID,
+            by: event.by,
+            ...(event.answers ? { answers: event.answers } : {}),
+            ...(event.outcome ? { outcome: event.outcome } : {}),
+          })
           return
         }
         // An auto-allowed permission is news, not a decision. It lands in the run log — the `Recent` panel —

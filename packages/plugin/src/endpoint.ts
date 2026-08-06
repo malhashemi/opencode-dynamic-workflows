@@ -1,6 +1,6 @@
 import { parseControlAction, type ControlFailure, type ControlRegistry, type ControlResult } from "./control"
 import type { Journal } from "./journal"
-import type { RunSnapshot, RunStore } from "./runs"
+import { elideRunOutputs, type RunSnapshot, type RunStore } from "./runs"
 
 export interface EndpointOptions {
   enabled?: boolean
@@ -180,7 +180,13 @@ export async function startEndpoint(
           }
           if (request.method !== "GET") return json({ error: "method not allowed" }, 405)
           if (url.pathname === "/health") return json({ ok: true })
-          if (url.pathname === "/state") return json({ runs: store.list(), revision })
+          // The shape is untouched — `{ runs, revision }`, every run, every unit, every field a reader knows
+          // about. What is not here is the unit ANSWERS: this payload is re-sent whole on every reconnect and
+          // carries every run the process still holds, so a session that ran ten research workflows was
+          // re-shipping a few hundred kilobytes of prose to a screen that shows one row per run. The answers
+          // live in the journal and are read one at a time through `/history/<runId>`; each unit that had one
+          // says so with `outputElided`, so nothing has to guess whether a unit produced nothing.
+          if (url.pathname === "/state") return json({ runs: store.list().map(elideRunOutputs), revision })
           if (url.pathname === "/history") {
             // An engine with no journal (no project root) has no history rather than an error: the client's
             // history section is simply empty, which is the truth.

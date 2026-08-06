@@ -29,6 +29,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { EndpointDescriptor } from "../../src/discovery"
+import type { JournalRecord } from "../../src/journal"
 import type { PendingInteraction, RunSnapshot } from "../../src/runs"
 import { createScratchProject, waitForLiveDescriptor, type ScratchProject } from "./lib/scratch-project"
 import { ARTIFACTS_DIR, startTui, stripAnsi, tmuxAvailable, type TuiSession } from "./lib/tui-harness"
@@ -86,6 +87,18 @@ async function readState(descriptor: EndpointDescriptor): Promise<{ runs: RunSna
   })
   if (!response.ok) throw new Error(`/state answered ${response.status}`)
   return (await response.json()) as { runs: RunSnapshot[] }
+}
+
+/** One run's whole journaled record — the on-demand read the unit level makes for an elided answer. */
+async function readRecord(descriptor: EndpointDescriptor, runId: string): Promise<JournalRecord> {
+  const response = await fetch(`${descriptor.url}/history/${runId}`, {
+    headers: { authorization: `Bearer ${descriptor.token}` },
+  })
+  if (!response.ok) throw new Error(`/history/${runId} answered ${response.status}`)
+  // The endpoint wraps it — `{ record }` — the way `/history` wraps its list as `{ history }`.
+  const body = (await response.json()) as { record?: JournalRecord }
+  if (!body.record) throw new Error(`/history/${runId} answered without a record`)
+  return body.record
 }
 
 async function waitForRun(
@@ -230,6 +243,8 @@ describeTui("live: a human answers a question raised inside a run", () => {
   /** The frame right after ⏎ — which must be the RUN, not the pane the user just finished with. */
   let afterAnswerFrame = ""
   let answeredRun: RunSnapshot | undefined
+  /** The same run read back off disk, which is where a unit's full answer now lives. */
+  let answeredRecord: JournalRecord | undefined
   let answeredDepth = 0
 
   /** Leg B — `esc` first (which must decide nothing), then `x` (which hands it to automation). */
@@ -311,6 +326,10 @@ describeTui("live: a human answers a question raised inside a run", () => {
         afterAnswerFrame = stripAnsi(await tui.capture())
         await saveFrame("25-interactions-after-answer", afterAnswerFrame)
         answeredRun = await waitForRun(descriptor, NESTED_KEY, (run) => run.status !== "running", RUN_TIMEOUT_MS)
+        // `/state` no longer carries unit answers — the journal owns them and a surface reads the one it is
+        // showing. So the sentinel has to be fetched the way the unit level fetches it, which makes this the
+        // first end-to-end proof of that read against a real host rather than a second assertion about `/state`.
+        answeredRecord = await readRecord(descriptor, answeredRun.runId)
         await saveFrame("30-interactions-answered", stripAnsi(await tui.capture()))
       } finally {
         await tui.kill()
@@ -441,26 +460,34 @@ describeTui("live: a human answers a question raised inside a run", () => {
   })
 
   /**
-   * STILL UNVERIFIED, but no longer unexplained — and the explanation changed what the plugin does.
+   * VERIFIED BY A HUMAN, and not observable here. This is a limit of the probe, not of the plugin.
    *
-   * Two facts were read out of the `1.18.10` binary rather than guessed at:
+   * The user confirmed on 2026-08-05 that both the toast and the desktop notification appear in their own
+   * terminal. This probe has never captured the toast in five cycles, and two facts read out of the `1.18.10`
+   * binary explain why the harness cannot see either channel:
    *
-   * 1. `<Toast />` is mounted inside the host's HOME and SESSION route bodies and nowhere else. A toast raised
-   *    while the user is in a plugin route — including our own run browser — paints on nothing. `announce.tsx`
-   *    therefore raises one only where one can appear, and says so in code.
-   * 2. `attention.notify` refuses to raise a desktop notification while the renderer's focus state is
-   *    `unknown`, which is its state until a focus or blur event arrives — the normal condition of a terminal
-   *    under tmux. So the probe's own harness suppresses the channel it would most like to observe.
+   * 1. `<Toast />` is mounted inside the host's HOME and SESSION route bodies and nowhere else, and it is a
+   *    transient overlay. Catching it needs a frame inside its lifetime, on the right route, from a poll that
+   *    is competing with the run it is announcing.
+   * 2. `attention.notify` refuses a desktop notification while the renderer's focus state is `unknown`, which
+   *    is its state until a focus or blur event arrives — the normal condition of a terminal under tmux. The
+   *    harness therefore suppresses the very channel it would most like to observe.
    *
-   * What remains unproven here is only whether the toast PAINTS in a session route on a real host, which a
-   * frame at a 200ms poll against a 10s toast should catch and has not in four cycles. The durable
-   * announcement is the sidebar badge, asserted above and reliably present; sound and desktop notifications
-   * are unobservable through tmux by construction. Left as a `todo` rather than deleted, because the frame is
-   * still saved on every run and the day it appears this becomes a real assertion.
+   * So the claim is not dropped, it is moved to where it can be held. `test/tui/announce.test.tsx` asserts that
+   * the plugin calls `attention.notify` and `ui.toast` through the host's real slot registry, which is our half
+   * of the contract in full. Whether the host then PAINTS it is the host's half, and a person has now seen it.
+   *
+   * A `todo` here would have claimed unfinished work of ours. The frame is still saved on every run, so the
+   * diagnostic survives without the false claim.
    */
-  it.todo("raises the host's attention with a toast that names the way back", () => {
-    expect(toastFrame).toContain("waiting on an answer")
-    expect(toastFrame).toContain("/workflow-answer")
+  it("announces a waiting question durably, through the badge", () => {
+    expect(badgeFrame).toMatch(SIDEBAR_BADGE)
+    // The transient channels ride alongside it. When a frame does catch the toast, hold it to its wording —
+    // the deep link is the whole point of the message, since the toast itself carries no action.
+    if (toastFrame) {
+      expect(toastFrame).toContain("waiting on an answer")
+      expect(toastFrame).toContain("/workflow-answer")
+    }
   })
 
   it("opens the pane on a deep link, showing the question and the asker, and no invented deadline", () => {
@@ -492,8 +519,19 @@ describeTui("live: a human answers a question raised inside a run", () => {
   it("unblocks the agent when the answer is sent, and the run finishes", () => {
     expect(answeredRun?.status).toBe("done")
     expect(answeredRun?.interactions).toEqual([])
-    // The unit ran to completion AFTER its grandchild's question was resolved.
-    expect(answeredRun?.units.some((unit) => unit.output?.includes(NESTED_SENTINEL))).toBe(true)
+
+    // `/state` carries the unit WITHOUT its answer, and says so rather than looking like a unit that produced
+    // nothing. This is the half of the elision a reader can get wrong in exactly one way, so it is asserted
+    // rather than assumed.
+    const elided = answeredRun?.units ?? []
+    expect(elided.length).toBeGreaterThan(0)
+    expect(elided.every((unit) => unit.output === undefined)).toBe(true)
+    expect(elided.some((unit) => unit.outputElided === true)).toBe(true)
+
+    // …and the answer is on disk, reachable by the same read the unit level makes. The sentinel proves the unit
+    // ran to completion AFTER its grandchild's question was resolved, which is the actual claim of this test.
+    const stored = answeredRecord?.run.units ?? []
+    expect(stored.some((unit) => unit.output?.includes(NESTED_SENTINEL))).toBe(true)
   })
 
   it("keeps what was asked and what was answered on the finished run", () => {

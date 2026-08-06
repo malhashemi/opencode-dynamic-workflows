@@ -3,6 +3,7 @@ import { createComponent, type Accessor } from "solid-js"
 import { formatElapsed, phasePosition, settledUnits } from "../progress"
 import type { RunSnapshot } from "../runs"
 import { openWorkflowRoute } from "./keymap"
+import { handedToAutomation } from "./route-model"
 
 // Re-exported so every sidebar consumer imports its row model and its formatters from one place, while the
 // server target keeps importing them from `../progress` (no solid-js in the published server entrypoint).
@@ -128,9 +129,13 @@ export function sidebarViewModel(runs: readonly RunSnapshot[], now = Date.now())
   const settled = runs
     .filter((run) => run.status !== "running")
     .sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt) || a.runId.localeCompare(b.runId))
-  // Only a live run can be waiting on an answer; a settled one's questions are already resolved.
+  // Only a live run can be waiting on an answer; a settled one's questions are already resolved. And a request
+  // whose grace has run out is still pending in the host but is no longer a PERSON's to answer — the watcher
+  // has handed it to its ladder — so counting it would light a badge that says "you are blocking this run"
+  // about a decision that has already been taken away.
   const waiting = live
     .flatMap((run) => interactionsOf(run).map((interaction) => ({ run, interaction })))
+    .filter(({ interaction }) => !handedToAutomation(interaction, now))
     .sort((a, b) => a.interaction.raisedAt - b.interaction.raisedAt)
   const oldest = waiting[0]
   return {

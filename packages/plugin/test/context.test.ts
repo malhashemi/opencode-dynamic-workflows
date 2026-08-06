@@ -488,6 +488,42 @@ describe("ctx.ask", () => {
     expect(pending()).toHaveLength(0)
   })
 
+  /**
+   * The grace BOUNDARY — the one thing three human passes were each asked to check by hand.
+   *
+   * A person answering at the last second and a timer firing at the same second are a genuine race, and the
+   * failure it threatens is not a lost answer but a DOUBLE one: the fallback resolves the promise, the human's
+   * reply arrives, and something replies twice to a host that has already moved on. Driven here by resolving
+   * the registry directly after expiry, which is the same call the control action makes and needs no clock
+   * faking to be exact.
+   */
+  it("refuses an answer that arrives after the grace has already expired", async () => {
+    const { registry, ctx, pending } = harness()
+    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 20 })
+    await Bun.sleep(5)
+    const requestID = pending()[0]!.requestID
+
+    // The grace runs out and the fallback settles it.
+    expect(await answered).toEqual([["fast"]])
+    expect(pending()).toHaveLength(0)
+
+    // The human's answer lands a moment too late. It must be REFUSED, not applied on top.
+    expect(registry.resolve(requestID, [["thorough"]])).toBe(false)
+    // …and the answer the workflow already received does not change underneath it.
+    expect(await answered).toEqual([["fast"]])
+  })
+
+  it("takes the answer, not the fallback, when it arrives before the grace ends", async () => {
+    const { registry, ctx, pending } = harness()
+    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 5_000 })
+    await Bun.sleep(5)
+    // The other side of the same boundary: still inside the window, so the person wins.
+    expect(registry.resolve(pending()[0]!.requestID, [["thorough"]])).toBe(true)
+    expect(await answered).toEqual([["thorough"]])
+    // And a second press of ⏎ on a question already answered changes nothing.
+    expect(registry.resolve(pending()[0]?.requestID ?? "gone", [["fast"]])).toBe(false)
+  })
+
   it("falls back immediately when nothing is attached, and publishes nothing", async () => {
     const { ctx, pending } = harness({ attached: false })
     // No wait at all: a background run, `opencode serve`, and CI all have nobody to ask, and a workflow that

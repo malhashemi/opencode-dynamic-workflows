@@ -290,9 +290,13 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
    * AGENT question — the reply went straight to the host — so a resolution recorded without them would leave
    * the run's own record saying "answered" and nothing else.
    */
-  const settle = (runId: string, requestID: string, answers?: string[][]) => {
+  const settle = (
+    runId: string,
+    requestID: string,
+    settlement: { answers?: string[][]; outcome?: "answered" | "rejected" } = {},
+  ) => {
     try {
-      store.apply({ type: "interaction.resolved", runId, requestID, by: "human", answers })
+      store.apply({ type: "interaction.resolved", runId, requestID, by: "human", ...settlement })
     } catch {
       // The run is gone; the answer still reached the host, which is the part that mattered.
     }
@@ -318,7 +322,7 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
         } else {
           await client.question.reply({ requestID, answers })
         }
-        settle(runId, requestID, answers)
+        settle(runId, requestID, { answers, outcome: "answered" })
         return { ok: true }
       } catch (error) {
         return failed(error)
@@ -331,7 +335,9 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
       try {
         if (interaction.kind === "permission") await client.permission.reply({ requestID, reply: "reject" })
         else await client.question.reject({ requestID })
-        settle(runId, requestID)
+        // A refusal, recorded as one. It reached the host as `reject`, so the asking unit sees a denial — which
+        // is a different thing to tell a reader than "answered, contents unknown".
+        settle(runId, requestID, { outcome: "rejected" })
         return { ok: true }
       } catch (error) {
         return failed(error)
@@ -345,7 +351,11 @@ export function createInteractionController(client: WorkflowClient, store: RunSt
       }
       try {
         await client.permission.reply({ requestID, reply })
-        settle(runId, requestID, [[reply]])
+        settle(
+          runId,
+          requestID,
+          reply === "reject" ? { outcome: "rejected" } : { answers: [[reply]], outcome: "answered" },
+        )
         return { ok: true }
       } catch (error) {
         return failed(error)

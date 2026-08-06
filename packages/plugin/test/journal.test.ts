@@ -319,6 +319,59 @@ describe("journal list", () => {
   })
 })
 
+describe("journal list: many runs", () => {
+  /**
+   * The open question was whether History stays usable as a project accumulates runs.
+   *
+   * `list` reads one `run.json` per run DIRECTORY, so its cost grows with the project's total run count rather
+   * than with the page asked for — a paged read that still pays for every page. This measures that rather than
+   * assuming it: 400 runs is a heavy but reachable project, and the assertion is deliberately loose, because a
+   * timing bound tight enough to be interesting is tight enough to fail on a busy machine. What it catches is
+   * an order-of-magnitude regression: a sort that becomes quadratic, or a read that stops being concurrent.
+   */
+  const RUNS = 400
+  let root = ""
+  let journal: Journal
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "wf-journal-many-"))
+    journal = createJournal(path.join(root, "runs"), { onError: () => {} })
+    await Promise.all(
+      Array.from({ length: RUNS }, async (_unused, index) => {
+        const id = `run-${String(index).padStart(4, "0")}`
+        const snapshot = run({ runId: id, startedAt: 1_000 + index })
+        await journal.begin(snapshot, { source: SOURCE, args: null })
+        await journal.finish({ ...snapshot, status: "done", endedAt: 9_000, units: [unit()], tokensSpent: 10 }, "v")
+      }),
+    )
+  })
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it("pages the newest runs out of a large journal, in a time a person would not notice", async () => {
+    const started = Date.now()
+    const page = await journal.list({ limit: 20 })
+    const elapsed = Date.now() - started
+
+    expect(page).toHaveLength(20)
+    // Newest first, and the page is the TOP of the ordering rather than the first 20 directories read.
+    expect(page[0]?.runId).toBe(`run-${String(RUNS - 1).padStart(4, "0")}`)
+    expect(page.at(-1)?.runId).toBe(`run-${String(RUNS - 20).padStart(4, "0")}`)
+    expect(elapsed).toBeLessThan(5_000)
+  })
+
+  it("fills every column for a row deep in the history, not just the newest", async () => {
+    // A History row that cannot fill the same columns as the row above it reads as broken, and the rows most
+    // likely to be thin are the old ones nobody checks.
+    const all = await journal.list()
+    expect(all).toHaveLength(RUNS)
+    const oldest = all.at(-1)
+    expect(oldest).toMatchObject({ status: "done", units: 1, settledUnits: 1, tokensSpent: 10 })
+    expect(oldest?.endedAt).toBe(9_000)
+  })
+})
+
 describe("toRunSummary", () => {
   it("counts only units that reached a terminal state", () => {
     const summary = toRunSummary(

@@ -558,8 +558,33 @@ describe("unitDetail", () => {
       elapsed: "3s",
       replayed: false,
       output: null,
+      // Nothing was elided: this unit failed and produced no answer, which is a different fact from "the
+      // answer is on disk" and the screen has to be able to tell them apart.
+      outputElided: false,
     })
     expect(unitDetail(target, "nope")).toBeNull()
+  })
+
+  /**
+   * The elision marker is what keeps three states from collapsing into one empty panel.
+   *
+   * `/state` no longer carries unit answers, so `output: undefined` now has three possible meanings — still
+   * running, returned nothing, or living in the journal. The marker is the only thing that separates the third.
+   */
+  it("says when an answer was elided rather than absent", () => {
+    const elided = run({
+      units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, outputElided: true })],
+    })
+    expect(unitDetail(elided, "u1")).toMatchObject({ output: null, outputElided: true })
+
+    // A payload that carries the answer is never "elided", whatever else it says.
+    const whole = run({
+      units: [unit({ unitId: "u1", status: "ok", endedAt: 4_000, output: "prose", outputElided: true })],
+    })
+    expect(unitDetail(whole, "u1")).toMatchObject({
+      output: { kind: "text", content: "prose" },
+      outputElided: false,
+    })
   })
 
   it("carries a structured answer as JSON and a text answer as text", () => {
@@ -643,9 +668,61 @@ describe("history rows and navigation", () => {
     expect(bottom.stack[0]).toEqual({ kind: "list", selected: 1 })
   })
 
-  it("refuses to drill a history row: a summary has no phases or units to open", () => {
+  /**
+   * Drilling a history row used to be a deliberate no-op, and the reason it no longer is matters.
+   *
+   * The old rule was honest for its time: a `RunSummary` carries no phases and no units, so a level built from
+   * one would have been a screen of invented figures. The figures now exist — the caller reads the run's whole
+   * journaled record on demand — so the level is real. What the reducer contributes is holding the level open
+   * while that read is in flight, which is why the run need not be in `runs` yet.
+   */
+  it("opens a history row, and keeps the level while its record is still being read", () => {
     const onHistory = drive(initialRouteState(), ["down"], [], history)
-    expect(drive(onHistory, ["drill"], [], history).stack).toHaveLength(1)
+    const opened = drive(onHistory, ["drill"], [], history)
+    expect(opened.stack).toHaveLength(2)
+    expect(opened.stack[1]).toEqual({ kind: "run", runId: "past-b", selected: 0 })
+    // Re-normalizing with no snapshot yet — the state of the world for as long as the fetch takes — must not
+    // bounce the user back to the list.
+    expect(normalizeRoute(opened, [], history).stack).toHaveLength(2)
+  })
+
+  it("drops a run level addressing an id nothing has heard of", () => {
+    const stale: RouteState = {
+      stack: [
+        { kind: "list", selected: 0 },
+        { kind: "run", runId: "never-existed", selected: 0 },
+      ],
+      filter: "all",
+    }
+    // The counterpart to the rule above: "history knows this run" is what makes an absent snapshot a wait
+    // rather than a stale stack.
+    expect(normalizeRoute(stale, [], history).stack).toHaveLength(1)
+  })
+
+  it("renders an opened history row from its record, once — not twice and not as a live run", () => {
+    // What the caller does when the read lands: the journaled snapshot joins `runs`, and its id is named as
+    // archived so the list keeps showing it under History rather than promoting it to the live group.
+    const record = run({ runId: "past-a", status: "done", startedAt: 3_000, endedAt: 4_000 })
+    const archived = new Set(["past-a"])
+    const rows = listRows([record], history, "all", 5_000, archived)
+    expect(rows.map((row) => row.runId)).toEqual(["past-a", "past-b"])
+    expect(rows.every((row) => row.live === false)).toBe(true)
+
+    const opened: RouteState = {
+      stack: [
+        { kind: "list", selected: 0 },
+        { kind: "run", runId: "past-a", selected: 0 },
+      ],
+      filter: "all",
+    }
+    expect(breadcrumb(opened, [record], archived, history)).toBe("Workflows ▸ deep-research (archived)")
+    // Read-only: its engine exited, possibly sessions ago, so `x` has nothing to address. `s` still does — the
+    // journal is exactly what it promotes.
+    expect(selectedControl(opened, [record], "stop", history, archived)).toBeNull()
+    expect(selectedControl(opened, [record], "save", history, archived)).toEqual({
+      action: "save.run",
+      runId: "past-a",
+    })
   })
 
   it("clamps the cursor back when history is not passed to a level that counted it", () => {

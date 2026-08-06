@@ -151,7 +151,16 @@ export function createAskRegistry(input: {
     try {
       // The answers ride along: a script ask is settled HERE, so this is the only moment anyone knows what the
       // person chose, and the run's own record of it would otherwise be a resolution with a blank answer.
-      input.store.apply({ type: "interaction.resolved", runId: entry.runId, requestID, by, answers })
+      // A script ask always settles WITH labels — the person's, or the author's declared fallback — so it is
+      // never the "settled, contents unknown" case, and saying so keeps its record shaped like a human one.
+      input.store.apply({
+        type: "interaction.resolved",
+        runId: entry.runId,
+        requestID,
+        by,
+        answers,
+        outcome: "answered",
+      })
     } catch {
       // The run may already be gone from the store (a terminal run drops nothing, but a store can be swapped in
       // a test). The waiting script still has to be released, which is what happens next.

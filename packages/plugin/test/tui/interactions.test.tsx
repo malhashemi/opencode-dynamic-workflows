@@ -794,14 +794,56 @@ describe("answer pane: reading back what was answered", () => {
     }
   })
 
-  it("says so when automation took it, rather than showing a choice nobody made", async () => {
+  it("says so when the answer was never observed, rather than showing a choice nobody made", async () => {
     const { view } = await mountPane([
       run({ interactions: [], resolved: [answered({ by: "automation", answers: [] })] }),
     ])
     try {
       const frame = view.text()
-      expect(frame).toContain("Settled without a recorded answer")
+      // The one remaining case where nothing is known: a person answered it in the host's own dialog and this
+      // process only saw it leave the pending list. Deliberately NOT the words used for a refusal.
+      expect(frame).toContain("Settled elsewhere; this run never saw the answer.")
       expect(frame).not.toMatch(/● /)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  /**
+   * The record of an AUTOMATED answer reads exactly like a human one — which is the whole fix.
+   *
+   * The watcher's ladder replies to the host with option labels and, until now, dropped them on the way to the
+   * store: every question automation settled was filed `answers: []` and read "answer not recorded". A reader
+   * could see that a machine had decided and never what it decided.
+   */
+  it("shows what automation chose, in the same vocabulary a human answer uses", async () => {
+    const { view } = await mountPane([
+      run({
+        interactions: [],
+        resolved: [answered({ by: "automation", answers: [["Chicago"]], outcome: "answered" })],
+      }),
+    ])
+    try {
+      const frame = view.text()
+      expect(frame).toMatch(/\(•\) Chicago/)
+      expect(frame).toMatch(/\( \) MLA/)
+      expect(frame).toContain("Automation answered this")
+      expect(frame).not.toContain("never saw the answer")
+    } finally {
+      view.unmount()
+    }
+  })
+
+  it("calls a refusal a refusal — it is not an answer, and not an unobserved one either", async () => {
+    const { view } = await mountPane([
+      run({ interactions: [], resolved: [answered({ by: "automation", answers: [], outcome: "rejected" })] }),
+    ])
+    try {
+      const frame = view.text()
+      expect(frame).toContain("Automation declined this — the asker was refused.")
+      // Nothing was chosen, so nothing is marked as taken.
+      expect(frame).toMatch(/\( \) MLA/)
+      expect(frame).not.toMatch(/\(•\)/)
     } finally {
       view.unmount()
     }

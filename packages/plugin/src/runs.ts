@@ -20,6 +20,18 @@ export interface UnitSnapshot {
    * the answer.
    */
   output?: string
+  /**
+   * `output` was REMOVED from this payload, not absent from the unit.
+   *
+   * Set only by {@link elideRunOutputs}, and only on the transport: the store always holds the whole answer.
+   * It exists because "this unit produced nothing" and "the answer lives on disk" are two different facts and a
+   * missing field says both — a surface that could not tell them apart would render an empty panel meaning
+   * either, which is exactly the ambiguity the honesty rule forbids.
+   *
+   * A reader that has never heard of this field sees `output: undefined` and shows nothing, which is the same
+   * behaviour it had before elision existed. That is the point: eliding a field is not a change of contract.
+   */
+  outputElided?: boolean
 }
 
 /**
@@ -28,15 +40,36 @@ export interface UnitSnapshot {
  * Deliberately uncapped. Two earlier versions capped it, and both were wrong for the same reason: a per-answer
  * limit damages the common case (a real research synthesis is 10–30k characters, and the unit screen is a
  * scrollbox that can show all of it) in order to mitigate a rare one. The rare case is real — settled runs
- * persist for the session, so `/state` grows as a session accumulates history — but the fix for that is to
- * stop shipping full outputs in `/state` at all, not to shorten the answer the user opened the screen to
- * read. Phase 3 owns that: once the journal exists, outputs live on disk and the unit level fetches the one
- * it needs.
+ * persist for the session, so `/state` would grow as a session accumulates history — but the fix for that is
+ * {@link elideRunOutputs}: the journal owns the full answer on disk, `/state` carries it elided, and the unit
+ * screen fetches the single output it is displaying.
  */
 export function toUnitOutput(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
   return text.length > 0 ? text : undefined
+}
+
+/**
+ * The same run with every unit's answer replaced by a marker saying where it went.
+ *
+ * `/state` is a BOOTSTRAP payload: it carries every run the process still holds and is re-sent in full on every
+ * reconnect, and settled runs persist for the session. So a session that ran ten research workflows re-shipped
+ * a few hundred kilobytes of prose on each resync, to a screen showing one row per run and none of that text.
+ *
+ * The instrument deliberately NOT used here is a per-answer cap: it damages the common case (the unit screen is
+ * a scrollbox built to show a whole synthesis) to bound a rare one, and two attempts at it were reverted. What
+ * is bounded instead is the payload that carries every answer at once. The single answer a user actually opened
+ * is read on demand from the journal, which already had it.
+ */
+export function elideRunOutputs(run: RunSnapshot): RunSnapshot {
+  const elided = cloneRunSnapshot(run)
+  for (const unit of elided.units) {
+    if (unit.output === undefined) continue
+    delete unit.output
+    unit.outputElided = true
+  }
+  return elided
 }
 
 /**
@@ -129,6 +162,19 @@ export interface ResolvedInteraction extends InteractionRecord {
    */
   answers: string[][]
   by: "human" | "automation"
+  /**
+   * WHAT happened, when "who did it" is not the whole story.
+   *
+   * `answered` — the labels in {@link ResolvedInteraction.answers} were sent as the reply.
+   * `rejected` — nobody answered it: the request was refused at the host and the asking unit saw a denial.
+   * absent — it settled and this process never learned which, which is the honest reading of an older record
+   * and of a question a human answered in the host's own dialog.
+   *
+   * A rejection is not an empty answer, and recording it as one is how "the ladder gave up" came to read
+   * identically to "we did not see what was said". Optional so a record written before this field existed still
+   * reads back as the "we do not know" it always was.
+   */
+  outcome?: "answered" | "rejected"
   resolvedAt: number
 }
 
@@ -156,13 +202,25 @@ export function cloneResolvedInteraction(interaction: ResolvedInteraction): Reso
 /** Fold a pending interaction and its outcome into the record that outlives it. */
 export function toResolvedInteraction(
   interaction: PendingInteraction,
-  outcome: { answers?: string[][]; by: "human" | "automation"; now?: number },
+  outcome: {
+    answers?: string[][]
+    by: "human" | "automation"
+    outcome?: ResolvedInteraction["outcome"]
+    now?: number
+  },
 ): ResolvedInteraction {
   const { graceEndsAt: _graceEndsAt, ...record } = clonePendingInteraction(interaction)
+  const answers = (outcome.answers ?? []).map((row) => [...row])
   return {
     ...record,
-    answers: (outcome.answers ?? []).map((row) => [...row]),
+    answers,
     by: outcome.by,
+    // Answers with no stated outcome can only mean one thing, so infer it rather than making every caller say
+    // it twice. The reverse is never inferred: an empty answer list is exactly the case that must not be
+    // guessed at.
+    ...(outcome.outcome ?? (answers.length > 0 ? "answered" : undefined)
+      ? { outcome: outcome.outcome ?? "answered" }
+      : {}),
     resolvedAt: outcome.now ?? Date.now(),
   }
 }
@@ -232,6 +290,11 @@ export type RunEvent =
       requestID: string
       by: "human" | "automation"
       answers?: string[][]
+      /**
+       * `rejected` when nothing was answered at all — the ladder's terminus, or a person refusing a permission.
+       * Absent means the resolver genuinely did not learn what happened.
+       */
+      outcome?: ResolvedInteraction["outcome"]
     }
 
 export type RunSubscriber = (event: RunEvent) => void
@@ -344,7 +407,9 @@ export function createRunStore(): RunStore {
       // a duplicate answer.
       if (settled) {
         current.interactions = current.interactions.filter((candidate) => candidate.requestID !== event.requestID)
-        current.resolved.push(toResolvedInteraction(settled, { answers: event.answers, by: event.by }))
+        current.resolved.push(
+          toResolvedInteraction(settled, { answers: event.answers, by: event.by, outcome: event.outcome }),
+        )
       }
       run = current
     } else {

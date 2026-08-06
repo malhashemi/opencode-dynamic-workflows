@@ -2,7 +2,13 @@ import { describe, expect, it } from "bun:test"
 import type { PendingQuestion, SessionInfo, SessionMessage } from "../src/client"
 import { createEngineState, runOwnedRoots } from "../src/context"
 import type { PendingInteraction } from "../src/runs"
-import { DEFAULT_MAX_ESCALATION_HOPS, isRunOwned, startWatcher, type InteractionEvent } from "../src/watcher"
+import {
+  DEFAULT_MAX_ESCALATION_HOPS,
+  isRunOwned,
+  startWatcher,
+  type InteractionEvent,
+  type QuestionResolutionPolicy,
+} from "../src/watcher"
 import { makeFakeClient, type FakeResponse } from "./fake-client"
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, message: string, timeoutMs = 200): Promise<void> {
@@ -1148,11 +1154,13 @@ describe("watcher: human-first interactions", () => {
 
   function start(opts: {
     client: ReturnType<typeof makeFakeClient>
-    policy: ReturnType<typeof humanFirstPolicy>
-    events: InteractionEvent[]
+    /** Usually human-first, but the plain ladder runs here too — its rungs are what this block asserts on. */
+    policy: QuestionResolutionPolicy
+    events?: InteractionEvent[]
     unitIdForSession?: (sessionID: string) => string | null
   }) {
     const controller = new AbortController()
+    const events = opts.events ?? []
     const watcher = startWatcher({
       client: opts.client,
       parentSessionID: "run-root",
@@ -1160,7 +1168,7 @@ describe("watcher: human-first interactions", () => {
       signal: controller.signal,
       pollIntervalMs: 5,
       resolutionPolicy: opts.policy,
-      onInteraction: (event) => opts.events.push(event),
+      onInteraction: (event) => events.push(event),
       ...(opts.unitIdForSession ? { unitIdForSession: opts.unitIdForSession } : {}),
     })
     return { watcher, controller, stop: () => { watcher.stop(); controller.abort() } }
@@ -1307,8 +1315,23 @@ describe("watcher: human-first interactions", () => {
         "the ladder never ran after the grace expired",
         1_000,
       )
-      expect(events.map((event) => event.kind)).toEqual(["pending", "resolved"])
-      expect(events[1]).toMatchObject({ kind: "resolved", requestID: "q-1", by: "automation" })
+      // Three events, and the middle one is the point: the request STAYS published while the ladder works on
+      // it — it is genuinely still pending in the host and the run is genuinely still blocked — but it is
+      // re-published with an expired `graceEndsAt`, which is how every surface reads "automation has it now".
+      // Keeping the row is what lets the resolution below carry the ladder's actual answer.
+      expect(events.map((event) => event.kind)).toEqual(["pending", "pending", "resolved"])
+      const handedOver = events[1] as Extract<InteractionEvent, { kind: "pending" }>
+      expect(handedOver.interaction.graceEndsAt).not.toBeNull()
+      expect(handedOver.interaction.graceEndsAt ?? Infinity).toBeLessThanOrEqual(Date.now())
+      // The answer the ladder gave, recorded as the answer it is. Before this it arrived as `answers: []` and
+      // the run browser could say a machine had decided, and never what it decided.
+      expect(events[2]).toMatchObject({
+        kind: "resolved",
+        requestID: "q-1",
+        by: "automation",
+        answers: [["EU"]],
+        outcome: "answered",
+      })
       // The proxy rung, exactly as it runs headlessly.
       expect(client.promptCalls.map((call) => call.agent)).toEqual(["explore"])
       expect(client.questionReplies).toEqual([{ requestID: "q-1", answers: [["EU"]] }])
@@ -1361,7 +1384,44 @@ describe("watcher: human-first interactions", () => {
         "the ladder never took over after the hand-off",
         2_000,
       )
-      expect(events.at(-1)).toMatchObject({ kind: "resolved", by: "automation" })
+      // A REFUSAL, said as one. The ladder abstained and hit its reject terminus, so nothing was answered —
+      // recording that as `answers: []` made it read identically to a question whose answer this process simply
+      // never saw, and those are two different things to tell someone about a unit that failed.
+      expect(events.at(-1)).toMatchObject({
+        kind: "resolved",
+        by: "automation",
+        outcome: "rejected",
+      })
+      expect((events.at(-1) as { answers?: unknown }).answers).toBeUndefined()
+    } finally {
+      session.stop()
+    }
+  })
+
+  /**
+   * The escalation rung's answer is a PERSON's, relayed by a depth-1 unit — and it has to be recorded as one.
+   *
+   * This rung only runs with `humanReachable`, i.e. under the plain tiered policy, so it publishes nothing and
+   * the observable is the reply itself plus the resolution the store would have filed had anything been
+   * published. Asserting the reply keeps the rung honest about what it sent; the `answered` outcome is asserted
+   * one level up, where a published request exists to attach it to.
+   */
+  it("relays the escalated operator answer to the host rather than rejecting the question", async () => {
+    const client = makeFakeClient({
+      // The proxy abstains, so the ladder escalates; the depth-1 unit comes back with the operator's choice.
+      responses: [{ text: "UNANSWERABLE" }, { text: "US" }],
+      sessions: NESTED_SESSIONS,
+      sessionMessages: { "run-root": firstUserMessage("nothing relevant") },
+      pendingQuestions: [deploymentRegionQuestion("q-1", "grandchild")],
+    })
+    const session = start({
+      client,
+      policy: { kind: "tiered", standInSubagent: "explore", maxEscalationHops: 4, humanReachable: true },
+    })
+    try {
+      await waitFor(() => client.questionReplies.length >= 1, "the escalation rung never replied", 2_000)
+      expect(client.questionReplies).toEqual([{ requestID: "q-1", answers: [["US"]] }])
+      expect(client.questionRejects).toEqual([])
     } finally {
       session.stop()
     }
