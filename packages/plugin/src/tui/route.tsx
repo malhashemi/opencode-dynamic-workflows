@@ -40,6 +40,7 @@ import {
   multiSelectQuestion,
   normalizeRoute,
   openQuestion,
+  popLevel,
   questionTabs,
   reduceRoute,
   restoreAnswer,
@@ -275,8 +276,13 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   }
 
   /** Pop one level, the way `esc` would — used after a question stops being the user's to answer. */
+  /**
+   * Finish with this level and drop it — NOT the `back` action, which inside a form means "the previous
+   * question". Answering the last question of a three-part form used to walk back through the form instead of
+   * returning to the run, because the two intentions shared one function.
+   */
   const leaveLevel = () => {
-    setState((current) => reduceRoute(current, "back", props.runs(), history()))
+    setState((current) => popLevel(current, props.runs(), history()))
   }
 
   /**

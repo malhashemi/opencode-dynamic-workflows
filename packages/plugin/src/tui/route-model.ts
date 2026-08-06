@@ -1038,6 +1038,28 @@ function previousQuestion(state: RouteState, runs: readonly RunSnapshot[]): Rout
   return { ...state, stack }
 }
 
+/**
+ * Drop the top level, whatever it is. The list level is the floor.
+ *
+ * Separate from the `back` ACTION, and that separation is the fix for a real bug rather than tidiness. `back`
+ * acquired a second meaning — "the previous question of this form" — and answering a form's LAST question
+ * reused it to leave the pane. On a one-question interaction the two are the same thing, so it worked; on a
+ * three-question form, submitting the answer walked the user back through the form they had just completed
+ * instead of returning them to the run.
+ *
+ * "Go back one step" and "I am finished with this level" are different intentions. They now have different
+ * functions, and only the first one knows about forms.
+ */
+export function popLevel(
+  state: RouteState,
+  runs: readonly RunSnapshot[],
+  history: readonly RunSummary[] = [],
+): RouteState {
+  // Closing the route from the list level is the caller's decision, not the reducer's.
+  if (state.stack.length <= 1) return normalizeRoute(state, runs, history)
+  return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history)
+}
+
 export function reduceRoute(
   state: RouteState,
   action: RouteAction,
@@ -1053,9 +1075,7 @@ export function reduceRoute(
     // Inside a multi-question form, `back` moves within the form before it leaves it.
     const stepped = previousQuestion(state, runs)
     if (stepped) return normalizeRoute(stepped, runs, history)
-    // The list level is the floor; closing the route from there is the caller's decision, not the reducer's.
-    if (state.stack.length <= 1) return normalizeRoute(state, runs, history)
-    return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history)
+    return popLevel(state, runs, history)
   }
   if (action === "filter") {
     const next = FILTER_ORDER[(FILTER_ORDER.indexOf(state.filter) + 1) % FILTER_ORDER.length] as RunStatusFilter

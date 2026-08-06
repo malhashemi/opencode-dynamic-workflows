@@ -20,6 +20,7 @@ import {
   normalizeRoute,
   openQuestion,
   pendingInteractions,
+  popLevel,
   questionTabs,
   questionRowCount,
   reduceRoute,
@@ -1077,5 +1078,55 @@ describe("moving between separate waiting questions", () => {
     const state = openQuestion(initialRouteState(), "run-1", "req-9")
     expect(questionTabs(state, runs)).toEqual([])
     expect(cycleQuestion(state, runs)).toBe(state)
+  })
+})
+
+describe("popLevel — finishing with a level is not the same as going back", () => {
+  /**
+   * The bug this exists for. `back` acquired a second meaning inside a form ("the previous question"), and the
+   * code that leaves the pane after a successful answer reused the `back` ACTION to do it. On a one-question
+   * interaction the two coincide, so it looked correct; on a three-question form, submitting the last answer
+   * walked the user back through the form they had just finished instead of returning them to the run.
+   */
+  const form = (): PendingInteraction =>
+    interaction({
+      questions: [
+        { header: "A", prompt: "first?", options: [{ label: "a1", description: "" }], multiple: false, custom: false },
+        { header: "B", prompt: "second?", options: [{ label: "b1", description: "" }], multiple: false, custom: false },
+        { header: "C", prompt: "third?", options: [{ label: "c1", description: "" }], multiple: false, custom: false },
+      ],
+    })
+
+  const onLastQuestion = (asked: PendingInteraction, runs: readonly RunSnapshot[]) => {
+    const opened = openQuestion(initialRouteState(), "run-1", asked.requestID)
+    const top = opened.stack.at(-1)!
+    return normalizeRoute(
+      { ...opened, stack: [...opened.stack.slice(0, -1), { ...top, index: 2, answers: [["a1"], ["b1"]] }] } as RouteState,
+      runs,
+    )
+  }
+
+  it("drops the question level from the LAST question of a form, rather than stepping back through it", () => {
+    const asked = form()
+    const runs = [run({ interactions: [asked] })]
+    const last = onLastQuestion(asked, runs)
+    expect(last.stack.at(-1)).toMatchObject({ kind: "question", index: 2 })
+
+    // What answering does.
+    expect(popLevel(last, runs).stack.at(-1)?.kind).not.toBe("question")
+    // …and what `back` does, which is the thing that must NOT happen on an answer.
+    expect(reduceRoute(last, "back", runs).stack.at(-1)).toMatchObject({ kind: "question", index: 1 })
+  })
+
+  it("drops the level from a one-question interaction too — the case that always worked", () => {
+    const runs = [run({ interactions: [interaction()] })]
+    const opened = openQuestion(initialRouteState(), "run-1", "req-1")
+    expect(popLevel(opened, runs).stack.at(-1)?.kind).not.toBe("question")
+  })
+
+  it("treats the list level as the floor", () => {
+    const runs = [run()]
+    const list = initialRouteState()
+    expect(popLevel(list, runs)).toMatchObject({ stack: [{ kind: "list" }] })
   })
 })
