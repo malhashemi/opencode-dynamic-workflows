@@ -782,29 +782,36 @@ describe("workflow route render", () => {
     }
   })
 
-  it("keeps a History row in view while scoped to a session", async () => {
+  it("scopes History by session too — `this session` means this session on both halves of the list", async () => {
     /**
-     * The one exception, and it is deliberate. `History` says `earlier sessions` on its own heading: a journaled
-     * run is from another session BY DEFINITION, so scoping it away would empty the section for everyone who
-     * has ever restarted OpenCode — which is precisely what the journal exists to survive.
+     * Reported after a manual pass: the scope was applied to the live rows and not to History, and a header
+     * saying `this session` above another session's runs is the kind of half-rule a user has to remember an
+     * exception for. What keeps `History earlier sessions` from being empty is the DEFAULT rather than an
+     * exception here — a browser opened from the home screen has no session and opens on the project, which is
+     * the "I restarted OpenCode and want my run back" path.
      */
-    const past = toRunSummary(
-      run({
-        runId: "run-past",
-        workflow: "summarize",
-        parentSessionID: "ses_long_gone",
-        status: "done",
-        endedAt: Date.now() - 60_000,
-      }),
-    )
-    const harness = await mountRoute([], { history: [past], params: { returnTo: "ses_here" }, width: 130 })
+    const past = (runId: string, workflow: string, parentSessionID: string): RunSummary =>
+      toRunSummary(run({ runId, workflow, parentSessionID, status: "done", endedAt: Date.now() - 60_000 }))
+    const history = [past("run-mine", "summarize", "ses_here"), past("run-theirs", "refine", "ses_long_gone")]
+
+    const scoped = await mountRoute([], { history, params: { returnTo: "ses_here" }, width: 130 })
     try {
-      const frame = harness.view.text()
+      const frame = scoped.view.text()
       expect(frame).toContain("scope this session")
-      expect(frame).toContain("summarize")
       expect(frame).toContain("earlier sessions")
+      expect(frame).toContain("summarize")
+      expect(frame).not.toContain("refine")
     } finally {
-      harness.view.unmount()
+      scoped.view.unmount()
+    }
+
+    // From the home screen there is no session to scope to, so the whole project's history is there.
+    const fromHome = await mountRoute([], { history, width: 130 })
+    try {
+      expect(fromHome.view.text()).toContain("scope this project")
+      expect(fromHome.view.text()).toContain("refine")
+    } finally {
+      fromHome.view.unmount()
     }
   })
 

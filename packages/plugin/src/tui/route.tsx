@@ -368,12 +368,20 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
    *
    * The run client scans every endpoint descriptor on the machine, which is what lets one browser watch two
    * projects at once and is also why the list needed narrowing: *"why would I want to see a run from another
-   * session?"* A run's project is its owning endpoint's worktree; its session is on the snapshot.
+   * session?"* A run's project is its owning endpoint's worktree; its session is on the snapshot — and, since
+   * `RunSummary` carries it too, on a journaled row as well.
    *
-   * **History is scoped to the PROJECT, never to the session, and that is deliberate.** Its heading says
-   * `earlier sessions` — a journaled run is from another session by definition, so scoping it away would empty
-   * the section for everyone who has ever restarted OpenCode, which is the exact thing a journal exists to
-   * survive. `everywhere` still widens it past this project.
+   * **History obeys the scope exactly as the live rows do**, which is what the user expected and is the simpler
+   * rule to hold in your head: `this session` means this session, on both halves of the list. The obvious
+   * objection — that `History earlier sessions` becomes empty, in the section a journal exists to fill — is
+   * answered by where the DEFAULT comes from rather than by an exception here. A browser opened from the home
+   * screen has no session to scope to and opens on the project, so the "I restarted OpenCode and want my run
+   * back" path is unscoped by construction; a browser opened from a session that genuinely has no earlier runs
+   * says so, and says which key widens it. A rule with an exception in it would have been the worse trade: the
+   * header would say `this session` while the screen showed other sessions' work.
+   *
+   * A summary that cannot name its session is not this session's — an engine older than this reader journals
+   * none, and it is by definition from an earlier process.
    *
    * A run nothing claims is shown rather than hidden: not being able to attribute a run is not evidence that it
    * belongs to somebody else.
@@ -395,7 +403,9 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       }
     }
     for (const summary of history()) {
-      if (elsewhere(summary.runId)) hidden.add(summary.runId)
+      if (elsewhere(summary.runId) || (scope === "session" && session !== null && summary.parentSessionID !== session)) {
+        hidden.add(summary.runId)
+      }
     }
     return hidden
   }
