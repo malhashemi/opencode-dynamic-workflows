@@ -40,6 +40,14 @@ export interface RunSummary {
   runId: string
   workflow: string
   provenance: RunSnapshot["provenance"]
+  /**
+   * The session that started the run — the column a surface scopes by.
+   *
+   * A `RunSnapshot` has carried this since the first slice; a summary did not, so the run browser could not
+   * answer "is this one mine?" about anything older than the process it was running in. A user asked the
+   * question the other way round, which is sharper: *"why would I want to see a run from another session?"*
+   */
+  parentSessionID: string
   status: RunSnapshot["status"]
   /** Total units the run observed. */
   units: number
@@ -125,6 +133,7 @@ export function toRunSummary(run: RunSnapshot): RunSummary {
     runId: run.runId,
     workflow: run.workflow,
     provenance: run.provenance,
+    parentSessionID: run.parentSessionID,
     status: run.status,
     units: run.units.length,
     settledUnits: settledUnits(run),

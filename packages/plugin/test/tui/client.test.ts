@@ -121,6 +121,7 @@ describe("TUI run client: history", () => {
       runId,
       workflow: "research",
       provenance: "inline",
+      parentSessionID: "ses_parent",
       status: "done",
       units: 1,
       settledUnits: 1,

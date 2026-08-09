@@ -369,6 +369,9 @@ describe("answer pane render", () => {
         "return,right,l",
         "escape,left,h",
         "f",
+        // `w` rides along with `f`, for the same reason `f` is here at all: both address the LIST, and a
+        // vocabulary that disappeared one level down would teach the user the tool changes under them.
+        "w",
         "x",
         "r",
         "s",

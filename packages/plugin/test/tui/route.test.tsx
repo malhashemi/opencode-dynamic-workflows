@@ -13,8 +13,9 @@
 import { createSignal } from "solid-js"
 import { describe, expect, it } from "bun:test"
 import type { ControlAction, ControlResult } from "../../src/control"
-import { toRunSummary, type RunSummary } from "../../src/journal"
+import { toRunSummary, type JournalRecord, type RunSummary } from "../../src/journal"
 import type { RunSnapshot, UnitSnapshot } from "../../src/runs"
+import type { RecordResult } from "../../src/tui/client"
 import type { RunControlClient } from "../../src/tui/control"
 import {
   commandName,
@@ -73,6 +74,8 @@ interface Harness {
   view: MountedView
   fake: FakeTuiApi
   sent: ControlAction[]
+  /** Every runId the route asked the journal for, in order — an on-demand read is a claim worth asserting. */
+  read: string[]
   setRuns: (runs: readonly RunSnapshot[]) => void
   /** Simulate a keystroke by running the command its binding points at. */
   press: (action: (typeof WORKFLOW_BINDINGS)[number]["action"]) => Promise<void>
@@ -86,21 +89,44 @@ async function mountRoute(
     width?: number
     height?: number
     history?: readonly RunSummary[]
+    /**
+     * The journal, as the route sees it: one record read at a time.
+     *
+     * Omitted deliberately in most tests — a route with no reader is the honest shape of a client with no
+     * endpoint to ask, and it is what the "cannot be read" sentences are for.
+     */
+    record?: (runId: string) => Promise<RecordResult>
   } = {},
 ): Promise<Harness> {
   const fake = createFakeTuiApi()
   const [runs, setRuns] = createSignal<readonly RunSnapshot[]>(initial)
   const [history] = createSignal<readonly RunSummary[]>(options.history ?? [])
   const sent: ControlAction[] = []
+  const read: string[] = []
   const control: RunControlClient = {
     async send(action) {
       sent.push(action)
       return options.result ?? { ok: true }
     },
   }
+  const reader = options.record
   const view = await mountView(
     () => (
-      <WorkflowRoute api={fake.api} runs={runs} history={history} control={control} params={options.params} />
+      <WorkflowRoute
+        api={fake.api}
+        runs={runs}
+        history={history}
+        control={control}
+        record={
+          reader
+            ? (runId) => {
+                read.push(runId)
+                return reader(runId)
+              }
+            : undefined
+        }
+        params={options.params}
+      />
     ),
     { width: options.width ?? 100, height: options.height ?? 24 },
   )
@@ -108,12 +134,24 @@ async function mountRoute(
     view,
     fake,
     sent,
+    read,
     setRuns,
     async press(action) {
       fake.runCommand(commandName(action))
       await view.flush()
     },
   }
+}
+
+/** One journaled record, as `GET /history/<runId>` returns it. */
+function journaled(snapshot: RunSnapshot): JournalRecord {
+  return { run: snapshot, source: "export default defineWorkflow({})", args: {}, transitions: [] }
+}
+
+/** Let an in-flight journal read resolve, and render what it produced. */
+async function settle(harness: Harness): Promise<void> {
+  await harness.view.flush()
+  await harness.view.flush()
 }
 
 describe("workflow keymap", () => {
@@ -136,6 +174,8 @@ describe("workflow keymap", () => {
       "n",
       "escape,left,h",
       "f",
+      // Beside `f`: the same gesture asked of a different column — what a run is doing, then whose it is.
+      "w",
       "x",
       "s",
       "q",
@@ -168,7 +208,7 @@ describe("workflow keymap", () => {
   })
 
   it("shows the unwired keys in the footer as parenthesised rather than absent", () => {
-    expect(footerHint()).toBe("↑↓ select · ⏎ open · esc back · f filter · x stop · (r restart) · s save · q close")
+    expect(footerHint()).toBe("↑↓ select · ⏎ open · esc back · f filter · w scope · x stop · (r restart) · s save · q close")
   })
 
   it("registers a palette/slash way in, because the sidebar shows nothing until a run starts", () => {
@@ -434,13 +474,21 @@ describe("workflow route render", () => {
     const answered = run({
       units: [unit({ status: "ok", endedAt: Date.now(), output: '{"areas":["Rayleigh scattering"],"ok":true}' })],
     })
-    const harness = await mountRoute([answered], { width: 120, height: 30 })
+    const harness = await mountRoute([answered], {
+      width: 120,
+      height: 30,
+      record: async () => ({ ok: false, reason: "not-found" }),
+    })
     try {
       await harness.press("drill")
       // Row 0 is the `plan` phase; the unit sits under `gather`.
       await harness.press("down")
       await harness.press("down")
       await harness.press("drill")
+      await settle(harness)
+      // A unit that settled while this screen was watching carries its answer on the event that settled it.
+      // Re-reading it off disk would be a file read per unit opened, for something already in hand.
+      expect(harness.read).toEqual([])
       const frame = harness.view.text()
       expect(frame).toContain("Prompt")
       expect(frame).toContain("Answer")
@@ -534,14 +582,121 @@ describe("workflow route render", () => {
     }
   })
 
-  it("says why `⏎` does nothing on a history row, instead of looking broken", async () => {
-    const harness = await mountRoute([], { history: [toRunSummary(run({ runId: "run-past", status: "done", endedAt: Date.now() }))] })
+  it("opens a History row into the run the journal kept", async () => {
+    // The defect this exists for: every piece of this — the record endpoint, the client read, the row model's
+    // `archived` set, the reducer's history-aware normalization — shipped and was tested, and the ROUTE called
+    // none of it. A user ran a workflow, restarted OpenCode, and could not open their own run.
+    const past = run({
+      runId: "run-past",
+      workflow: "summarize",
+      status: "done",
+      endedAt: Date.now() - 60_000,
+      units: [unit({ status: "ok", endedAt: Date.now() - 61_000 })],
+    })
+    const harness = await mountRoute([], {
+      history: [toRunSummary(past)],
+      record: async () => ({ ok: true, record: journaled(past) }),
+      width: 120,
+    })
     try {
       await harness.press("drill")
-      await harness.view.flush()
-      expect(harness.view.text()).toContain("earlier session")
-      // Still on the list: no level was pushed for a run that has no snapshot behind it.
-      expect(harness.view.text()).toContain("filter all")
+      await settle(harness)
+      expect(harness.read).toEqual(["run-past"])
+
+      const frame = harness.view.text()
+      // The same level a live run gets, from a snapshot that came off disk — and the breadcrumb says so, because
+      // a dead run that looked identical to a live one while quietly refusing its keys would read as broken.
+      expect(frame).toContain("summarize (archived)")
+      expect(frame).toContain("#1 explore")
+
+      // Nothing here has an engine to talk to. `x` says that rather than sending an action it can predict the
+      // failure of, and the footer dims the keys that cannot work while leaving `s` alone — saving a run whose
+      // engine is long gone is the case the journal exists for.
+      await harness.press("stop")
+      expect(harness.sent).toEqual([])
+      expect(harness.view.text()).toContain("nothing left to stop")
+      await harness.press("save")
+      expect(harness.sent).toEqual([{ action: "save.run", runId: "run-past" }])
+
+      // Leaving puts it back under History rather than stranding it among this session's runs.
+      await harness.press("back")
+      await settle(harness)
+      const list = harness.view.text()
+      expect(list).toContain("earlier sessions")
+      expect(list.split("\n").filter((line) => line.includes("summarize"))).toHaveLength(1)
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says a journaled run is being read, and says why when it cannot be", async () => {
+    let answerRead: (result: RecordResult) => void = () => {}
+    const harness = await mountRoute([], {
+      history: [toRunSummary(run({ runId: "run-past", status: "done", endedAt: Date.now() }))],
+      record: () =>
+        new Promise<RecordResult>((resolve) => {
+          answerRead = resolve
+        }),
+    })
+    try {
+      await harness.press("drill")
+      // Three states, three sentences. A level that rendered an empty run while the read was in flight would
+      // look like a run that did nothing.
+      expect(harness.view.text()).toContain("Reading this run from the journal")
+
+      answerRead({ ok: false, reason: "unknown-endpoint" })
+      await settle(harness)
+      expect(harness.view.text()).toContain("no running opencode has this run's journal")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("reads a settled unit's answer back from the journal, because `/state` no longer carries it", async () => {
+    // `/state` is a bootstrap payload re-sent whole on every reconnect, so it ships every unit's answer elided
+    // and says so. The screen showing one answer fetches that one answer.
+    const elided = run({
+      units: [unit({ status: "ok", endedAt: Date.now(), outputElided: true })],
+    })
+    const whole = run({
+      units: [unit({ status: "ok", endedAt: Date.now(), output: '{"areas":["Rayleigh scattering"]}' })],
+    })
+    const harness = await mountRoute([elided], {
+      record: async () => ({ ok: true, record: journaled(whole) }),
+      width: 120,
+      height: 30,
+    })
+    try {
+      await harness.press("drill")
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("drill")
+      await settle(harness)
+      expect(harness.read).toEqual(["run-1"])
+      const frame = harness.view.text()
+      expect(frame).toContain("Answer")
+      expect(frame).toContain("Rayleigh scattering")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("does not claim a unit said nothing when its answer merely could not be read", async () => {
+    const elided = run({ units: [unit({ status: "ok", endedAt: Date.now(), outputElided: true })] })
+    const harness = await mountRoute([elided], {
+      record: async () => ({ ok: false, reason: "not-found" }),
+      width: 120,
+      height: 30,
+    })
+    try {
+      await harness.press("drill")
+      await harness.press("down")
+      await harness.press("down")
+      await harness.press("drill")
+      await settle(harness)
+      const frame = harness.view.text()
+      expect(frame).toContain("this run is not in the journal")
+      expect(frame).not.toContain("returned nothing")
     } finally {
       harness.view.unmount()
     }
@@ -569,6 +724,124 @@ describe("workflow route render", () => {
       expect(harness.view.text()).toContain("already a durable workflow")
     } finally {
       harness.view.unmount()
+    }
+  })
+
+  it("shows this session's runs by default, and says so", async () => {
+    // The user's own words: *"why would I want to see a run from another session?"* Opened from a session, the
+    // browser answers that question before it is asked — and names the scope it is in, because a list that is
+    // hiding rows has to say so.
+    const mine = run({ runId: "mine", workflow: "mine-research", parentSessionID: "ses_here" })
+    const theirs = run({ runId: "theirs", workflow: "their-research", parentSessionID: "ses_elsewhere" })
+    const harness = await mountRoute([mine, theirs], { params: { returnTo: "ses_here" }, width: 130 })
+    try {
+      const frame = harness.view.text()
+      expect(frame).toContain("scope this session")
+      expect(frame).toContain("mine-research")
+      expect(frame).not.toContain("their-research")
+
+      // `w` widens rather than narrows, so a person who cannot find a run presses it again.
+      await harness.press("scope")
+      expect(harness.view.text()).toContain("scope this project")
+      expect(harness.view.text()).toContain("their-research")
+      await harness.press("scope")
+      expect(harness.view.text()).toContain("scope everywhere")
+      await harness.press("scope")
+      expect(harness.view.text()).toContain("scope this session")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("opens on the project when it was not opened from a session", async () => {
+    // From the home screen there is no session to be in, and defaulting to one would show an empty list and
+    // blame the user for it.
+    const harness = await mountRoute([run({ parentSessionID: "ses_somewhere" })], { width: 130 })
+    try {
+      expect(harness.view.text()).toContain("scope this project")
+      expect(harness.view.text()).toContain("deep-research")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("says an empty list is empty because of the scope, not because nothing ran", async () => {
+    const harness = await mountRoute([run({ parentSessionID: "ses_elsewhere" })], {
+      params: { returnTo: "ses_here" },
+      width: 130,
+    })
+    try {
+      const frame = harness.view.text()
+      expect(frame).toContain("No runs in this session")
+      expect(frame).toContain("1 elsewhere")
+      expect(frame).toContain("Press `w` to widen")
+      // The other sentence would send them to the tool to start a run they have already started.
+      expect(frame).not.toContain("Start one with the `workflow` tool")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("keeps a History row in view while scoped to a session", async () => {
+    /**
+     * The one exception, and it is deliberate. `History` says `earlier sessions` on its own heading: a journaled
+     * run is from another session BY DEFINITION, so scoping it away would empty the section for everyone who
+     * has ever restarted OpenCode — which is precisely what the journal exists to survive.
+     */
+    const past = toRunSummary(
+      run({
+        runId: "run-past",
+        workflow: "summarize",
+        parentSessionID: "ses_long_gone",
+        status: "done",
+        endedAt: Date.now() - 60_000,
+      }),
+    )
+    const harness = await mountRoute([], { history: [past], params: { returnTo: "ses_here" }, width: 130 })
+    try {
+      const frame = harness.view.text()
+      expect(frame).toContain("scope this session")
+      expect(frame).toContain("summarize")
+      expect(frame).toContain("earlier sessions")
+    } finally {
+      harness.view.unmount()
+    }
+  })
+
+  it("keeps telling the truth when the run accessor never notifies", async () => {
+    /**
+     * The run client's signal does NOT invalidate this route's computations on a real host — measured, with
+     * counters on a live frame: nine events consumed, the accessor returning `aborted`, and the memo behind it
+     * recomputed exactly once. Everything on this screen is kept current by its own clock instead.
+     *
+     * So the accessor here is a plain closure over a mutable variable: no signal, no notification, exactly the
+     * shape the live host presents. A run that ends must still appear as ended. This test fails against a memo
+     * over the accessor — which is the defect it exists for: a stopped run rendered as running for as long as
+     * the browser stayed open, while the engine had aborted it a second after the keypress.
+     */
+    let current: readonly RunSnapshot[] = [run()]
+    const fake = createFakeTuiApi()
+    const view = await mountView(
+      () => (
+        <WorkflowRoute
+          api={fake.api}
+          runs={() => current}
+          control={{ async send() { return { ok: true } } }}
+        />
+      ),
+      { width: 130, height: 24 },
+    )
+    try {
+      expect(view.text()).toContain("deep-research")
+      expect(view.text()).not.toContain("aborted")
+
+      current = [run({ status: "aborted", endedAt: Date.now(), currentPhase: "gather" })]
+      // The clock runs at one second, which is what bounds how stale this screen can be.
+      await new Promise((resolve) => setTimeout(resolve, 1_200))
+      await view.flush()
+      expect(view.text()).toContain("aborted")
+    } finally {
+      view.unmount()
     }
   })
 
@@ -652,7 +925,7 @@ describe("route spacing: separators live in the text, not in a flex gap", () => 
     const harness = await mountRoute([run()], { width: 140 })
     try {
       const footer = harness.view.text().split("\n").find((line) => line.includes("select")) ?? ""
-      expect(footer).toContain("↑↓ select  ⏎ open  esc back  f filter  x stop")
+      expect(footer).toContain("↑↓ select  ⏎ open  esc back  f filter  w scope  x stop")
     } finally {
       harness.view.unmount()
     }

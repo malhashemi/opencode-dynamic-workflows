@@ -52,6 +52,10 @@ export const WORKFLOW_BINDINGS: readonly WorkflowBinding[] = [
   { key: "n", action: "next", label: "next question", enabled: true, scope: "queue" },
   { key: "escape,left,h", action: "back", label: "back", enabled: true },
   { key: "f", action: "filter", label: "filter", enabled: true },
+  // Beside `f`, because the two are the same gesture asked of different columns: `f` narrows by what a run is
+  // doing, `w` by whose it is. `w` for *where* — `s` was already save, and a filter key is not worth taking a
+  // letter back from a key a user has learned.
+  { key: "w", action: "scope", label: "scope", enabled: true },
   { key: "x", action: "stop", label: "stop", enabled: true },
   { key: "r", action: "restart", label: "restart", enabled: false }, // Phase 6
   { key: "s", action: "save", label: "save", enabled: true },

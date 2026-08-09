@@ -10,7 +10,7 @@
  *
  *   A  `opencode serve`  runs one durable and one inline workflow, and journals both
  *   B  `opencode serve`  a cold start on the same project: `/history` and `workflow({ status | result })`
- *   C  `opencode .`      the real TUI: the History section, and `s` promoting a journaled inline run
+ *   C  `opencode .`      the real TUI: the History section, OPENING a history row, and `s` promoting a run
  *   D  `opencode serve`  runs the promoted workflow by its registry key — the save was real, not cosmetic
  *
  *     OPENCODE_LIVE_MODEL=<provider/model> bun run verify:live
@@ -241,6 +241,9 @@ describeTui("live: runs survive the engine that ran them", () => {
   let historyFrame = ""
   let savedFrame = ""
   let conflictFrame = ""
+  /** A history row OPENED — the leg whose absence let an unwired route ship. */
+  let archivedFrame = ""
+  let archivedAnswerFrame = ""
   let savedFileSource = ""
   let promotedOutput = ""
 
@@ -312,6 +315,23 @@ describeTui("live: runs survive the engine that ran them", () => {
         await tui.waitFor(/already a durable workflow/, { timeoutMs: 30_000, intervalMs: 300 }),
       )
       await saveFrame("30-journal-save-conflict", conflictFrame)
+
+      // ⏎ on that same row — the leg this probe was missing, and the reason a user could see their run in
+      // History and not open it. Listing a row proves the journal reached the list; opening it is the claim.
+      await press(tui, "Enter")
+      archivedFrame = stripAnsi(
+        await tui.waitFor(new RegExp(`${DURABLE_KEY} \\(archived\\)`), { timeoutMs: 30_000, intervalMs: 300 }),
+      )
+      await saveFrame("40-journal-archived-run", archivedFrame)
+
+      // …and down into the unit, whose ANSWER `/state` deliberately does not carry. Nothing in this process ran
+      // it, so what appears here came off disk through `GET /history/<runId>`.
+      await press(tui, "Down")
+      await press(tui, "Enter")
+      archivedAnswerFrame = stripAnsi(
+        await tui.waitFor(/╭─ Answer/, { timeoutMs: 30_000, intervalMs: 300 }),
+      )
+      await saveFrame("50-journal-archived-answer", archivedAnswerFrame)
     } finally {
       await tui.kill()
       await Bun.sleep(1_500)
@@ -386,6 +406,29 @@ describeTui("live: runs survive the engine that ran them", () => {
     const row = historyFrame.split("\n").find((line) => line.includes(DURABLE_KEY))
     expect(row).toContain("1/1 units")
     expect(row).toContain("done")
+  })
+
+  it("opens a history row into the run the journal kept", () => {
+    // The whole point of the journal, from the user's side: they ran a workflow, restarted OpenCode, and can
+    // still walk into that run. The engine that produced it was killed two hosts ago.
+    expect(archivedFrame).toMatch(new RegExp(`${DURABLE_KEY} \\(archived\\)`))
+    // The same level a live run gets — declared phases in order, with the unit nested under the one that ran it.
+    expect(archivedFrame).toMatch(/Phase 1\/2\s+dispatch/)
+    expect(archivedFrame).toMatch(/Phase 2\/2\s+finish/)
+    expect(archivedFrame).toContain("#1 general")
+    expect(archivedFrame).toContain("phase gate verification")
+    // Still the run browser, not a stuck or half-drawn screen.
+    expect(archivedFrame).toMatch(ROUTE_FOOTER)
+  })
+
+  it("reads an archived unit's answer back from the journal", () => {
+    // `/state` elides unit answers, so this text exists in exactly one place this process can reach: the record
+    // on disk. Its presence under the `Answer` panel is the on-demand read, end to end.
+    expect(archivedAnswerFrame).toContain("Answer")
+    const panel = archivedAnswerFrame.slice(archivedAnswerFrame.indexOf("╭─ Answer"))
+    expect(panel).toContain("phase-gate-unit-ok")
+    // The unit header, so the frame is the unit LEVEL rather than a run level that happens to say `Answer`.
+    expect(archivedAnswerFrame).toContain("#1 phase gate verification")
   })
 
   it("promotes a journaled inline run to a durable file on `s`, verbatim", () => {

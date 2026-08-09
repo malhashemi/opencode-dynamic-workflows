@@ -31,6 +31,48 @@ import type {
 
 export type RunStatusFilter = "all" | "active" | "done" | "failed"
 
+/**
+ * How much of the machine the list is looking at.
+ *
+ * A second dimension beside the status filter, and a different KIND of question: `filter` asks what state a run
+ * is in, `scope` asks whose run it is. The run client scans every endpoint descriptor on the machine — that is
+ * what makes one browser able to watch two projects at once — and the cost, until now, was a list that answered
+ * a question nobody asked. The user put it plainly: *"why would I want to see a run from another session?"*
+ *
+ * Three values rather than a boolean, because "mine" has two useful meanings and hiding the wider one would
+ * trade one wrong default for another. Cycling order widens: a person who cannot find a run presses the key
+ * again rather than learning a vocabulary.
+ */
+export type RunScope = "session" | "project" | "everywhere"
+
+/**
+ * What the SURFACE knows about the rows that this module cannot work out for itself.
+ *
+ * Both sets are memberships rather than rules: which runs came from the journal, and which ones the current
+ * scope excludes. Deciding either needs facts that live outside the row model — an endpoint descriptor's
+ * worktree, the session the browser was opened from — so the route computes them and this module applies them.
+ * Passing them as one object rather than as two trailing positional arguments is what keeps the next one from
+ * being a fifth `undefined` at every call site.
+ */
+export interface ListContext {
+  /**
+   * Ids in `runs` that came from the journal, so they are rendered from their History row and not twice.
+   *
+   * Opening a history row loads its record and puts the snapshot into `runs` — that is what makes the run level
+   * work — and without this the row would jump out of History and up into the live group the moment it was
+   * opened, then jump back on the way out.
+   */
+  archived?: ReadonlySet<string>
+  /**
+   * Ids the current scope excludes from the LIST — and only from the list.
+   *
+   * They stay addressable on purpose. The sidebar's question badge counts every waiting question on the machine
+   * (a run in another session still needs an answer), so its deep link has to be able to open a run this list
+   * would not show. Hiding a row and forgetting a run are different things.
+   */
+  outOfScope?: ReadonlySet<string>
+}
+
 export type RouteLevel =
   | { kind: "list"; selected: number }
   | { kind: "run"; runId: string; selected: number }
@@ -81,6 +123,8 @@ export type RouteAction =
   | "drill"
   | "back"
   | "filter"
+  /** Widen what the list is looking at: this session → this project → everywhere. */
+  | "scope"
   | "stop"
   | "save"
   /** Tick the highlighted option in or out, on a question that accepts more than one answer. */
@@ -100,6 +144,11 @@ export interface RouteState {
   /** Never empty; `stack[0]` is always the list level. */
   stack: RouteLevel[]
   filter: RunStatusFilter
+  /**
+   * Which runs the list is looking at. The KIND lives here so the reducer can cycle it and the header can name
+   * it; which runs it actually excludes is a {@link ListContext}, because that needs facts this module lacks.
+   */
+  scope: RunScope
 }
 
 /**
@@ -214,6 +263,13 @@ export function unitOutput(output: string | undefined): UnitOutput | null {
 
 const FILTER_ORDER: readonly RunStatusFilter[] = ["all", "active", "done", "failed"]
 
+/** Widening order, so pressing the key again is always the way to see MORE rather than fewer runs. */
+const SCOPE_ORDER: readonly RunScope[] = ["session", "project", "everywhere"]
+
+function cycle<T>(order: readonly T[], current: T): T {
+  return order[(order.indexOf(current) + 1) % order.length] as T
+}
+
 /**
  * Runs the caller read out of the JOURNAL rather than off a live endpoint, by id.
  *
@@ -224,6 +280,9 @@ const FILTER_ORDER: readonly RunStatusFilter[] = ["all", "active", "done", "fail
  * stoppable, because their engine has gone. This set is what those two places consult.
  */
 const NONE: ReadonlySet<string> = new Set<string>()
+
+/** The default {@link ListContext}: nothing read back from the journal, nothing hidden by a scope. */
+const WHOLE_LIST: ListContext = {}
 
 /** A run the caller can address, live or read back from the journal. */
 function findRun(runs: readonly RunSnapshot[], runId: string): RunSnapshot | undefined {
@@ -329,12 +388,19 @@ function matchesFilter(status: RunSnapshot["status"], filter: RunStatusFilter): 
   return status === "failed" || status === "aborted"
 }
 
-export function initialRouteState(focusRunId?: string): RouteState {
+/**
+ * `scope` defaults to the NARROWEST thing the caller can actually name.
+ *
+ * The browser is opened from somewhere: from a session, that session is the answer, and it is the one a user
+ * asked for. Opened from the home screen there is no session to be in, so the honest default is the project —
+ * defaulting to `session` there would show an empty list and blame the user for it.
+ */
+export function initialRouteState(focusRunId?: string, scope: RunScope = "project"): RouteState {
   const stack: RouteLevel[] = [{ kind: "list", selected: 0 }]
   // Entering from the sidebar means the user already chose a run; opening on the list and making them choose
   // it again would discard the only piece of intent the navigation carried.
   if (focusRunId) stack.push({ kind: "run", runId: focusRunId, selected: 0 })
-  return { stack, filter: "all" }
+  return { stack, filter: "all", scope }
 }
 
 /**
@@ -449,11 +515,13 @@ export function listRows(
    * work — and without this the row would jump out of History and up into the live group the moment it was
    * opened, then jump back on the way out.
    */
-  archived: ReadonlySet<string> = NONE,
+  view: ListContext = WHOLE_LIST,
 ): ListRow[] {
   const now = atTime
+  const archived = view.archived ?? NONE
+  const hidden = view.outOfScope ?? NONE
   const live = runs
-    .filter((run) => !archived.has(run.runId) && matchesFilter(run.status, filter))
+    .filter((run) => !archived.has(run.runId) && !hidden.has(run.runId) && matchesFilter(run.status, filter))
     .slice()
     .sort((a, b) => {
       if (a.status === "running" && b.status !== "running") return -1
@@ -464,7 +532,7 @@ export function listRows(
 
   const known = new Set(runs.filter((run) => !archived.has(run.runId)).map((run) => run.runId))
   const past = history
-    .filter((summary) => !known.has(summary.runId))
+    .filter((summary) => !known.has(summary.runId) && !hidden.has(summary.runId))
     .map(fromSummary)
     .filter((source) => matchesFilter(source.status, filter))
     .sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
@@ -753,9 +821,9 @@ function rowCount(
   runs: readonly RunSnapshot[],
   filter: RunStatusFilter,
   history: readonly RunSummary[],
-  archived: ReadonlySet<string>,
+  view: ListContext,
 ): number {
-  if (level.kind === "list") return listRows(runs, history, filter, Date.now(), archived).length
+  if (level.kind === "list") return listRows(runs, history, filter, Date.now(), view).length
   if (level.kind === "run") {
     const run = findRun(runs, level.runId)
     return run ? runRows(run).length : 0
@@ -792,14 +860,14 @@ export function normalizeRoute(
   state: RouteState,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[] = [],
-  archived: ReadonlySet<string> = NONE,
+  view: ListContext = WHOLE_LIST,
 ): RouteState {
   const stack: RouteLevel[] = [{ kind: "list", selected: 0 }]
   for (const level of state.stack) {
     if (level.kind === "list") {
       stack[0] = {
         kind: "list",
-        selected: clamp(level.selected, rowCount(level, runs, state.filter, history, archived)),
+        selected: clamp(level.selected, rowCount(level, runs, state.filter, history, view)),
       }
       continue
     }
@@ -820,7 +888,7 @@ export function normalizeRoute(
       stack.push({
         kind: "run",
         runId: level.runId,
-        selected: clamp(level.selected, rowCount(level, runs, state.filter, history, archived)),
+        selected: clamp(level.selected, rowCount(level, runs, state.filter, history, view)),
       })
       continue
     }
@@ -839,7 +907,7 @@ export function normalizeRoute(
         kind: "question",
         runId: level.runId,
         requestID: level.requestID,
-        selected: clamp(level.selected, rowCount(clamped, runs, state.filter, history, archived)),
+        selected: clamp(level.selected, rowCount(clamped, runs, state.filter, history, view)),
         custom: level.custom,
         index,
         answers: level.answers,
@@ -853,7 +921,7 @@ export function normalizeRoute(
   // Identity-preserving when nothing needed correcting. The view re-normalizes on every run-state change —
   // which, in a live browser, is several times a second — and a fresh object each time would invalidate every
   // memo downstream for no reason.
-  return sameStack(state.stack, stack) ? state : { stack, filter: state.filter }
+  return sameStack(state.stack, stack) ? state : { stack, filter: state.filter, scope: state.scope }
 }
 
 /**
@@ -871,7 +939,7 @@ export function selectIndex(state: RouteState, index: number): RouteState {
   if (level.selected === index) return state
   const stack = state.stack.slice()
   stack[stack.length - 1] = { ...level, selected: Math.max(0, index) }
-  return { stack, filter: state.filter }
+  return { stack, filter: state.filter, scope: state.scope }
 }
 
 function sameLabels(a: readonly string[], b: readonly string[]): boolean {
@@ -914,7 +982,7 @@ function move(
   delta: number,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[],
-  archived: ReadonlySet<string>,
+  view: ListContext,
 ): RouteState {
   const stack = [...state.stack]
   const top = stack[stack.length - 1]
@@ -923,7 +991,7 @@ function move(
     stack[stack.length - 1] = { ...top, scroll: Math.max(0, top.scroll + delta) }
     return { ...state, stack }
   }
-  const count = rowCount(top, runs, state.filter, history, archived)
+  const count = rowCount(top, runs, state.filter, history, view)
   stack[stack.length - 1] = { ...top, selected: clamp(top.selected + delta, count) }
   return { ...state, stack }
 }
@@ -932,12 +1000,12 @@ function drill(
   state: RouteState,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[],
-  archived: ReadonlySet<string>,
+  view: ListContext,
 ): RouteState {
   const top = state.stack[state.stack.length - 1]
   if (!top) return state
   if (top.kind === "list") {
-    const row = listRows(runs, history, state.filter, Date.now(), archived)[top.selected]
+    const row = listRows(runs, history, state.filter, Date.now(), view)[top.selected]
     if (!row) return state
     // A HISTORY row opens too. It used to be a deliberate no-op with a notice, because a `RunSummary` carries
     // no phases and no units and a level rendered from figures the model does not have would break the honesty
@@ -1150,11 +1218,11 @@ export function popLevel(
   state: RouteState,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[] = [],
-  archived: ReadonlySet<string> = NONE,
+  view: ListContext = WHOLE_LIST,
 ): RouteState {
   // Closing the route from the list level is the caller's decision, not the reducer's.
-  if (state.stack.length <= 1) return normalizeRoute(state, runs, history, archived)
-  return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history, archived)
+  if (state.stack.length <= 1) return normalizeRoute(state, runs, history, view)
+  return normalizeRoute({ ...state, stack: state.stack.slice(0, -1) }, runs, history, view)
 }
 
 export function reduceRoute(
@@ -1162,26 +1230,29 @@ export function reduceRoute(
   action: RouteAction,
   runs: readonly RunSnapshot[],
   history: readonly RunSummary[] = [],
-  archived: ReadonlySet<string> = NONE,
+  view: ListContext = WHOLE_LIST,
 ): RouteState {
-  const settle = (next: RouteState) => normalizeRoute(next, runs, history, archived)
-  if (action === "up") return settle(move(state, -1, runs, history, archived))
-  if (action === "down") return settle(move(state, 1, runs, history, archived))
+  const settle = (next: RouteState) => normalizeRoute(next, runs, history, view)
+  if (action === "up") return settle(move(state, -1, runs, history, view))
+  if (action === "down") return settle(move(state, 1, runs, history, view))
   if (action === "toggle") return settle(toggleChoice(state, runs))
   if (action === "next") return settle(cycleQuestion(state, runs))
-  if (action === "drill") return settle(drill(state, runs, history, archived))
+  if (action === "drill") return settle(drill(state, runs, history, view))
   if (action === "back") {
     // Inside a multi-question form, `back` moves within the form before it leaves it.
     const stepped = previousQuestion(state, runs)
     if (stepped) return settle(stepped)
-    return popLevel(state, runs, history, archived)
+    return popLevel(state, runs, history, view)
   }
-  if (action === "filter") {
-    const next = FILTER_ORDER[(FILTER_ORDER.indexOf(state.filter) + 1) % FILTER_ORDER.length] as RunStatusFilter
-    // Filtering re-bases the list: keeping an index that pointed into the old set would land the cursor on an
-    // arbitrary run. Deeper levels survive, because a filter is about the LIST, not about what you drilled into.
+  if (action === "filter" || action === "scope") {
+    // Both re-base the LIST, so both reset its cursor: an index that pointed into the old set would land on an
+    // arbitrary run. Deeper levels survive either — you drilled into a run, not into a filter.
     const stack = state.stack.map((level) => (level.kind === "list" ? { kind: "list" as const, selected: 0 } : level))
-    return normalizeRoute({ stack, filter: next }, runs, history, archived)
+    const next: RouteState =
+      action === "filter"
+        ? { stack, filter: cycle(FILTER_ORDER, state.filter), scope: state.scope }
+        : { stack, filter: state.filter, scope: cycle(SCOPE_ORDER, state.scope) }
+    return normalizeRoute(next, runs, history, view)
   }
   // `stop` and `save`, and Phase 6's `restart`/`resume`, act on the world rather than on navigation — they go
   // through `selectedControl` instead.
@@ -1191,7 +1262,7 @@ export function reduceRoute(
 export function breadcrumb(
   state: RouteState,
   runs: readonly RunSnapshot[],
-  archived: ReadonlySet<string> = NONE,
+  view: ListContext = WHOLE_LIST,
   /** History, so a run whose record has not arrived yet is still named rather than shown as a bare id. */
   history: readonly RunSummary[] = [],
 ): string {
@@ -1207,7 +1278,7 @@ export function breadcrumb(
       // level can be stopped or restarted — and a level that looked identical to a live one while quietly
       // refusing its keys would read as broken. A run nothing has heard of gets its bare id and no claim: not
       // knowing where a run came from is not evidence that it is old.
-      parts.push(archived.has(level.runId) || (!run && summary) ? `${name} (archived)` : name)
+      parts.push((view.archived ?? NONE).has(level.runId) || (!run && summary) ? `${name} (archived)` : name)
       continue
     }
     if (level.kind === "question") {
@@ -1244,14 +1315,14 @@ export function selectedControl(
   runs: readonly RunSnapshot[],
   action: RouteAction,
   history: readonly RunSummary[] = [],
-  archived: ReadonlySet<string> = NONE,
+  view: ListContext = WHOLE_LIST,
 ): ControlAction | null {
   if (action !== "stop" && action !== "save") return null
   const top = state.stack[state.stack.length - 1]
   if (!top) return null
   const selectedRunId =
     top.kind === "list"
-      ? listRows(runs, history, state.filter, Date.now(), archived)[top.selected]?.runId
+      ? listRows(runs, history, state.filter, Date.now(), view)[top.selected]?.runId
       : top.runId
   if (!selectedRunId) return null
   // Deliberately reachable for a history row: saving a run whose engine is long gone is the case the journal
@@ -1260,7 +1331,7 @@ export function selectedControl(
   // A journaled run has no engine to talk to, so there is nothing here that `stop` could mean. Returning the
   // action anyway would send it, get `unknown-run` back, and report a failure the model could have predicted —
   // and on a level the user opened precisely BECAUSE the run is over.
-  if (archived.has(selectedRunId) || (top.kind !== "list" && !findRun(runs, selectedRunId))) return null
+  if ((view.archived ?? NONE).has(selectedRunId) || (top.kind !== "list" && !findRun(runs, selectedRunId))) return null
   if (top.kind === "list") return { action: "stop.run", runId: selectedRunId }
   if (top.kind === "unit") return { action: "stop.unit", runId: top.runId, unitId: top.unitId }
   if (top.kind === "question") {

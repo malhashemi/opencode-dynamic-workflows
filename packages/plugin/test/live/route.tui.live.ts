@@ -44,11 +44,12 @@ const RUN_TIMEOUT_MS = 300_000
  * Written to be MUTUALLY EXCLUSIVE, which matters more than it looks: a loose `/Workflows › long-run/` also
  * matches the unit level's longer breadcrumb, so a `waitFor` after pressing Escape would pass without the
  * Escape having done anything — and the probe would then fail three keystrokes later, blaming the wrong key.
- * The breadcrumb and the filter indicator share one flex row, so anchoring on `filter` pins the level exactly.
+ * The breadcrumb and the two filter indicators share one flex row, so anchoring on `scope` — the first thing
+ * after the breadcrumb — pins the level exactly.
  */
-const LIST_LEVEL = /Workflows\s+filter/
-const RUN_LEVEL = /Workflows › long-run\s+filter/
-const UNIT_LEVEL = /Workflows › long-run › #1 slow unit\s+filter/
+const LIST_LEVEL = /Workflows\s+scope/
+const RUN_LEVEL = /Workflows › long-run\s+scope/
+const UNIT_LEVEL = /Workflows › long-run › #1 slow unit\s+scope/
 /** The route's footer — the least ambiguous "the browser is on screen" marker there is. */
 const ROUTE_FOOTER = /↑↓ select\s+⏎ open/
 /** The sidebar's settled row for a stopped run: the spinner has become the aborted glyph. */
@@ -56,6 +57,7 @@ const SIDEBAR_ABORTED = /⊘ long-run/
 
 interface Frames {
   list: string
+  scoped: string
   run: string
   unit: string
   filteredDone: string
@@ -220,6 +222,18 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
     await press(tui, "f")
     await tui.waitFor(/filter all/, { timeoutMs: 10_000, intervalMs: 200 })
 
+    // The scope leg. The browser was opened from a session, so it opens on that session's runs — and the run
+    // under test was started from that same session, which is why it is on screen at all.
+    const scoped = stripAnsi(await tui.waitFor(/scope this session/, { timeoutMs: 10_000, intervalMs: 200 }))
+    await saveFrame("45-route-scope", scoped)
+    await press(tui, "w")
+    await tui.waitFor(/scope this project/, { timeoutMs: 10_000, intervalMs: 200 })
+    await press(tui, "w")
+    await tui.waitFor(/scope everywhere/, { timeoutMs: 10_000, intervalMs: 200 })
+    // Wraps back to the narrowest rather than dead-ending at the widest.
+    await press(tui, "w")
+    await tui.waitFor(/scope this session/, { timeoutMs: 10_000, intervalMs: 200 })
+
     await tui.resize(80, 40)
     const narrow = stripAnsi(await tui.waitFor(ROUTE_FOOTER, { timeoutMs: 20_000, intervalMs: 200 }))
     await saveFrame("50-route-narrow-80", narrow)
@@ -228,9 +242,13 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
 
     // The control leg. `x` on the list level targets the selected run.
     await press(tui, "x")
+    // The ENGINE first, then the frame — and that order is the point. Both halves of a stop can fail, and they
+    // fail for unrelated reasons: this leg once reported "the run never stopped" for a run the engine had
+    // aborted within a second, because the browser had cached its first snapshot and stopped listening. Asserting
+    // the engine first means a failure names which half broke.
+    stoppedRun = await waitForRun(descriptor, (run) => run.status !== "running", 60_000)
     const stopped = stripAnsi(await tui.waitFor(/⊘ long-run/, { timeoutMs: 60_000, intervalMs: 200 }))
     await saveFrame("60-route-stopped", stopped)
-    stoppedRun = await waitForRun(descriptor, (run) => run.status !== "running", 60_000)
 
     // Leave the route the way a user would, and confirm the terminal is a terminal again.
     await press(tui, "q")
@@ -249,7 +267,7 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
     await saveFrame("80-prompt-after-route", promptBack)
     await tui.send("C-u")
 
-    frames = { list, run, unit, filteredDone, narrow, stopped, sidebar, promptBack }
+    frames = { list, scoped, run, unit, filteredDone, narrow, stopped, sidebar, promptBack }
 
     // The TUI runs no HTTP listener, so the SDK check below needs a host of its own — started only after the
     // TUI is gone, so one project never has two endpoint descriptors in flight. Sessions live in the shared
@@ -313,9 +331,20 @@ describeTui("live: workflow run browser driven by keystrokes", () => {
     expect(session.data?.parentID).toBe(liveRun.parentSessionID)
   }, 120_000)
 
+  it("opens on the session it was opened from, and widens on `w`", () => {
+    // A user asked for this in as many words: *"why would I want to see a run from another session?"* The run
+    // browser scans every endpoint on the machine, so the default had been "every run anywhere".
+    expect(frames.scoped).toContain("scope this session")
+    expect(frames.scoped).toContain(WORKFLOW_KEY)
+    // The key is in the footer beside the status filter, because they are the same gesture on two columns.
+    expect(frames.scoped).toMatch(/f filter\s+w scope/)
+  })
+
   it("filters the list, dropping a running run under `done`", () => {
     expect(frames.filteredDone).toContain("filter done")
     expect(frames.filteredDone).not.toContain(WORKFLOW_KEY)
+    // The empty state that means "you have not run anything under this filter" — not the one that means the
+    // SCOPE is hiding rows, which is a different sentence pointing at a different key.
     expect(frames.filteredDone).toContain("No workflow runs to show")
   })
 

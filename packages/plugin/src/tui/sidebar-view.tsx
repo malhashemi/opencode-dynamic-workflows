@@ -21,7 +21,9 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
     clearInterval(elapsedTimer)
     clearInterval(spinnerTimer)
   })
-  const view = createMemo(() => sidebarViewModel(props.runs(), now()))
+  // Scoped to the session the host gave this slot. `now()` is also what keeps it current — a signal created by
+  // the run client does not invalidate a memo on a real host; see the note on `liveRuns` in `route.tsx`.
+  const view = createMemo(() => sidebarViewModel(props.runs(), now(), props.sessionID))
   const theme = () => props.theme.current
 
   /** The spinner while a run is live, its outcome glyph once it settles. */
@@ -39,8 +41,11 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
   // A settled run recedes to muted: it stays for reference, but the live run is what the strip is FOR.
   const nameColor = (row: SidebarRunRow) => (row.status === "running" ? theme().accent : theme().textMuted)
 
+  // The block appears for a question even when this session has no runs of its own: the strip is scoped, the
+  // BADGE is not, and a badge that only showed up in the session that raised it would be a notification you had
+  // to already be in the right place to receive.
   return (
-    <Show when={view().rows.length > 0}>
+    <Show when={view().rows.length > 0 || view().pendingQuestions > 0}>
       <box>
         <text fg={theme().text}>
           <b>Workflows</b>

@@ -21,7 +21,7 @@ function run(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     runId: "run-1",
     workflow: "deep-research",
     provenance: "durable",
-    parentSessionID: "parent",
+    parentSessionID: "test-session",
     status: "running",
     phases: ["plan", "gather sources", "synthesize"],
     phasesDeclared: true,

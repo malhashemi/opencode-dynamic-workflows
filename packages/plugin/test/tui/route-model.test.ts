@@ -439,7 +439,9 @@ describe("reduceRoute", () => {
   const runs = [run({ runId: "a", startedAt: 5_000 }), run({ runId: "b", startedAt: 1_000 })]
 
   it("opens on the list, or on a run when the sidebar named one", () => {
-    expect(initialRouteState()).toEqual({ stack: [{ kind: "list", selected: 0 }], filter: "all" })
+    expect(initialRouteState()).toEqual({ stack: [{ kind: "list", selected: 0 }], filter: "all", scope: "project" })
+    // Opened from a session, the narrowest thing the caller can name is the answer the user asked for.
+    expect(initialRouteState(undefined, "session").scope).toBe("session")
     expect(initialRouteState("b").stack).toEqual([
       { kind: "list", selected: 0 },
       { kind: "run", runId: "b", selected: 0 },
@@ -537,6 +539,7 @@ describe("breadcrumb", () => {
         { kind: "run", runId: "gone", selected: 0 },
       ],
       filter: "all",
+      scope: "everywhere",
     }
     expect(breadcrumb(stale, runs)).toBe("Workflows ▸ gone")
   })
@@ -693,6 +696,7 @@ describe("history rows and navigation", () => {
         { kind: "run", runId: "never-existed", selected: 0 },
       ],
       filter: "all",
+      scope: "everywhere",
     }
     // The counterpart to the rule above: "history knows this run" is what makes an absent snapshot a wait
     // rather than a stale stack.
@@ -704,7 +708,7 @@ describe("history rows and navigation", () => {
     // archived so the list keeps showing it under History rather than promoting it to the live group.
     const record = run({ runId: "past-a", status: "done", startedAt: 3_000, endedAt: 4_000 })
     const archived = new Set(["past-a"])
-    const rows = listRows([record], history, "all", 5_000, archived)
+    const rows = listRows([record], history, "all", 5_000, { archived })
     expect(rows.map((row) => row.runId)).toEqual(["past-a", "past-b"])
     expect(rows.every((row) => row.live === false)).toBe(true)
 
@@ -714,15 +718,70 @@ describe("history rows and navigation", () => {
         { kind: "run", runId: "past-a", selected: 0 },
       ],
       filter: "all",
+      scope: "everywhere",
     }
-    expect(breadcrumb(opened, [record], archived, history)).toBe("Workflows ▸ deep-research (archived)")
+    expect(breadcrumb(opened, [record], { archived }, history)).toBe("Workflows ▸ deep-research (archived)")
     // Read-only: its engine exited, possibly sessions ago, so `x` has nothing to address. `s` still does — the
     // journal is exactly what it promotes.
-    expect(selectedControl(opened, [record], "stop", history, archived)).toBeNull()
-    expect(selectedControl(opened, [record], "save", history, archived)).toEqual({
+    expect(selectedControl(opened, [record], "stop", history, { archived })).toBeNull()
+    expect(selectedControl(opened, [record], "save", history, { archived })).toEqual({
       action: "save.run",
       runId: "past-a",
     })
+  })
+
+  it("hides an out-of-scope run from the list without forgetting it", () => {
+    // The scope is a set the SURFACE computes — this module only applies it. What matters here is the seam:
+    // hidden from the rows, still addressable, and the cursor counted against what is actually on screen.
+    const mine = run({ runId: "mine", startedAt: 5_000 })
+    const theirs = run({ runId: "theirs", startedAt: 4_000 })
+    const outOfScope = new Set(["theirs"])
+
+    expect(listRows([mine, theirs], [], "all", 6_000).map((row) => row.runId)).toEqual(["mine", "theirs"])
+    expect(listRows([mine, theirs], [], "all", 6_000, { outOfScope }).map((row) => row.runId)).toEqual(["mine"])
+    // History obeys the same set, so a surface that scopes by project hides an old run from another checkout.
+    expect(listRows([], history, "all", 6_000, { outOfScope: new Set(["past-a"]) }).map((row) => row.runId)).toEqual([
+      "past-b",
+    ])
+
+    // `↓` cannot walk onto a row that is not there…
+    const moved = reduceRoute(initialRouteState(), "down", [mine, theirs], [], { outOfScope })
+    expect(moved.stack[0]).toEqual({ kind: "list", selected: 0 })
+    // …and `x` targets the row the user can see, not the one behind it.
+    expect(selectedControl(moved, [mine, theirs], "stop", [], { outOfScope })).toEqual({
+      action: "stop.run",
+      runId: "mine",
+    })
+    // But the run is not forgotten: the badge's deep link opens a question in a run this list would not show.
+    const deepLinked = normalizeRoute(
+      { stack: [{ kind: "list", selected: 0 }, { kind: "run", runId: "theirs", selected: 0 }], filter: "all", scope: "session" },
+      [mine, theirs],
+      [],
+      { outOfScope },
+    )
+    expect(deepLinked.stack).toHaveLength(2)
+  })
+
+  it("cycles the scope wider, and re-bases the list when it does", () => {
+    const runs = [run({ runId: "a" })]
+    let state = initialRouteState(undefined, "session")
+    expect(state.scope).toBe("session")
+    state = reduceRoute(state, "scope", runs)
+    expect(state.scope).toBe("project")
+    state = reduceRoute(state, "scope", runs)
+    expect(state.scope).toBe("everywhere")
+    // Widening wraps back to the narrowest rather than dead-ending.
+    state = reduceRoute(state, "scope", runs)
+    expect(state.scope).toBe("session")
+    // The status filter is untouched by it — two dimensions, not one four-position knob.
+    expect(state.filter).toBe("all")
+
+    // A scope change re-bases the LIST, exactly as a filter change does: an index into the old set would land
+    // the cursor on an arbitrary run. A level below it survives, because a scope is about the list.
+    const drilled = drive(initialRouteState(undefined, "everywhere"), ["drill"], runs)
+    const widened = reduceRoute(drilled, "scope", runs)
+    expect(widened.stack).toHaveLength(2)
+    expect(widened.stack[0]).toEqual({ kind: "list", selected: 0 })
   })
 
   it("clamps the cursor back when history is not passed to a level that counted it", () => {
@@ -1018,6 +1077,7 @@ describe("route model: a question that accepts more than one answer", () => {
     })
     const onSecond: RouteState = {
       filter: "all",
+      scope: "everywhere",
       stack: [
         { kind: "list", selected: 0 },
         { kind: "run", runId: "run-1", selected: 0 },

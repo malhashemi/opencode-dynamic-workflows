@@ -131,6 +131,9 @@ in seconds, so a probe racing to press a key would be asserting against a run th
 - **Session ids are real.** A second block runs `phase-gate`, reads the child session ID off the unit level,
   then starts a throwaway `opencode serve` in the same project and resolves it through the SDK, parent and all.
 - **Filter.** `f` cycles `all → active → done → failed`; under `done` a running run leaves the list.
+- **Scope.** The browser opens on `scope this session` — it was opened from a session, and the run under test
+  belongs to it — and `w` widens through `this project` and `everywhere` before wrapping. Two indicators in one
+  header, and both survive the 80-column contract.
 - **Width.** `resize(80, 40)` and every row still fits its line.
 - **Stop, in three projections.** `x` on a live run, then the same stop asserted in the route's frame
   (`⊘ long-run` · `aborted · 1/1 units`), in the sidebar strip after leaving the route, and in the engine's
@@ -156,7 +159,7 @@ it. So this probe runs workflows on a real host, **kills it**, and asks a differ
 |---|---|
 | A · `opencode serve` | Runs `phase-gate` (durable) and a one-line inline workflow, journaling both under `<project>/.opencode/workflows/runs/<runId>/` |
 | B · `opencode serve` | A **cold** engine: `/state` is empty, `/history` serves both runs with every column a row needs, and `workflow({ status })` / `workflow({ result })` answer "from the journal" — including the fixture's own `phase-gate-unit-ok` |
-| C · `opencode .` (tmux) | The run browser's `History` section, and `s` promoting the journaled inline run to `.opencode/workflows/inline-keeper.ts` — verbatim. `s` on the durable run answers `already a durable workflow` |
+| C · `opencode .` (tmux) | The run browser's `History` section; **opening** a history row into the run the journal kept, and its unit's answer read back on demand; and `s` promoting the journaled inline run to `.opencode/workflows/inline-keeper.ts` — verbatim. `s` on the durable run answers `already a durable workflow` |
 | D · `opencode serve` | Runs the promoted workflow **by its registry key**, so the save was real rather than cosmetic |
 
 - **The record is four files.** `run.json`, `units.jsonl`, `script.ts`, `result.json`, checked as a directory
@@ -166,6 +169,10 @@ it. So this probe runs workflows on a real host, **kills it**, and asks a differ
 - **`s` moved from dimmed to live in place.** The footer still reads `… x stop · (r restart) · s save · q
   close`, in that order — asserted, because the point of shipping an inert key is that wiring it changes
   nothing else.
+- **A listed row and an openable row are different claims.** This probe asserted the first for two phases while
+  the second was unwired in `route.tsx`, and a user found it by restarting OpenCode and pressing `⏎`. Leg C now
+  presses the key: the run level names the run `(archived)`, renders its phases and units from the record, and
+  the unit level shows an answer that exists nowhere but on disk.
 
 Costs five parent prompts and one child session. Only `phase-gate` dispatches a unit.
 

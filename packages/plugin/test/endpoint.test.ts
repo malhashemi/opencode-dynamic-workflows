@@ -205,6 +205,7 @@ describe("workflow endpoint: GET /history", () => {
       runId,
       workflow: "greet",
       provenance: "inline",
+      parentSessionID: "parent",
       status,
       units: 1,
       settledUnits: 1,

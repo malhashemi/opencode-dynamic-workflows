@@ -31,6 +31,12 @@ const tui: TuiPlugin = async (api, options) => {
           runs={client.runs}
           history={client.history}
           control={control}
+          // The other half of `/state` no longer carrying unit answers, and what makes a History row openable:
+          // both screens read the one record they are displaying, through the same endpoint that owns the run.
+          record={(runId) => client.record(runId)}
+          // Whose project a run belongs to. The client scans every endpoint on the machine, so this is the only
+          // party that can answer it — and the scope filter is exactly that question asked of every row.
+          endpointFor={(runId) => client.endpointFor(runId)}
           params={params}
         />
       ),

@@ -306,6 +306,8 @@ describe("journal list", () => {
       runId: "run-3",
       workflow: "greet",
       provenance: "inline",
+      // The column a surface scopes by: a journaled run knows which session started it.
+      parentSessionID: "parent",
       status: "done",
       units: 1,
       settledUnits: 1,

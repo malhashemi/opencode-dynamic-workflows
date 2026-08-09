@@ -14,8 +14,9 @@ import type { ScrollBoxRenderable } from "@opentui/core"
 import { SyntaxStyle } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Accessor } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type Accessor } from "solid-js"
 import type { ControlAction, ControlResult } from "../control"
+import type { EndpointDescriptor } from "../discovery"
 import type { RunSummary } from "../journal"
 import { formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
 import type { PendingInteraction, ResolvedInteraction, RunSnapshot } from "../runs"
@@ -51,7 +52,9 @@ import {
   selectIndex,
   unitDetail,
   unitOutput,
+  type ListContext,
   type ListRow,
+  type RunScope,
   type QuestionTab,
   type RouteLevel,
   type RouteState,
@@ -83,6 +86,9 @@ const RECENT_LOGS = 5
 /** Cells in a phase or unit meter. Four reads as progress; more reads as a chart nobody asked for. */
 const METER_WIDTH = 4
 
+/** Shared empty set, so "nothing is archived" allocates nothing on every read. */
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>()
+
 /**
  * What survives at a given terminal width.
  *
@@ -108,6 +114,36 @@ function statusGlyph(status: RunSnapshot["status"]): string {
   return status === "running" ? "" : LIST_GLYPHS[status]
 }
 
+/**
+ * Whether two paths name the same checkout, tolerantly.
+ *
+ * Equality is not enough and the reason is a real trap rather than a hypothetical: on macOS a temporary
+ * directory is `/var/folders/…` to one process and `/private/var/folders/…` to another, because `/var` is a
+ * symlink — so a descriptor and the host that wrote it can disagree about the path of the project they are both
+ * sitting in. A suffix match covers that without a platform check or a filesystem call.
+ *
+ * It errs toward SHOWING a row: a false match leaves a run visible that the scope might have hidden, where a
+ * false mismatch hides the user's own work and leaves them with an empty list they cannot explain.
+ */
+function samePath(a: string, b: string): boolean {
+  const left = a.replace(/\/+$/, "")
+  const right = b.replace(/\/+$/, "")
+  return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`)
+}
+
+/**
+ * The scope, in the words a person would use for it.
+ *
+ * `session` is the value; `this session` is what it means, and the difference matters in a header that also
+ * says `filter all`. One is a set of runs, the other is a place — and "scope session" reads as a category where
+ * "scope this session" reads as an answer to "whose runs am I looking at?".
+ */
+function scopeLabel(scope: RunScope): string {
+  if (scope === "session") return "this session"
+  if (scope === "project") return "this project"
+  return "everywhere"
+}
+
 export interface WorkflowRouteProps {
   api: TuiPluginApi
   runs: Accessor<readonly RunSnapshot[]>
@@ -129,6 +165,14 @@ export interface WorkflowRouteProps {
    * with no endpoint to ask.
    */
   record?: (runId: string) => Promise<RecordResult>
+  /**
+   * Which endpoint owns a run — the only way to tell whose PROJECT it is.
+   *
+   * A run carries the session that started it, but nothing on a snapshot says which checkout it belongs to:
+   * that lives on the descriptor the client read it from. Optional, and a mounted test that omits it simply
+   * scopes by session alone, which is the honest behaviour when the owner cannot be named.
+   */
+  endpointFor?: (runId: string) => EndpointDescriptor | undefined
   /** `{ runId }` when entered from the sidebar; `{ returnTo }` carries the session to go back to. */
   params?: Record<string, unknown>
 }
@@ -221,7 +265,10 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     (() => {
       const runId = stringParam(props.params, "runId")
       const requestID = stringParam(props.params, "requestID")
-      const base = initialRouteState(runId)
+      // `returnTo` is the session the browser was opened from — captured by `openWorkflowRoute` at the moment
+      // of the navigation, because that is the only point at which the host's current route is still the one
+      // being left. It is where the browser goes back to, and it is also whose runs these are.
+      const base = initialRouteState(runId, stringParam(props.params, "returnTo") ? "session" : "project")
       // A deep link from the sidebar badge or the attention toast lands ON the pane, not near it: the whole
       // point of the badge is that the user already knows what they want to do.
       return runId && requestID ? openQuestion(base, runId, requestID) : base
@@ -240,7 +287,34 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
 
   const theme = () => props.api.theme.current
   const spinner = () => SPINNER_FRAMES[frame()] as string
-  const history = (): readonly RunSummary[] => props.history?.() ?? []
+
+  /**
+   * Live runs, re-read on the tick — and the tick is load-bearing, not a nicety.
+   *
+   * **A signal created by the run CLIENT does not invalidate this route's computations on a real host.** Reading
+   * `props.runs()` returns the current value, but nothing downstream is ever notified that it changed: a memo
+   * over it computes once and then serves that first value for as long as the browser stays open. Measured on a
+   * live host, not deduced — with counters on the frame: nine events consumed by the client, nine publishes, the
+   * accessor returning `aborted`, and the memo behind it recomputed exactly once.
+   *
+   * So the CLOCK is what keeps this screen honest. Every consumer of run state goes through here, which makes
+   * each of them a dependent of `now()` and therefore correct within one second — the same clock the elapsed
+   * column already runs on.
+   *
+   * This also explains a symptom recorded in Phase 4 and left unexplained: "the run level still shows the
+   * question as pending for several seconds, and `running` for a run `/state` already reports as settled". It
+   * was never the stream. And it is why a memo in front of this function is a trap rather than an optimisation:
+   * it turned a one-second lag into a permanent freeze, where a stopped run rendered as running forever.
+   */
+  const liveRuns = (): readonly RunSnapshot[] => {
+    now()
+    return props.runs()
+  }
+  /** Journaled runs, on the same clock and for the same reason. */
+  const history = (): readonly RunSummary[] => {
+    now()
+    return props.history?.() ?? []
+  }
 
   /**
    * The one journaled run currently being read back, if any.
@@ -261,25 +335,73 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   const answerKey = (runId: string, unitId: string) => `${runId} ${unitId}`
 
   /** Runs the journal supplied, offered to the row model exactly as live ones — see `route-model.ts`'s `NONE`. */
-  const archivedIds = createMemo<ReadonlySet<string>>(() => {
+  const archivedIds = (): ReadonlySet<string> => {
     const slot = archive()
-    return slot?.status === "ready" ? new Set([slot.runId]) : new Set<string>()
-  })
+    return slot?.status === "ready" ? new Set([slot.runId]) : EMPTY_IDS
+  }
   /**
    * Live runs plus whichever journaled run is open.
    *
    * Every lookup, row model and pane in `route-model.ts` reads a `RunSnapshot`, and a journaled run is one — so
    * merging here is what lets a dead run reuse the whole run level rather than growing a second one beside it.
    * `archivedIds` is what keeps the LIST from showing it twice.
+   *
+   * A plain function rather than a memo, deliberately: see {@link liveRuns}. Caching run state behind a memo is
+   * how this screen stops telling the truth.
    */
-  const allRuns = createMemo<readonly RunSnapshot[]>(() => {
+  const allRuns = (): readonly RunSnapshot[] => {
     const slot = archive()
-    return slot?.status === "ready" ? [...props.runs(), slot.value] : props.runs()
-  })
+    return slot?.status === "ready" ? [...liveRuns(), slot.value] : liveRuns()
+  }
 
   const updateAnswer = (key: string, next: Fetched<UnitOutput | null>) => {
     setAnswers((current) => new Map(current).set(key, next))
   }
+
+  /** The session this browser belongs to, or `null` when it was opened from somewhere that has none. */
+  const ownSession = (): string | null => stringParam(props.params, "returnTo") ?? null
+  /** This project, as the descriptors name it. */
+  const ownProject = (): string | null => props.api.state.path.worktree || props.api.state.path.directory || null
+
+  /**
+   * Which runs the scope hides — computed here, because only the surface knows whose runs these are.
+   *
+   * The run client scans every endpoint descriptor on the machine, which is what lets one browser watch two
+   * projects at once and is also why the list needed narrowing: *"why would I want to see a run from another
+   * session?"* A run's project is its owning endpoint's worktree; its session is on the snapshot.
+   *
+   * **History is scoped to the PROJECT, never to the session, and that is deliberate.** Its heading says
+   * `earlier sessions` — a journaled run is from another session by definition, so scoping it away would empty
+   * the section for everyone who has ever restarted OpenCode, which is the exact thing a journal exists to
+   * survive. `everywhere` still widens it past this project.
+   *
+   * A run nothing claims is shown rather than hidden: not being able to attribute a run is not evidence that it
+   * belongs to somebody else.
+   */
+  const outOfScope = (): ReadonlySet<string> => {
+    const scope = state().scope
+    if (scope === "everywhere") return EMPTY_IDS
+    const project = ownProject()
+    const session = ownSession()
+    const elsewhere = (runId: string): boolean => {
+      if (project === null) return false
+      const owner = props.endpointFor?.(runId)
+      return owner !== undefined && !samePath(owner.worktree, project) && !samePath(owner.directory, project)
+    }
+    const hidden = new Set<string>()
+    for (const run of liveRuns()) {
+      if (elsewhere(run.runId) || (scope === "session" && session !== null && run.parentSessionID !== session)) {
+        hidden.add(run.runId)
+      }
+    }
+    for (const summary of history()) {
+      if (elsewhere(summary.runId)) hidden.add(summary.runId)
+    }
+    return hidden
+  }
+
+  /** The two memberships the row model cannot work out for itself. */
+  const listView = (): ListContext => ({ archived: archivedIds(), outOfScope: outOfScope() })
 
   const close = () => {
     const returnTo = stringParam(props.params, "returnTo")
@@ -296,18 +418,18 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   }
   const currentInteraction = (): PendingInteraction | null => {
     const top = questionLevel()
-    return top ? findInteraction(props.runs(), top.runId, top.requestID) : null
+    return top ? findInteraction(allRuns(), top.runId, top.requestID) : null
   }
   /** The same request once it is settled — the level stays open on the record rather than evaporating. */
   const currentAnswer = (): ResolvedInteraction | null => {
     const top = questionLevel()
     if (!top || currentInteraction()) return null
-    return findResolved(props.runs(), top.runId, top.requestID)
+    return findResolved(allRuns(), top.runId, top.requestID)
   }
   /** The question on screen when it accepts more than one answer — `null` otherwise, which is the common case. */
-  const multiSelect = () => multiSelectQuestion(state(), props.runs())
+  const multiSelect = () => multiSelectQuestion(state(), allRuns())
   /** The other questions waiting on a person, across every run — empty unless there is more than one. */
-  const tabs = createMemo<QuestionTab[]>(() => questionTabs(state(), props.runs()))
+  const tabs = createMemo<QuestionTab[]>(() => questionTabs(state(), allRuns()))
   /**
    * A tab's visible text: its question header, prefixed by the workflow only when the waiting set spans runs.
    *
@@ -349,7 +471,7 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
    * returning to the run, because the two intentions shared one function.
    */
   const leaveLevel = () => {
-    setState((current) => popLevel(current, props.runs(), history()))
+    setState((current) => popLevel(current, allRuns(), history(), listView()))
   }
 
   /**
@@ -459,13 +581,13 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
        */
       if (action === "toggle") {
         if (question.custom !== null) return
-        setState((current) => reduceRoute(current, action, props.runs(), history()))
+        setState((current) => reduceRoute(current, action, allRuns(), history(), listView()))
         return
       }
       // Handing a question to automation is a deliberate act and costs the deliberate key. `x` is relabelled
       // `leave for automation` on this level through the same `questionBindings` derivation that relabels ⏎.
       if (action === "stop") {
-        const target = selectedControl(state(), props.runs(), action, history())
+        const target = selectedControl(state(), allRuns(), action, history(), listView())
         if (!target) {
           setNotice("this question was already answered")
           return
@@ -484,18 +606,23 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
       return
     }
     if (action === "stop" || action === "save") {
-      const target = selectedControl(state(), props.runs(), action, history())
-      if (!target) return
+      const target = selectedControl(state(), allRuns(), action, history(), listView())
+      if (!target) {
+        // The one refusal worth a sentence. A journaled run's engine exited, possibly sessions ago, so `x` has
+        // nothing to address — and a key that is dimmed in the footer AND silent when pressed reads as broken
+        // rather than as unavailable.
+        if (action === "stop" && onArchivedRun()) setNotice("this run is over — there is nothing left to stop")
+        return
+      }
       send(target)
       return
     }
-    // A history row has a summary and no snapshot, so there is nothing to open. Saying so beats a key that
-    // silently does nothing, which reads as broken rather than as unfinished.
-    if (action === "drill" && level()?.kind === "list" && rows()[selectedIndex()]?.live === false) {
-      setNotice("nothing live to open — this run is from an earlier session")
-      return
-    }
-    setState((current) => resumeQuestion(current, reduceRoute(current, action, props.runs(), history())))
+    // A History row opens like any other row now: drilling it starts an on-demand read of the run's journaled
+    // record, and the run level renders that record. It used to be a deliberate no-op with a notice, because a
+    // `RunSummary` carries no phases and no units — the record is what turns that row into a level.
+    setState((current) =>
+      resumeQuestion(current, reduceRoute(current, action, allRuns(), history(), listView())),
+    )
   }
 
   onMount(() => {
@@ -524,9 +651,10 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
   // A question answered by somebody else — another surface, or the watcher's grace running out — takes the pane
   // off the stack the same way, which is the payoff for making it a level.
   createEffect(() => {
-    const runs = props.runs()
+    const runs = allRuns()
     const past = history()
-    setState((current) => normalizeRoute(current, runs, past))
+    const view = listView()
+    setState((current) => normalizeRoute(current, runs, past, view))
   })
 
   /**
@@ -566,25 +694,43 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     // Only while the question is still the user's to answer. Re-opening a RECORD should show it from the top:
     // there is no half-built reply left to resume, and landing on the last page of a form nobody is filling in
     // any more would be resuming a session rather than reading a record.
-    if (!findInteraction(props.runs(), top.runId, top.requestID)) return next
+    if (!findInteraction(allRuns(), top.runId, top.requestID)) return next
     const stack = next.stack.slice()
     stack[stack.length - 1] = kept
     return { ...next, stack }
   }
 
   const level = createMemo(() => state().stack[state().stack.length - 1])
-  const crumb = createMemo(() => breadcrumb(state(), props.runs()))
+  /**
+   * Whether the level on screen belongs to a run the store no longer holds — one read back from the journal.
+   *
+   * Asked of the LIVE runs rather than of `archivedIds`, so it is true for the whole of the read and not only
+   * once it lands: a run whose engine has gone cannot be stopped while its record is loading either, and a
+   * footer that only dimmed `x` at the end would offer it during exactly the seconds a user is most likely to
+   * press it.
+   */
+  const onArchivedRun = createMemo(() => {
+    const current = level()
+    if (!current || current.kind === "list") return false
+    return !liveRuns().some((run) => run.runId === current.runId)
+  })
+  const crumb = createMemo(() => breadcrumb(state(), allRuns(), listView(), history()))
   const crumbSegments = createMemo(() => crumb().split(" ▸ "))
   const rows = createMemo<ListRow[]>(() => {
-    now() // re-render elapsed on the tick
-    return listRows(props.runs(), history(), state().filter)
+    // The tick re-renders elapsed, and dates the rows: `listRows` decides `today` / `yesterday` against it.
+    return listRows(allRuns(), history(), state().filter, now(), listView())
   })
   /** Index of the first journal-only row, so the `History` divider is drawn exactly once and in one place. */
   const firstHistoryRow = createMemo(() => rows().findIndex((row) => !row.live))
+  /** How many runs the scope is holding back — the difference between "nothing here" and "nothing yet". */
+  const hiddenByScope = createMemo(() => outOfScope().size)
   const activeRun = createMemo<RunSnapshot | undefined>(() => {
     const current = level()
     if (!current || current.kind === "list") return undefined
-    return props.runs().find((run) => run.runId === current.runId)
+    // `allRuns`, not `props.runs`: a run opened out of History has no live snapshot, and the record read back
+    // from the journal IS a `RunSnapshot` — which is what lets a dead run reuse this whole level rather than
+    // grow a second one beside it.
+    return allRuns().find((run) => run.runId === current.runId)
   })
   const detailRows = createMemo<RunLevelRow[]>(() => {
     now()
@@ -596,6 +742,129 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     const run = activeRun()
     if (!run || current?.kind !== "unit") return null
     return unitDetail(run, current.unitId)
+  })
+
+  /**
+   * Read a journaled run back the moment the user opens one, and forget it the moment they leave.
+   *
+   * This is the wire that makes a History row a place you can go. `normalizeRoute` already keeps a run level
+   * alive for a run history knows about but the store does not — precisely so the read has somewhere to land —
+   * and everything below this line renders a `RunSnapshot` without caring which of the two it came from.
+   *
+   * `reading` is a plain variable rather than a signal on purpose. It is not state anything renders; it is the
+   * answer to "is this still the run being read?", and it has to be readable from inside the effect without the
+   * effect depending on it, which would loop the moment the record landed.
+   */
+  let reading: string | null = null
+  createEffect(() => {
+    const current = level()
+    const runId = current && current.kind !== "list" ? current.runId : null
+    const live = runId !== null && liveRuns().some((run) => run.runId === runId)
+    if (runId === null || live) {
+      // Back on the list, or on a run the store holds after all. Dropping the slot is what puts the run back
+      // under `History` where it belongs instead of leaving it pinned among this session's runs.
+      if (reading !== null) {
+        reading = null
+        setArchive(undefined)
+      }
+      return
+    }
+    if (reading === runId) return
+    reading = runId
+    const read = props.record
+    if (!read) {
+      setArchive({ runId, status: "missing", reason: "this browser has no journal reader" })
+      return
+    }
+    setArchive({ runId, status: "loading" })
+    void read(runId).then((result) => {
+      // The user can walk out while a read is in flight, and a record for a run nobody is looking at any more
+      // is not news — it is a stale panel about to appear over whatever they moved to.
+      if (reading !== runId) return
+      setArchive(
+        result.ok
+          ? { runId, status: "ready", value: result.record.run }
+          : { runId, status: "missing", reason: recordFailure(result) },
+      )
+    })
+  })
+
+  /** What to say on a run level whose record has not arrived — or cannot. */
+  const archiveNote = createMemo<{ text: string; failed: boolean } | null>(() => {
+    const current = level()
+    if (current?.kind !== "run") return null
+    const slot = archive()
+    if (!slot || slot.runId !== current.runId) return null
+    if (slot.status === "loading") return { text: "Reading this run from the journal…", failed: false }
+    if (slot.status === "missing") return { text: slot.reason, failed: true }
+    return null
+  })
+
+  /**
+   * The answer this unit gave, wherever it has to be read from.
+   *
+   * `/state` carries no unit outputs — it is a bootstrap payload re-sent whole on every reconnect, and a
+   * session's worth of research prose has no business riding in it — so a settled unit's answer is on disk and
+   * the screen showing one fetches the one it is showing. A unit that settled while this browser was watching
+   * still has its answer from the event that carried it, and is never re-read.
+   */
+  const answerSlot = createMemo<Fetched<UnitOutput | null> | null>(() => {
+    const current = level()
+    const detail = unit()
+    if (current?.kind !== "unit" || !detail) return null
+    if (detail.output) return { status: "ready", value: detail.output }
+    if (!detail.outputElided) return { status: "ready", value: null }
+    return answers().get(answerKey(current.runId, current.unitId)) ?? { status: "loading" }
+  })
+  const answerOutput = createMemo<UnitOutput | null>(() => {
+    const slot = answerSlot()
+    return slot?.status === "ready" ? slot.value : null
+  })
+  /**
+   * The sentence that stands in for an answer, and there are four of them for four different facts.
+   *
+   * "Still working", "returned nothing", "being read" and "could not be read" are not the same thing to a
+   * person, and one blank panel says all four — which is the ambiguity the honesty rule exists to forbid.
+   */
+  const answerNote = createMemo<string | null>(() => {
+    const detail = unit()
+    const slot = answerSlot()
+    if (!detail || !slot || answerOutput() || detail.error !== null) return null
+    if (slot.status === "loading") return "Reading this unit's answer from the journal…"
+    if (slot.status === "missing") return slot.reason
+    return detail.status === "ok" ? "This unit returned nothing." : "Waiting for this unit to answer…"
+  })
+
+  /** Fetch the one elided answer on screen. Keyed per unit, because that is the unit of work. */
+  createEffect(() => {
+    const current = level()
+    const detail = unit()
+    if (current?.kind !== "unit" || detail?.outputElided !== true) return
+    const key = answerKey(current.runId, current.unitId)
+    // Untracked: the map is this effect's own output, and reading it reactively would re-run the effect on
+    // every answer any unit ever fetched.
+    if (untrack(answers).has(key)) return
+    const read = props.record
+    if (!read) {
+      updateAnswer(key, { status: "missing", reason: "this browser has no journal reader" })
+      return
+    }
+    const unitId = current.unitId
+    updateAnswer(key, { status: "loading" })
+    void read(current.runId).then((result) => {
+      if (!result.ok) {
+        updateAnswer(key, { status: "missing", reason: recordFailure(result) })
+        return
+      }
+      const output = unitOutput(result.record.run.units.find((candidate) => candidate.unitId === unitId)?.output)
+      // The snapshot said this unit HAD an answer, so a record without one is a read that failed rather than a
+      // unit that stayed quiet — and saying "returned nothing" here would be reporting the journal's contents
+      // on the strength of a gap in them.
+      updateAnswer(
+        key,
+        output ? { status: "ready", value: output } : { status: "missing", reason: "this answer is not in the journal" },
+      )
+    })
   })
 
   let body: ScrollBoxRenderable | undefined
@@ -657,6 +926,10 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
     // While the field is open the footer shrinks to the two keys that still work, because every other key in
     // the table is now a character being typed. A footer offering `f filter` to someone whose `f` lands in
     // their answer is worse than no footer at all.
+    // On a run read back from the journal the destructive keys are DIMMED rather than dropped, for the same
+    // reason `r` has always been dimmed: a key that vanishes on some screens teaches the user the tool is
+    // inconsistent, where a key that is visibly unavailable teaches them why. `s` stays live — saving a run
+    // whose engine is long gone is precisely the case the journal exists for.
     const question = questionLevel()
     const groups = footerGroups(
       typing()
@@ -667,7 +940,9 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
               previous: question.index > 0,
               queued: tabs().length > 1,
             })
-          : undefined,
+          : onArchivedRun()
+            ? archiveBindings()
+            : undefined,
     )
     if (density() === "full") return groups
     const dropped = density() === "minimal" ? ["restart", "save", "close"] : ["close"]
@@ -775,8 +1050,15 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
             )}
           </For>
         </box>
+        {/* Two dimensions, named in the order they narrow: whose runs these are, then what state they are in.
+            The scope is never hidden at any width — a list that is quietly hiding rows has to say so, which is
+            the same honesty rule that forbids printing a denominator the system does not know. */}
         <box flexDirection="row" flexShrink={0}>
-          <text fg={theme().textMuted}>{"filter "}</text>
+          <text fg={theme().textMuted}>{"scope "}</text>
+          <text fg={theme().info}>
+            <b>{scopeLabel(state().scope)}</b>
+          </text>
+          <text fg={theme().textMuted}>{"  filter "}</text>
           <text fg={theme().info}>
             <b>{state().filter}</b>
           </text>
@@ -830,9 +1112,24 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
         <Show when={level()?.kind === "list"}>
           <box flexDirection="column">
             <Show when={rows().length === 0}>
+              {/* An empty list has two causes and they need different sentences. "You have not run anything"
+                  sends the user to the tool; "everything is hidden by the scope you are in" sends them to a
+                  key. Saying the first when the second is true is how a filter gets blamed on the product. */}
               <box flexDirection="column" paddingTop={1} gap={1}>
-                <text fg={theme().textMuted}>No workflow runs to show.</text>
-                <text fg={theme().borderSubtle}>Start one with the `workflow` tool, then come back.</text>
+                <Show
+                  when={hiddenByScope() > 0}
+                  fallback={
+                    <>
+                      <text fg={theme().textMuted}>No workflow runs to show.</text>
+                      <text fg={theme().borderSubtle}>Start one with the `workflow` tool, then come back.</text>
+                    </>
+                  }
+                >
+                  <text fg={theme().textMuted}>
+                    {`No runs in ${scopeLabel(state().scope)} — ${hiddenByScope()} elsewhere.`}
+                  </text>
+                  <text fg={theme().borderSubtle}>Press `w` to widen the scope.</text>
+                </Show>
               </box>
             </Show>
             <For each={rows()}>
@@ -899,7 +1196,14 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
 
         <Show when={level()?.kind === "run"}>
           <box flexDirection="column">
-            <Show when={detailRows().length === 0}>
+            {/* An old run has to be read off disk before it can be shown, and the read can fail. Both are said
+                out loud: a level that renders an empty run while it waits is a level that looks broken. */}
+            <Show when={archiveNote()}>
+              {(note: Accessor<{ text: string; failed: boolean }>) => (
+                <text fg={note().failed ? theme().warning : theme().textMuted}>{note().text}</text>
+              )}
+            </Show>
+            <Show when={activeRun() && detailRows().length === 0}>
               <text fg={theme().textMuted}>This run has not launched a unit yet.</text>
             </Show>
             <For each={detailRows()}>
@@ -1042,8 +1346,9 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                     </text>
                   </box>
 
-                  {/* What it answered. The question was already on screen; this is the half that was missing. */}
-                  <Show when={detail().output}>
+                  {/* What it answered. The question was already on screen; this is the half that was missing.
+                      Usually read back from the journal — see `answerSlot`. */}
+                  <Show when={answerOutput()}>
                     {(output: Accessor<UnitOutput>) => (
                       <box
                         flexDirection="column"
@@ -1070,11 +1375,9 @@ export default function WorkflowRoute(props: WorkflowRouteProps) {
                     )}
                   </Show>
 
-                  {/* A unit that is still running has no answer yet — say which, rather than showing a gap. */}
-                  <Show when={!detail().output && detail().error === null}>
-                    <text fg={theme().textMuted}>
-                      {detail().status === "ok" ? "This unit returned nothing." : "Waiting for this unit to answer…"}
-                    </text>
+                  {/* No answer on screen — say which of the four reasons it is, rather than showing a gap. */}
+                  <Show when={answerNote()}>
+                    {(note: Accessor<string>) => <text fg={theme().textMuted}>{note()}</text>}
                   </Show>
                   <Show when={detail().error}>
                     {(error: Accessor<string>) => (

@@ -58,6 +58,8 @@ export interface SidebarView {
 export interface WorkflowSidebarProps {
   runs: Accessor<readonly RunSnapshot[]>
   theme: TuiTheme
+  /** The session this strip belongs to; absent shows every run. See {@link sidebarViewModel}. */
+  sessionID?: string
   /**
    * Open the run browser on a run — or on the whole list, from the question badge.
    *
@@ -122,18 +124,39 @@ export function toSidebarRunRow(run: RunSnapshot, now = Date.now()): SidebarRunR
  * sort most-recently-ended first, so the one just finished sits directly under the live group rather than at
  * the bottom of a growing list.
  */
-export function sidebarViewModel(runs: readonly RunSnapshot[], now = Date.now()): SidebarView {
-  const live = runs
+export function sidebarViewModel(
+  runs: readonly RunSnapshot[],
+  now = Date.now(),
+  /**
+   * The session this strip belongs to — the host hands it to the slot, and the strip shows only its own runs.
+   *
+   * The run client scans every endpoint on the machine, so without this the strip carried other projects' and
+   * other sessions' runs into a five-row summary of what YOU are doing. The user asked the question that
+   * settles it: *"why would I want to see a run from another session?"*
+   *
+   * `undefined` shows everything, which is what a test without a host means and what a slot with no session
+   * would mean if one ever existed.
+   */
+  sessionID?: string,
+): SidebarView {
+  const mine = sessionID === undefined ? runs : runs.filter((run) => run.parentSessionID === sessionID)
+  const live = mine
     .filter((run) => run.status === "running")
     .sort((a, b) => a.startedAt - b.startedAt || a.runId.localeCompare(b.runId))
-  const settled = runs
+  const settled = mine
     .filter((run) => run.status !== "running")
     .sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt) || a.runId.localeCompare(b.runId))
   // Only a live run can be waiting on an answer; a settled one's questions are already resolved. And a request
   // whose grace has run out is still pending in the host but is no longer a PERSON's to answer — the watcher
   // has handed it to its ladder — so counting it would light a badge that says "you are blocking this run"
   // about a decision that has already been taken away.
-  const waiting = live
+  //
+  // Counted across EVERY run, not just this session's — the one thing the scoping above deliberately does not
+  // touch. A question is a run asking a person to unblock it, and the person is the same person whichever
+  // session raised it. Hiding it until they happened to be in the right session would make the badge a thing
+  // that sometimes tells you.
+  const waiting = runs
+    .filter((run) => run.status === "running")
     .flatMap((run) => interactionsOf(run).map((interaction) => ({ run, interaction })))
     .filter(({ interaction }) => !handedToAutomation(interaction, now))
     .sort((a, b) => a.interaction.raisedAt - b.interaction.raisedAt)
@@ -163,10 +186,13 @@ export function registerSidebar(api: TuiPluginApi, runs: Accessor<readonly RunSn
   return api.slots.register({
     order: 350,
     slots: {
-      sidebar_content(context: TuiSlotContext) {
+      // The second argument is the slot's own props — the host tells a `sidebar_content` slot which session it
+      // is rendering for, which is exactly the fact the strip needs to show only this session's runs.
+      sidebar_content(context: TuiSlotContext, props: { session_id: string }) {
         return createComponent(WorkflowSidebar, {
           runs,
           theme: context.theme,
+          sessionID: props.session_id,
           onOpen: (runId: string | null) => openWorkflowRoute(api, runId),
           onAnswer: (runId: string, requestID: string) => openWorkflowRoute(api, runId, requestID),
         })

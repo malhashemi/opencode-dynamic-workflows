@@ -213,6 +213,10 @@ function isRunSummary(value: unknown): value is RunSummary {
     typeof summary.runId === "string" &&
     typeof summary.workflow === "string" &&
     (summary.provenance === "durable" || summary.provenance === "inline") &&
+    // Tolerated as absent, like `phase` on an interaction: an engine older than this reader journals no session
+    // on its summaries, and dropping its runs out of History over a field that means "I cannot say" would lose
+    // the user real history to gain a filter. A row that cannot name its session is not THIS session's.
+    (summary.parentSessionID === undefined || typeof summary.parentSessionID === "string") &&
     ["running", "done", "failed", "aborted"].includes(summary.status ?? "") &&
     Number.isInteger(summary.units) &&
     Number.isInteger(summary.settledUnits) &&

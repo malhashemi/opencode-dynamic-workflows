@@ -146,6 +146,29 @@ describe("workflow sidebar view model", () => {
     expect(sidebarViewModel([withInteractions(run({ status: "done" }), 3)], 2_000).pendingQuestions).toBe(0)
   })
 
+  it("shows only this session's runs — but counts every waiting question", () => {
+    /**
+     * The strip is a summary of what YOU are doing, and the run client scans every endpoint on the machine, so
+     * without this it carried other sessions' work into a five-row block. The user settled it: *"why would I
+     * want to see a run from another session?"*
+     *
+     * The badge is the deliberate exception. A question is a run asking a PERSON to unblock it, and the person
+     * is the same person whichever session raised it — a badge you had to already be in the right place to
+     * receive would be a badge that sometimes tells you.
+     */
+    const mine = run({ runId: "mine", parentSessionID: "ses_here" })
+    const theirs = withInteractions(run({ runId: "theirs", parentSessionID: "ses_elsewhere" }), 2)
+
+    const scoped = sidebarViewModel([mine, theirs], 2_000, "ses_here")
+    expect(scoped.rows.map((row) => row.runId)).toEqual(["mine"])
+    expect(scoped.pendingQuestions).toBe(2)
+    // …and the deep link still points into the run the strip is not showing.
+    expect(scoped.oldestPending).toEqual({ runId: "theirs", requestID: "q-0" })
+
+    // No session named: everything, which is what a test without a host means.
+    expect(sidebarViewModel([mine, theirs], 2_000).rows.map((row) => row.runId)).toEqual(["mine", "theirs"])
+  })
+
   it("registers only the sidebar_content slot", () => {
     const fake = createFakeTuiApi()
     expect(registerSidebar(fake.api, () => [run()])).toBe("slot-1")
