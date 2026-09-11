@@ -73,6 +73,45 @@ describe("workflow sidebar render", () => {
     }
   })
 
+  it("renders the dashboard URL line, and shows the block for it even with zero runs", async () => {
+    // The endpoint's address is stable and tokenless on loopback, so the strip names the server from host
+    // start — the block no longer waits for the first run to exist.
+    const empty = await mountView(() => (
+      <WorkflowSidebar runs={() => []} theme={fakeTheme()} dashboardUrl={() => "http://127.0.0.1:7466"} />
+    ))
+    try {
+      const frame = empty.text()
+      expect(frame).toContain("Workflows")
+      expect(frame).toContain("⌂ http://127.0.0.1:7466")
+    } finally {
+      empty.unmount()
+    }
+
+    // With runs, the URL line sits between the heading and the rows rather than replacing either.
+    const busy = await mountView(() => (
+      <WorkflowSidebar runs={() => [run()]} theme={fakeTheme()} dashboardUrl={() => "http://127.0.0.1:7466"} />
+    ))
+    try {
+      const frame = busy.text()
+      expect(frame).toContain("⌂ http://127.0.0.1:7466")
+      expect(frame).toContain("deep-research")
+      expect(frame.indexOf("Workflows")).toBeLessThan(frame.indexOf("⌂"))
+      expect(frame.indexOf("⌂")).toBeLessThan(frame.indexOf("deep-research"))
+    } finally {
+      busy.unmount()
+    }
+
+    // No live endpoint (`null`) and no runs: nothing renders, exactly as before the line existed.
+    const dark = await mountView(() => (
+      <WorkflowSidebar runs={() => []} theme={fakeTheme()} dashboardUrl={() => null} />
+    ))
+    try {
+      expect(dark.text()).not.toContain("Workflows")
+    } finally {
+      dark.unmount()
+    }
+  })
+
   it("renders `starting` before the run declares a phase", async () => {
     const view = await mountView(() => (
       <WorkflowSidebar runs={() => [run({ phases: [], currentPhase: null })]} theme={fakeTheme()} />

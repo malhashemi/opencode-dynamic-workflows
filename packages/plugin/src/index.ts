@@ -178,23 +178,29 @@ const MAX_LISTED_SESSIONS = 20
  *
  * The returned text is the ONLY zero-install surface that renders everywhere (native TUI, desktop/web app,
  * `opencode run`, SDK callers) — the app's generic tool card shows neither our title, our metadata, nor our
- * output body, so anything the user must see rides the model's reply. Phase 5 appends the dashboard URL here.
+ * output body, so anything the user must see rides the model's reply.
  *
  * `run` is the terminal store snapshot; it carries the status/timing/tokens the engine's return value does not.
+ * `dashboardUrl` (Phase 5) rides the same line because this line is the whole delivery path: the app renders no
+ * tool output body, so a link that is not in the model's reply is a link a desktop user never sees. On the
+ * default loopback bind the URL is bare — loopback needs no token, and the port is persisted per worktree, so
+ * the link keeps working across host restarts. A non-loopback bind still carries `?token=` as the credential
+ * handoff, since a browser opening a bare link has no other way to receive one.
  */
-function runSummaryLine(out: RunWorkflowOutput, run?: RunSnapshot): string {
+function runSummaryLine(out: RunWorkflowOutput, run?: RunSnapshot, dashboardUrl?: string): string {
   const settled = out.state.units.length
   const parts = [out.meta.name, run?.status ?? "done", `${settled}/${Math.max(out.state.unitCount, settled)} units`]
   if (run) parts.push(formatElapsed((run.endedAt ?? Date.now()) - run.startedAt))
   const tokens = run?.tokensSpent ?? out.state.tokensSpent
   if (tokens > 0) parts.push(`${formatTokens(tokens)} tok`)
+  if (dashboardUrl) parts.push(dashboardUrl)
   return parts.join(" · ")
 }
 
-function formatOutput(out: RunWorkflowOutput, run?: RunSnapshot): string {
+function formatOutput(out: RunWorkflowOutput, run?: RunSnapshot, dashboardUrl?: string): string {
   const lines: string[] = []
   lines.push(typeof out.result === "string" ? out.result : JSON.stringify(out.result, null, 2))
-  lines.push("", runSummaryLine(out, run))
+  lines.push("", runSummaryLine(out, run, dashboardUrl))
   // The id, in the text rather than only in metadata, because the model reads the text — and without it the
   // `status`/`result` modes are unreachable for the run that just happened.
   if (run) lines.push(`run ${run.runId} — later: workflow({ result: "${run.runId}" })`)
@@ -217,12 +223,13 @@ function formatOutput(out: RunWorkflowOutput, run?: RunSnapshot): string {
 }
 
 /** Build the tool result for a completed Run — shared by the run-by-name and run-ad-hoc paths. */
-function runResult(out: RunWorkflowOutput, run?: RunSnapshot): WorkflowToolResult {
+function runResult(out: RunWorkflowOutput, run?: RunSnapshot, dashboardUrl?: string): WorkflowToolResult {
   return {
     title: out.meta.name,
-    output: formatOutput(out, run),
+    output: formatOutput(out, run, dashboardUrl),
     metadata: {
       ...(run ? { runId: run.runId } : {}),
+      ...(dashboardUrl ? { dashboardUrl } : {}),
       workflow: out.meta.name,
       units: out.state.unitCount,
       phases: out.state.phases,
@@ -756,8 +763,18 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
   })
   // A real host always supplies serverUrl. Partial structural PluginInput doubles deliberately do not; avoid
   // opening an orphan server for those initialization-only tests while retaining default-on production.
+  //
+  // `discovery` is what gives the endpoint a STABLE address (the persisted per-worktree port + token) and the
+  // ability to answer `?scope=everywhere` by merging its peers — both keyed off the same state directory the
+  // descriptors already rendezvous in.
+  const discoveryStatePath = opencodeStatePath()
+  const discoveryWorktree = worktree || directory
   const endpoint = serverUrl
-    ? await startEndpoint(store, dashboardOptions(options), { control, ...(journal ? { history: journal } : {}) })
+    ? await startEndpoint(store, dashboardOptions(options), {
+        control,
+        ...(journal ? { history: journal } : {}),
+        ...(discoveryWorktree ? { discovery: { statePath: discoveryStatePath, worktree: discoveryWorktree } } : {}),
+      })
     : null
   /**
    * Is anyone watching? An open SSE subscriber is the whole signal.
@@ -767,9 +784,16 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
    * reason `background` and `opencode serve` runs keep the watcher ladder byte-for-byte.
    */
   const attached = () => endpoint?.attached() ?? false
+  // The link a person can actually open. On a loopback bind (the default) it is the bare stable URL — loopback
+  // needs no token, so an old tab survives a host restart with no re-handoff. Only a deliberately non-loopback
+  // bind still rides the token in the query, because there the API keeps its auth and a browser following a
+  // link has no other way to receive a credential.
+  const dashboardUrl = endpoint ? (endpoint.loopback ? endpoint.url : `${endpoint.url}/?token=${endpoint.token}`) : undefined
   let descriptorStatePath: string | null = null
-  if (endpoint) {
-    descriptorStatePath = opencodeStatePath()
+  // The descriptor schema is loopback-only by design — discovery fetches peers over loopback — so a
+  // non-loopback bind simply is not discoverable rather than failing init over an invalid descriptor.
+  if (endpoint?.loopback) {
+    descriptorStatePath = discoveryStatePath
     if (descriptorStatePath && directory && worktree) {
       try {
         await writeDescriptor(descriptorStatePath, {
@@ -909,7 +933,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
                   const out = await runWorkflowFromFile(entry.absPath, { ...common, runId, provenance: "durable" })
                   // The terminal store snapshot, read AFTER the orchestrator applied `run.ended`: it is the only
                   // carrier of the run's final status, wall-clock, and token spend for the summary line.
-                  return runResult(out, store.get(runId))
+                  return runResult(out, store.get(runId), dashboardUrl)
                 } finally {
                   mirror.stop()
                 }
@@ -931,7 +955,7 @@ export const WorkflowPlugin: Plugin = async ({ client, directory, worktree, serv
               const mirror = createNativeProgressMirror(ctx, store, runId)
               try {
                 const out = await runWorkflow({ source: input.source, ...common, runId, provenance: "inline" })
-                return runResult(out, store.get(runId))
+                return runResult(out, store.get(runId), dashboardUrl)
               } finally {
                 mirror.stop()
               }

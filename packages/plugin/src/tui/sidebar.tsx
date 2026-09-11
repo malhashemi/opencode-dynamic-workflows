@@ -53,6 +53,14 @@ export interface SidebarView {
    * Oldest first because it is the one closest to being taken back by automation.
    */
   oldestPending: { runId: string; requestID: string } | null
+  /**
+   * This project's dashboard URL — the `⌂ http://127.0.0.1:7466` line, muted, under the heading.
+   *
+   * Always shown while the endpoint is live, runs or no runs: the address is stable and tokenless on loopback,
+   * so it is worth knowing before anything is running — which also means the block renders from host start
+   * rather than materialising with the first run. `null` (no live endpoint for this project) draws nothing.
+   */
+  dashboardUrl: string | null
 }
 
 export interface WorkflowSidebarProps {
@@ -60,6 +68,8 @@ export interface WorkflowSidebarProps {
   theme: TuiTheme
   /** The session this strip belongs to; absent shows every run. See {@link sidebarViewModel}. */
   sessionID?: string
+  /** This project's dashboard URL, from the endpoint descriptors; see {@link SidebarView.dashboardUrl}. */
+  dashboardUrl?: Accessor<string | null>
   /**
    * Open the run browser on a run — or on the whole list, from the question badge.
    *
@@ -138,6 +148,8 @@ export function sidebarViewModel(
    * would mean if one ever existed.
    */
   sessionID?: string,
+  /** The project's dashboard URL, or `null` while no endpoint is live. The caller matches descriptors. */
+  dashboardUrl: string | null = null,
 ): SidebarView {
   const mine = sessionID === undefined ? runs : runs.filter((run) => run.parentSessionID === sessionID)
   const live = mine
@@ -165,6 +177,7 @@ export function sidebarViewModel(
     rows: [...live, ...settled].map((run) => toSidebarRunRow(run, now)),
     pendingQuestions: waiting.length,
     oldestPending: oldest ? { runId: oldest.run.runId, requestID: oldest.interaction.requestID } : null,
+    dashboardUrl,
   }
 }
 
@@ -182,7 +195,12 @@ export function sidebarViewModel(
 // `packages/plugin/test/tui/sidebar-view.test.tsx` mounts this through the real slot registry to keep it so.
 import WorkflowSidebar from "./sidebar-view"
 
-export function registerSidebar(api: TuiPluginApi, runs: Accessor<readonly RunSnapshot[]>): string {
+export function registerSidebar(
+  api: TuiPluginApi,
+  runs: Accessor<readonly RunSnapshot[]>,
+  /** This project's dashboard URL; optional so a row-model test can register without endpoint discovery. */
+  dashboardUrl?: Accessor<string | null>,
+): string {
   return api.slots.register({
     order: 350,
     slots: {
@@ -193,6 +211,7 @@ export function registerSidebar(api: TuiPluginApi, runs: Accessor<readonly RunSn
           runs,
           theme: context.theme,
           sessionID: props.session_id,
+          ...(dashboardUrl ? { dashboardUrl } : {}),
           onOpen: (runId: string | null) => openWorkflowRoute(api, runId),
           onAnswer: (runId: string, requestID: string) => openWorkflowRoute(api, runId, requestID),
         })

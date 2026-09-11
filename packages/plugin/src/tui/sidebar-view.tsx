@@ -23,7 +23,7 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
   })
   // Scoped to the session the host gave this slot. `now()` is also what keeps it current — a signal created by
   // the run client does not invalidate a memo on a real host; see the note on `liveRuns` in `route.tsx`.
-  const view = createMemo(() => sidebarViewModel(props.runs(), now(), props.sessionID))
+  const view = createMemo(() => sidebarViewModel(props.runs(), now(), props.sessionID, props.dashboardUrl?.() ?? null))
   const theme = () => props.theme.current
 
   /** The spinner while a run is live, its outcome glyph once it settles. */
@@ -43,13 +43,19 @@ export default function WorkflowSidebar(props: WorkflowSidebarProps) {
 
   // The block appears for a question even when this session has no runs of its own: the strip is scoped, the
   // BADGE is not, and a badge that only showed up in the session that raised it would be a notification you had
-  // to already be in the right place to receive.
+  // to already be in the right place to receive. It also appears — heading and URL line — whenever the
+  // project's endpoint is live: the dashboard's address is stable and tokenless on loopback, which makes it
+  // worth knowing from host start, before anything runs.
   return (
-    <Show when={view().rows.length > 0 || view().pendingQuestions > 0}>
+    <Show when={view().rows.length > 0 || view().pendingQuestions > 0 || view().dashboardUrl !== null}>
       <box>
         <text fg={theme().text}>
           <b>Workflows</b>
         </text>
+        <Show when={view().dashboardUrl !== null}>
+          {/* The separator lives IN the text, like every strip here — no flex `gap`, one source of spacing. */}
+          <text fg={theme().textMuted}>{`⌂ ${view().dashboardUrl}`}</text>
+        </Show>
         <For each={view().rows}>
           {(row: SidebarRunRow) => (
             // The whole row is the target, both lines: a two-line row whose second line is inert reads as a

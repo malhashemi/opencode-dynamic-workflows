@@ -11,6 +11,10 @@
     "./server": "./src/index.ts",
     "./tui": "./src/tui/index.tsx"
   },
+  "files": [
+    "src",
+    "dashboard-dist"
+  ],
   "dependencies": {
     "@opencode-ai/workflow": "workspace:*",
     "@opentui/core": "0.4.5",

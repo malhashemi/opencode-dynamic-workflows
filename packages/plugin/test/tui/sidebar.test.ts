@@ -134,9 +134,26 @@ describe("workflow sidebar view model", () => {
     expect(view.rows.map((row) => row.runId)).toEqual(["older-live", "newer-live", "ended-last", "ended-first"])
   })
 
-  it("shows nothing at all only when there are no runs whatsoever", () => {
-    expect(sidebarViewModel([], 2_000)).toEqual({ rows: [], pendingQuestions: 0, oldestPending: null })
+  it("shows nothing at all only when there are no runs and no live endpoint", () => {
+    expect(sidebarViewModel([], 2_000)).toEqual({
+      rows: [],
+      pendingQuestions: 0,
+      oldestPending: null,
+      dashboardUrl: null,
+    })
     expect(sidebarViewModel([run({ status: "done", endedAt: 2_000 })], 2_000).rows).toHaveLength(1)
+  })
+
+  it("carries the dashboard URL through to the view, runs or no runs", () => {
+    // The `⌂` line is the block's reason to render from host start: the address is stable and tokenless on
+    // loopback, so it is worth knowing before the first run exists.
+    const empty = sidebarViewModel([], 2_000, undefined, "http://127.0.0.1:7466")
+    expect(empty.rows).toHaveLength(0)
+    expect(empty.dashboardUrl).toBe("http://127.0.0.1:7466")
+
+    const busy = sidebarViewModel([run()], 2_000, undefined, "http://127.0.0.1:7466")
+    expect(busy.rows).toHaveLength(1)
+    expect(busy.dashboardUrl).toBe("http://127.0.0.1:7466")
   })
 
   it("keeps the question badge at zero until a run reports pending interactions", () => {

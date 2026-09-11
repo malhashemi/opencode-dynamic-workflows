@@ -1,6 +1,10 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { describe, expect, it } from "bun:test"
 import { createControlRegistry, createInteractionController } from "../src/control"
-import { startEndpoint } from "../src/endpoint"
+import { readEndpointPreference, writeDescriptor } from "../src/discovery"
+import { startEndpoint, type RunOrigin } from "../src/endpoint"
 import type { Journal, JournalListOptions, RunSummary } from "../src/journal"
 import { createRunStore, type PendingInteraction, type RunSnapshot } from "../src/runs"
 import { makeFakeClient } from "./fake-client"
@@ -27,20 +31,32 @@ function snapshot(): RunSnapshot {
 }
 
 describe("workflow endpoint", () => {
-  it("serves authenticated health/state and rejects missing or wrong tokens", async () => {
+  it("answers a bare loopback read on every route — the deliberate security shape — and still takes a token", async () => {
+    // Loopback-only plus same-user is the same trust boundary the host's own `opencode serve` runs inside;
+    // the token used to buy a re-handoff dance on every restart, not protection. A presented token (right or
+    // wrong) changes nothing on loopback — the routes were already open.
     const store = createRunStore()
     store.create(snapshot())
     const endpoint = await startEndpoint(store)
     if (!endpoint) throw new Error("expected endpoint")
     expect(store.subscribers()).toBe(1)
+    expect(endpoint.loopback).toBe(true)
     try {
-      expect((await fetch(`${endpoint.url}/state`)).status).toBe(401)
-      expect((await fetch(`${endpoint.url}/state`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401)
+      const bare = await fetch(`${endpoint.url}/state`)
+      expect(bare.status).toBe(200)
+      expect(await bare.json()).toMatchObject({ runs: [{ runId: "run-endpoint", workflow: "endpoint-test" }] })
+      expect((await fetch(`${endpoint.url}/state`, { headers: { authorization: "Bearer wrong" } })).status).toBe(200)
       const state = await fetch(`${endpoint.url}/state`, { headers: { authorization: `Bearer ${endpoint.token}` } })
       expect(state.status).toBe(200)
-      expect(await state.json()).toMatchObject({ runs: [{ runId: "run-endpoint", workflow: "endpoint-test" }] })
-      const health = await fetch(`${endpoint.url}/health?token=${endpoint.token}`)
+      const health = await fetch(`${endpoint.url}/health`)
       expect(await health.json()).toEqual({ ok: true })
+      expect((await fetch(`${endpoint.url}/history`)).status).toBe(200)
+      const events = await fetch(`${endpoint.url}/events`, { signal: AbortSignal.timeout(500) }).catch(() => null)
+      // The stream opened bare; the timeout abort is just this test declining to hold it.
+      if (events) {
+        expect(events.status).toBe(200)
+        await events.body?.cancel().catch(() => {})
+      }
     } finally {
       await endpoint.stop()
     }
@@ -83,8 +99,24 @@ describe("workflow endpoint", () => {
     await second.body?.cancel()
   })
 
-  it("refuses non-loopback hosts and supports explicit disable", async () => {
-    await expect(startEndpoint(createRunStore(), { host: "0.0.0.0" })).rejects.toThrow(/loopback/)
+  it("keeps bearer/query-token auth on a non-loopback bind, exactly as before", async () => {
+    // The trust-boundary argument above is loopback's alone. A deliberately wider bind is reachable by other
+    // machines, so the API routes keep the token gate byte for byte.
+    const endpoint = await startEndpoint(createRunStore(), { host: "0.0.0.0" })
+    if (!endpoint) throw new Error("expected endpoint")
+    expect(endpoint.loopback).toBe(false)
+    const base = `http://127.0.0.1:${new URL(endpoint.url).port}`
+    try {
+      expect((await fetch(`${base}/state`)).status).toBe(401)
+      expect((await fetch(`${base}/state`, { headers: { authorization: "Bearer wrong" } })).status).toBe(401)
+      expect((await fetch(`${base}/state`, { headers: { authorization: `Bearer ${endpoint.token}` } })).status).toBe(200)
+      expect((await fetch(`${base}/state?token=${endpoint.token}`)).status).toBe(200)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("supports explicit disable", async () => {
     expect(await startEndpoint(createRunStore(), { enabled: false })).toBeNull()
   })
 })
@@ -135,7 +167,7 @@ describe("workflow endpoint: POST /control", () => {
     }
   })
 
-  it("refuses an unauthenticated write before it reaches the registry", async () => {
+  it("dispatches a bare loopback write — control is inside the same trust boundary as the reads", async () => {
     const registry = createControlRegistry()
     const controller = new AbortController()
     registry.registerRun("run-endpoint", controller)
@@ -143,6 +175,23 @@ describe("workflow endpoint: POST /control", () => {
     if (!endpoint) throw new Error("expected endpoint")
     try {
       const response = await control({ action: "stop.run", runId: "run-endpoint" }, { url: endpoint.url })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true })
+      expect(controller.signal.aborted).toBe(true)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("still refuses an unauthenticated write on a non-loopback bind, before it reaches the registry", async () => {
+    const registry = createControlRegistry()
+    const controller = new AbortController()
+    registry.registerRun("run-endpoint", controller)
+    const endpoint = await startEndpoint(createRunStore(), { host: "0.0.0.0" }, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    const base = `http://127.0.0.1:${new URL(endpoint.url).port}`
+    try {
+      const response = await control({ action: "stop.run", runId: "run-endpoint" }, { url: base })
       expect(response.status).toBe(401)
       expect(controller.signal.aborted).toBe(false)
     } finally {
@@ -238,11 +287,11 @@ describe("workflow endpoint: GET /history", () => {
     }
   }
 
-  it("serves history to an authenticated reader and refuses an anonymous one", async () => {
+  it("serves history to a bare loopback reader — the anonymous read IS the authenticated read there", async () => {
     const endpoint = await startEndpoint(createRunStore(), {}, { history: history() })
     if (!endpoint) throw new Error("expected endpoint")
     try {
-      expect((await fetch(`${endpoint.url}/history`)).status).toBe(401)
+      expect((await fetch(`${endpoint.url}/history`)).status).toBe(200)
       const response = await fetch(`${endpoint.url}/history`, {
         headers: { authorization: `Bearer ${endpoint.token}` },
       })
@@ -302,6 +351,125 @@ describe("workflow endpoint: GET /history", () => {
       expect((await fetch(`${endpoint.url}/history/a?token=${endpoint.token}`)).status).toBe(404)
     } finally {
       await endpoint.stop()
+    }
+  })
+})
+
+/**
+ * The dashboard's delivery path (Phase 5, amended): static assets from `/`, unauthenticated on every bind —
+ * they carry no run state. On loopback (the default) the API behind them is open too; only a non-loopback
+ * bind still treats the link's `?token=` as the credential handoff for the CLIENT to replay as a bearer.
+ */
+describe("workflow endpoint: dashboard assets", () => {
+  async function withAssets(
+    body: (endpoint: NonNullable<Awaited<ReturnType<typeof startEndpoint>>>, dist: string) => Promise<void>,
+  ): Promise<void> {
+    const dist = await mkdtemp(path.join(os.tmpdir(), "wf-dashboard-dist-"))
+    await mkdir(path.join(dist, "assets"), { recursive: true })
+    await writeFile(path.join(dist, "index.html"), "<!doctype html><div id=\"root\"></div>", "utf8")
+    await writeFile(path.join(dist, "assets", "index-abc.js"), "console.log(\"dashboard\")", "utf8")
+    await writeFile(path.join(dist, "secret-sibling.txt"), "outside is outside", "utf8")
+    const endpoint = await startEndpoint(createRunStore(), { assets: dist })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      await body(endpoint, dist)
+    } finally {
+      await endpoint.stop()
+      await rm(dist, { recursive: true, force: true })
+    }
+  }
+
+  it("serves the app shell and its hashed assets without a token, typed and nosniffed", async () => {
+    await withAssets(async (endpoint) => {
+      const shell = await fetch(`${endpoint.url}/`)
+      expect(shell.status).toBe(200)
+      expect(shell.headers.get("content-type")).toContain("text/html")
+      expect(await shell.text()).toContain('<div id="root">')
+
+      const script = await fetch(`${endpoint.url}/assets/index-abc.js`)
+      expect(script.status).toBe(200)
+      expect(script.headers.get("content-type")).toContain("javascript")
+      expect(script.headers.get("cache-control")).toContain("immutable")
+      expect(script.headers.get("x-content-type-options")).toBe("nosniff")
+    })
+  })
+
+  it("serves the whole app to a bare loopback link — shell, wrong token, no token, and the API behind it", async () => {
+    await withAssets(async (endpoint) => {
+      // The link a run summary carries on loopback is BARE, and everything works from it: the shell, a stale
+      // bookmarked `?token=` from before a restart, and the API the shell then calls without a credential.
+      expect((await fetch(`${endpoint.url}/`)).status).toBe(200)
+      expect((await fetch(`${endpoint.url}/?token=wrong`)).status).toBe(200)
+      expect((await fetch(`${endpoint.url}/state`)).status).toBe(200)
+      expect((await fetch(`${endpoint.url}/history`)).status).toBe(200)
+      expect((await fetch(`${endpoint.url}/state?token=${endpoint.token}`)).status).toBe(200)
+    })
+  })
+
+  it("keeps the token handoff on a non-loopback bind: assets open, API gated", async () => {
+    const dist = await mkdtemp(path.join(os.tmpdir(), "wf-dashboard-wide-"))
+    await writeFile(path.join(dist, "index.html"), "<!doctype html><div id=\"root\"></div>", "utf8")
+    const endpoint = await startEndpoint(createRunStore(), { host: "0.0.0.0", assets: dist })
+    if (!endpoint) throw new Error("expected endpoint")
+    const base = `http://127.0.0.1:${new URL(endpoint.url).port}`
+    try {
+      // The shell still loads bare (public code), the query token is still the client's handoff, and the API
+      // keeps its 401 — the pre-amendment shape, preserved exactly where the trust boundary is wider.
+      expect((await fetch(`${base}/?token=${endpoint.token}`)).status).toBe(200)
+      expect((await fetch(`${base}/state`)).status).toBe(401)
+      expect((await fetch(`${base}/state?token=${endpoint.token}`)).status).toBe(200)
+    } finally {
+      await endpoint.stop()
+      await rm(dist, { recursive: true, force: true })
+    }
+  })
+
+  it("404s unknown paths and refuses traversal out of the dist", async () => {
+    await withAssets(async (endpoint) => {
+      expect((await fetch(`${endpoint.url}/nope.js`)).status).toBe(404)
+      expect((await fetch(`${endpoint.url}/deep/nope`)).status).toBe(404)
+      // An encoded `..` decodes to a path outside the root; containment turns it into a 404, not a file.
+      expect((await fetch(`${endpoint.url}/assets/%2e%2e/secret-sibling.txt`)).status).toBe(200) // still inside dist
+      expect((await fetch(`${endpoint.url}/%2e%2e/%2e%2e/etc/passwd`)).status).toBe(404)
+      // Non-GET on an asset path is a method error, not a file.
+      expect((await fetch(`${endpoint.url}/`, { method: "POST" })).status).toBe(405)
+    })
+  })
+
+  it("serves a run-the-build notice when the dist is absent, and nothing else", async () => {
+    const empty = await mkdtemp(path.join(os.tmpdir(), "wf-dashboard-missing-"))
+    const endpoint = await startEndpoint(createRunStore(), { assets: path.join(empty, "never-built") })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      const shell = await fetch(`${endpoint.url}/`)
+      expect(shell.status).toBe(200)
+      expect(await shell.text()).toContain("build:dashboard")
+      expect((await fetch(`${endpoint.url}/assets/anything.js`)).status).toBe(404)
+    } finally {
+      await endpoint.stop()
+      await rm(empty, { recursive: true, force: true })
+    }
+  })
+
+  it("stays API-only under `assets: false` — `/` names no route, and a wider bind still 401s it first", async () => {
+    const endpoint = await startEndpoint(createRunStore(), { assets: false })
+    if (!endpoint) throw new Error("expected endpoint")
+    try {
+      // On loopback nothing gates `/` any more, so the honest answer is the router's: not found.
+      expect((await fetch(`${endpoint.url}/`)).status).toBe(404)
+      expect((await fetch(`${endpoint.url}/?token=${endpoint.token}`)).status).toBe(404)
+    } finally {
+      await endpoint.stop()
+    }
+
+    const wide = await startEndpoint(createRunStore(), { host: "0.0.0.0", assets: false })
+    if (!wide) throw new Error("expected endpoint")
+    const base = `http://127.0.0.1:${new URL(wide.url).port}`
+    try {
+      expect((await fetch(`${base}/`)).status).toBe(401)
+      expect((await fetch(`${base}/?token=${wide.token}`)).status).toBe(404)
+    } finally {
+      await wide.stop()
     }
   })
 })
@@ -534,5 +702,237 @@ describe("workflow endpoint: interaction control", () => {
     } finally {
       await endpoint.stop()
     }
+  })
+})
+
+/**
+ * The stable address: `{ port, token }` persisted per worktree, so the dashboard URL a reply carried yesterday
+ * — and the tab still open on it — survives a host restart. The second-host case is the deliberate exception:
+ * it falls back to an ephemeral port and leaves the preference alone, so the FIRST host keeps the address.
+ */
+describe("workflow endpoint: stable address", () => {
+  async function withStateDir(body: (statePath: string, worktree: string) => Promise<void>): Promise<void> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "wf-endpoint-state-"))
+    try {
+      await body(path.join(root, "state"), path.join(root, "worktree"))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  it("persists the first boot's OS-assigned port and token, and reuses both on the next boot", async () => {
+    await withStateDir(async (statePath, worktree) => {
+      const first = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
+      if (!first) throw new Error("expected endpoint")
+      const port = Number(new URL(first.url).port)
+      const token = first.token
+      expect(await readEndpointPreference(statePath, worktree)).toEqual({ port, token })
+      await first.stop()
+
+      const second = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
+      if (!second) throw new Error("expected endpoint")
+      try {
+        expect(Number(new URL(second.url).port)).toBe(port)
+        expect(second.token).toBe(token)
+      } finally {
+        await second.stop()
+      }
+    })
+  })
+
+  it("falls back to an ephemeral port for a second live host WITHOUT overwriting the preference", async () => {
+    await withStateDir(async (statePath, worktree) => {
+      const first = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
+      if (!first) throw new Error("expected endpoint")
+      const preference = await readEndpointPreference(statePath, worktree)
+      const second = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
+      if (!second) throw new Error("expected endpoint")
+      try {
+        // The second host is live and reachable — just not at the stable address, which the first one keeps.
+        expect(second.url).not.toBe(first.url)
+        expect(second.token).toBe(first.token)
+        expect((await fetch(`${second.url}/health`)).status).toBe(200)
+        expect((await fetch(`${first.url}/health`)).status).toBe(200)
+        expect(await readEndpointPreference(statePath, worktree)).toEqual(preference as { port: number; token: string })
+      } finally {
+        await second.stop()
+        await first.stop()
+      }
+    })
+  })
+
+  it("keeps a worktree's address distinct from its neighbour's", async () => {
+    await withStateDir(async (statePath, worktree) => {
+      const here = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
+      const there = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree: `${worktree}-b` } })
+      if (!here || !there) throw new Error("expected endpoints")
+      try {
+        expect(here.url).not.toBe(there.url)
+        expect(here.token).not.toBe(there.token)
+      } finally {
+        await here.stop()
+        await there.stop()
+      }
+    })
+  })
+})
+
+/**
+ * `?scope=everywhere` — the machine's other endpoints, merged SERVER-side off their descriptors, each row
+ * tagged with its origin; controls on a foreign run proxied to the endpoint that owns it. Resilience is part
+ * of the contract: a dead peer descriptor is skipped, never an error.
+ */
+describe("workflow endpoint: everywhere scope", () => {
+  const alwaysAlive = () => true
+
+  function peerSnapshot(runId: string): RunSnapshot {
+    return { ...snapshot(), runId }
+  }
+
+  async function withMachine(
+    body: (input: {
+      statePath: string
+      main: NonNullable<Awaited<ReturnType<typeof startEndpoint>>>
+      peer: NonNullable<Awaited<ReturnType<typeof startEndpoint>>>
+      peerWorktree: string
+      peerRegistry: ReturnType<typeof createControlRegistry>
+    }) => Promise<void>,
+  ): Promise<void> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "wf-endpoint-peers-"))
+    const statePath = path.join(root, "state")
+    const mainWorktree = path.join(root, "main-project")
+    const peerWorktree = path.join(root, "peer-project")
+
+    const peerStore = createRunStore()
+    peerStore.create(peerSnapshot("run-peer"))
+    const peerRegistry = createControlRegistry()
+    const peerHistory: Pick<Journal, "list" | "read"> = {
+      async list() {
+        return [
+          {
+            runId: "hist-peer",
+            workflow: "peer-flow",
+            provenance: "inline",
+            parentSessionID: "peer-session",
+            status: "done",
+            units: 1,
+            settledUnits: 1,
+            tokensSpent: 5,
+            phases: [],
+            phasesDeclared: false,
+            currentPhase: null,
+            startedAt: 5_000,
+            endedAt: 6_000,
+          },
+        ]
+      },
+      async read(runId) {
+        if (runId !== "hist-peer") return null
+        return { run: peerSnapshot("hist-peer"), source: "PEER SOURCE", args: null, result: "peer", transitions: [] }
+      },
+    }
+    const peer = await startEndpoint(peerStore, {}, { control: peerRegistry, history: peerHistory })
+    if (!peer) throw new Error("expected peer endpoint")
+
+    const main = await startEndpoint(
+      createRunStore(),
+      {},
+      { control: createControlRegistry(), discovery: { statePath, worktree: mainWorktree, isProcessAlive: alwaysAlive } },
+    )
+    if (!main) throw new Error("expected main endpoint")
+
+    // The peer's rendezvous entry, as its own plugin would have written it. The pid is fictional; liveness is
+    // injected above so the descriptor read keeps it.
+    await writeDescriptor(statePath, {
+      url: peer.url,
+      token: peer.token,
+      pid: 999_999,
+      directory: peerWorktree,
+      worktree: peerWorktree,
+      startedAt: Date.now(),
+    })
+
+    try {
+      await body({ statePath, main, peer, peerWorktree, peerRegistry })
+    } finally {
+      await main.stop()
+      await peer.stop()
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  it("merges a peer's runs and history under the flag, tagged with their origin — and only under the flag", async () => {
+    await withMachine(async ({ main, peer, peerWorktree }) => {
+      const plain = (await (await fetch(`${main.url}/state`)).json()) as { runs: RunSnapshot[] }
+      expect(plain.runs).toHaveLength(0)
+
+      const merged = (await (await fetch(`${main.url}/state?scope=everywhere`)).json()) as {
+        runs: (RunSnapshot & { origin?: RunOrigin })[]
+      }
+      expect(merged.runs.map((run) => run.runId)).toEqual(["run-peer"])
+      expect(merged.runs[0]?.origin).toEqual({ worktree: peerWorktree, url: peer.url })
+
+      const history = (await (await fetch(`${main.url}/history?scope=everywhere`)).json()) as {
+        history: ({ runId: string } & { origin?: RunOrigin })[]
+      }
+      expect(history.history.map((row) => row.runId)).toEqual(["hist-peer"])
+      expect(history.history[0]?.origin).toEqual({ worktree: peerWorktree, url: peer.url })
+      // …and the un-flagged read stays byte-compatible with the single-endpoint world.
+      const local = (await (await fetch(`${main.url}/history`)).json()) as { history: unknown[] }
+      expect(local.history).toHaveLength(0)
+    })
+  })
+
+  it("skips a dead peer descriptor rather than failing the merge", async () => {
+    await withMachine(async ({ statePath, main }) => {
+      await writeDescriptor(statePath, {
+        url: "http://127.0.0.1:9", // the discard port: nothing listens, the connection dies fast
+        token: "dead-peer-token",
+        pid: 999_998,
+        directory: "/tmp/dead-project",
+        worktree: "/tmp/dead-project",
+        startedAt: Date.now(),
+      })
+      const merged = (await (await fetch(`${main.url}/state?scope=everywhere`)).json()) as { runs: RunSnapshot[] }
+      expect(merged.runs.map((run) => run.runId)).toEqual(["run-peer"])
+    })
+  })
+
+  it("proxies a control action to the peer that owns the run", async () => {
+    await withMachine(async ({ main, peerRegistry }) => {
+      const controller = new AbortController()
+      peerRegistry.registerRun("run-peer", controller)
+      const response = await fetch(`${main.url}/control`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "stop.run", runId: "run-peer" }),
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true })
+      expect(controller.signal.aborted).toBe(true)
+    })
+  })
+
+  it("serves a peer's journaled record for a foreign history row", async () => {
+    await withMachine(async ({ main }) => {
+      const response = await fetch(`${main.url}/history/hist-peer`)
+      expect(response.status).toBe(200)
+      expect((await response.json()) as { record: { source: string } }).toMatchObject({
+        record: { source: "PEER SOURCE" },
+      })
+    })
+  })
+
+  it("answers unknown-run for a run nobody owns, without bouncing between endpoints", async () => {
+    await withMachine(async ({ main }) => {
+      // The peer would proxy back if the `proxied=1` guard failed — this call would then never return.
+      const response = await fetch(`${main.url}/control`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "stop.run", runId: "ghost" }),
+      })
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({ ok: false, reason: "unknown-run" })
+    })
   })
 })

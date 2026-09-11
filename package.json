@@ -10,7 +10,9 @@
   "scripts": {
     "typecheck": "tsc --build",
     "test": "bun test",
-    "verify:live": "bun test ./packages/plugin/test/live/phase-gate.live.ts ./packages/plugin/test/live/sidebar.tui.live.ts ./packages/plugin/test/live/route.tui.live.ts ./packages/plugin/test/live/journal.tui.live.ts ./packages/plugin/test/live/interactions.tui.live.ts"
+    "build:dashboard": "bun run --cwd packages/dashboard build && rm -rf packages/plugin/dashboard-dist && cp -R packages/dashboard/dist packages/plugin/dashboard-dist",
+    "dev:dashboard": "bun run --cwd packages/dashboard dev",
+    "verify:live": "bun test ./packages/plugin/test/live/phase-gate.live.ts ./packages/plugin/test/live/sidebar.tui.live.ts ./packages/plugin/test/live/route.tui.live.ts ./packages/plugin/test/live/journal.tui.live.ts ./packages/plugin/test/live/interactions.tui.live.ts ./packages/plugin/test/live/dashboard.live.ts"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.18.10",

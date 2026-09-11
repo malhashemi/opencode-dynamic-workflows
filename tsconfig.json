@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/workflow" },
-    { "path": "./packages/plugin" }
+    { "path": "./packages/plugin" },
+    { "path": "./packages/dashboard" }
   ]
 }

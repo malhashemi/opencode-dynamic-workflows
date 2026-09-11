@@ -232,23 +232,23 @@ describe("live: phase gate on a real 1.18.x host", () => {
     BOOT_TIMEOUT_MS,
   )
 
-  it("serves authenticated /health and /state, and refuses an unauthenticated read", async () => {
-    const health = await fetch(`${descriptor.url}/health`, {
-      headers: { authorization: `Bearer ${descriptor.token}` },
-    })
+  it("serves /health and /state to a bare loopback read, and still accepts the descriptor's token", async () => {
+    // Loopback is tokenless by design (the Phase 5 amendment): same-user-same-machine is the trust boundary,
+    // so the bare read IS the authenticated read. The token remains accepted for old callers.
+    const health = await fetch(`${descriptor.url}/health`)
     expect(health.status).toBe(200)
     expect(await health.json()).toEqual({ ok: true })
 
-    const state = await fetch(`${descriptor.url}/state`, {
-      headers: { authorization: `Bearer ${descriptor.token}` },
-    })
+    const state = await fetch(`${descriptor.url}/state`)
     expect(state.status).toBe(200)
     const snapshot = (await state.json()) as { runs: RunSnapshot[]; revision: number }
     expect(Array.isArray(snapshot.runs)).toBe(true)
     expect(typeof snapshot.revision).toBe("number")
 
-    expect((await fetch(`${descriptor.url}/health`)).status).toBe(401)
-    expect((await fetch(`${descriptor.url}/state`)).status).toBe(401)
+    const tokened = await fetch(`${descriptor.url}/state`, {
+      headers: { authorization: `Bearer ${descriptor.token}` },
+    })
+    expect(tokened.status).toBe(200)
   })
 
   it(
@@ -343,7 +343,10 @@ describe("live: phase gate on a real 1.18.x host", () => {
       expect(summary).toContain("· done ·")
       expect(summary).toContain("· 1/1 units ·")
 
-      const reportedSeconds = Number(/· (\d+)s\b/.exec(summary ?? "")?.[1] ?? NaN)
+      // `formatElapsed` prints `42s` under a minute and `1m45s` past it — a slow model run crosses the minute
+      // mark legitimately (it did, once, on a loaded evening), so the parse accepts both forms.
+      const elapsed = /· (?:(\d+)m)?(\d+)s\b/.exec(summary ?? "")
+      const reportedSeconds = elapsed ? Number(elapsed[1] ?? 0) * 60 + Number(elapsed[2]) : NaN
       expect(Number.isFinite(reportedSeconds)).toBe(true)
       // Same run, same clock: allow a second of formatting/rounding slack, nothing more.
       expect(Math.abs(reportedSeconds - Math.floor(durationMs / 1_000))).toBeLessThanOrEqual(1)

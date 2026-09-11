@@ -261,6 +261,25 @@ export function unitOutput(output: string | undefined): UnitOutput | null {
   }
 }
 
+/**
+ * Whether two paths name the same checkout, tolerantly.
+ *
+ * Equality is not enough and the reason is a real trap rather than a hypothetical: on macOS a temporary
+ * directory is `/var/folders/…` to one process and `/private/var/folders/…` to another, because `/var` is a
+ * symlink — so a descriptor and the host that wrote it can disagree about the path of the project they are both
+ * sitting in. A suffix match covers that without a platform check or a filesystem call.
+ *
+ * It errs toward SHOWING a row: a false match leaves a run visible that the scope might have hidden, where a
+ * false mismatch hides the user's own work and leaves them with an empty list they cannot explain.
+ *
+ * Shared by the route's scope filter and the sidebar's dashboard-URL lookup — one definition of "this project".
+ */
+export function samePath(a: string, b: string): boolean {
+  const left = a.replace(/\/+$/, "")
+  const right = b.replace(/\/+$/, "")
+  return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`)
+}
+
 const FILTER_ORDER: readonly RunStatusFilter[] = ["all", "active", "done", "failed"]
 
 /** Widening order, so pressing the key again is always the way to see MORE rather than fewer runs. */

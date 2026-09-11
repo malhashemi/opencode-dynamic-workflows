@@ -48,6 +48,7 @@ import {
   reduceRoute,
   restoreAnswer,
   runRows,
+  samePath,
   selectedControl,
   selectIndex,
   unitDetail,
@@ -112,23 +113,6 @@ function rightAlign(value: string, width: number): string {
 /** The settled outcome mark for a run status; `running` animates and so has none. */
 function statusGlyph(status: RunSnapshot["status"]): string {
   return status === "running" ? "" : LIST_GLYPHS[status]
-}
-
-/**
- * Whether two paths name the same checkout, tolerantly.
- *
- * Equality is not enough and the reason is a real trap rather than a hypothetical: on macOS a temporary
- * directory is `/var/folders/…` to one process and `/private/var/folders/…` to another, because `/var` is a
- * symlink — so a descriptor and the host that wrote it can disagree about the path of the project they are both
- * sitting in. A suffix match covers that without a platform check or a filesystem call.
- *
- * It errs toward SHOWING a row: a false match leaves a run visible that the scope might have hidden, where a
- * false mismatch hides the user's own work and leaves them with an empty list they cannot explain.
- */
-function samePath(a: string, b: string): boolean {
-  const left = a.replace(/\/+$/, "")
-  const right = b.replace(/\/+$/, "")
-  return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`)
 }
 
 /**

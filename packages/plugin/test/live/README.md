@@ -92,8 +92,9 @@ Boots `opencode serve` in a throwaway Git project with this package installed by
 - **Descriptor.** A record for this worktree appears under
   `${XDG_STATE_HOME:-$HOME/.local/state}/opencode/workflows/endpoints/<pid>.json` with a loopback URL and a
   64-character token.
-- **Transport.** `/health` and `/state` answer with a bearer token and 401 without one; `/state` has the
-  blessed `{ runs, revision }` shape.
+- **Transport.** `/health` and `/state` answer a bare loopback read — loopback is tokenless by design (the
+  Phase 5 amendment: same trust boundary as `opencode serve` itself), with the descriptor's token still
+  accepted; `/state` has the blessed `{ runs, revision }` shape.
 - **Event order.** The fixture produces exactly nine events, in order:
   `run.started → run.phase → run.log → unit.queued → unit.started → unit.settled → run.phase → run.log → run.ended`.
 - **Timing, as data.** The run's real wall-clock appears in the tool's returned **text** (`phase-gate · done ·
@@ -218,6 +219,47 @@ by keystroke.
   announcement and IS asserted. A frame named `15-interactions-no-toast` under `.artifacts/` is this.
 
 Costs five parent prompts, five child sessions, and three `task`-spawned grandchildren.
+
+---
+
+### `dashboard.live.ts` — the dashboard, from the link outward
+
+Desktop and web users get exactly one path to the dashboard: a URL in the tool's returned text, because the
+app's generic tool card renders no title, no metadata, and no output body. This probe starts where they start.
+
+**Prerequisite beyond the shared ones:** `bun run build:dashboard`. The probe fails at setup, naming the
+command, if no dist exists — the "run the build" notice passing for the app would be the suite asserting a
+placeholder.
+
+- **Extraction, the way a model does it.** A real run of `phase-gate` completes; the URL is pulled out of the
+  completed tool part's text with nothing but a URL regex — no metadata read, no descriptor scan. If that
+  cannot find it, neither can a model relaying the reply.
+- **The link works cold.** Following it with no headers (which is what a browser does) serves the built app
+  shell, and the shell's own hashed bundle loads the same way. Asset routes are unauthenticated **by design**
+  — they carry no run state.
+- **The bare link is the whole handoff.** The extracted URL carries **no** `?token=` — loopback is tokenless
+  by design, so `/state`, `/history`, and `/control` all answer the same headerless request the shell makes,
+  and the descriptor's old token is still accepted for anything that kept one. The URL's port is the
+  persisted per-worktree preference, which is what lets an old tab survive a host restart. (A deliberately
+  non-loopback bind keeps the old shape: `?token=` on the link, 401 without it.)
+
+Costs one parent prompt and one child session.
+
+#### Browser-agent legs (not part of `verify:live`)
+
+The probe proves the transport; a browser agent proves the app. Spawn an agent with the `agent-browser` skill,
+give it the URL this probe extracts (or any live run's), and have it:
+
+1. open the dashboard mid-run and watch the rail and detail pane advance **without a reload**;
+2. run `asks-nested-question.workflow.ts` with no TUI attached and answer from the pinned answer card;
+3. screenshot light, dark, and a ~700px viewport into `.artifacts/`, checking Inter, the 13–20px scale,
+   semantic tokens, and that `prefers-reduced-motion` suppresses the running-dot pulse and progress
+   transitions;
+4. repeat from the OpenCode **desktop app**: the generic `Called workflow` card stays inert, and the URL in
+   the model's reply is clickable and lands on a working dashboard.
+
+Screenshots land in `packages/plugin/test/live/.artifacts/`, beside the tmux frames, and are part of what the
+Phase 8 human gate reviews.
 
 ---
 

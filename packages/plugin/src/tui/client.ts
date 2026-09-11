@@ -45,6 +45,14 @@ export interface TuiRunClient {
   runs: Accessor<readonly RunSnapshot[]>
   /** Journaled runs from every endpoint, newest first — this project's history beyond the live process. */
   history: Accessor<readonly RunSummary[]>
+  /**
+   * The live descriptors the last rescan found, newest first — the machine's endpoints as facts of their own.
+   *
+   * `runs()` only ever names an endpoint through a run it carries, so a freshly started host with nothing
+   * running was invisible to every consumer — and the sidebar's dashboard-URL line has to name the server from
+   * host start, runs or no runs.
+   */
+  endpoints: Accessor<readonly EndpointDescriptor[]>
   rescan(): Promise<void>
   refreshHistory(): Promise<void>
   stop(): void
@@ -381,6 +389,7 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
   const historyOwners = new Map<string, EndpointDescriptor>()
   const [runs, setRuns] = createSignal<readonly RunSnapshot[]>([])
   const [history, setHistory] = createSignal<readonly RunSummary[]>([])
+  const [descriptors, setDescriptors] = createSignal<readonly EndpointDescriptor[]>([])
   let stopped = false
   let rescanning: Promise<void> | null = null
 
@@ -508,9 +517,10 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
     if (stopped) return
     const root = getStatePath()
     if (!root) return
-    const descriptors = await readDescriptors(root)
+    const found = await readDescriptors(root)
     if (stopped) return
-    const discovered = new Map(descriptors.map((descriptor) => [descriptorKey(descriptor), descriptor]))
+    setDescriptors(found.map((descriptor) => ({ ...descriptor })))
+    const discovered = new Map(found.map((descriptor) => [descriptorKey(descriptor), descriptor]))
 
     for (const [key, endpoint] of endpoints) {
       const next = discovered.get(key)
@@ -554,6 +564,7 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
     options.signal?.removeEventListener("abort", stop)
     for (const endpoint of endpoints.values()) endpoint.controller.abort()
     endpoints.clear()
+    setDescriptors([])
     publish()
     publishHistory()
   }
@@ -564,6 +575,7 @@ export function createRunClient(options: RunClientOptions): TuiRunClient {
   return {
     runs,
     history,
+    endpoints: descriptors,
     rescan,
     refreshHistory,
     stop,

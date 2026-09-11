@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -20,6 +21,71 @@ export function endpointDescriptorDirectory(statePath: string): string {
 
 export function endpointDescriptorPath(statePath: string, pid: number): string {
   return path.join(endpointDescriptorDirectory(statePath), `${pid}.json`)
+}
+
+/**
+ * The stable half of an endpoint's identity: the port it should bind and the token it should serve, per
+ * worktree, across process restarts.
+ *
+ * A descriptor names a PROCESS (its file is the pid) and dies with it; this names a PROJECT and outlives every
+ * process, which is what lets an old browser tab or a link in a day-old reply survive a host restart — same
+ * port, same token, no re-handoff. It lives beside the descriptors rather than among them because
+ * {@link readDescriptors} prunes everything in its directory that does not parse as a live descriptor.
+ */
+export interface EndpointPreference {
+  port: number
+  token: string
+}
+
+/** `<statePath>/workflows/addresses` — the per-worktree address book beside the per-process descriptors. */
+export function endpointPreferenceDirectory(statePath: string): string {
+  return path.join(statePath, "workflows", "addresses")
+}
+
+/** Keyed on a hash of the worktree path: stable, filename-safe, and collision-free enough for one machine. */
+export function endpointPreferencePath(statePath: string, worktree: string): string {
+  const key = createHash("sha256").update(path.resolve(worktree)).digest("hex").slice(0, 16)
+  return path.join(endpointPreferenceDirectory(statePath), `${key}.json`)
+}
+
+function isPreference(value: unknown): value is EndpointPreference {
+  if (typeof value !== "object" || value === null) return false
+  const preference = value as Partial<EndpointPreference>
+  return (
+    Number.isInteger(preference.port) &&
+    (preference.port ?? 0) > 0 &&
+    (preference.port ?? 0) <= 65_535 &&
+    typeof preference.token === "string" &&
+    preference.token.length > 0
+  )
+}
+
+/** A missing or corrupt preference reads as "first boot" — the endpoint then persists what it actually got. */
+export async function readEndpointPreference(statePath: string, worktree: string): Promise<EndpointPreference | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(endpointPreferencePath(statePath, worktree), "utf8"))
+    return isPreference(parsed) ? { port: parsed.port, token: parsed.token } : null
+  } catch {
+    return null
+  }
+}
+
+export async function writeEndpointPreference(
+  statePath: string,
+  worktree: string,
+  preference: EndpointPreference,
+): Promise<void> {
+  if (!isPreference(preference)) throw new Error("invalid workflow endpoint preference")
+  const target = endpointPreferencePath(statePath, worktree)
+  const directory = path.dirname(target)
+  const temp = path.join(directory, `.${path.basename(target)}.${crypto.randomUUID()}.tmp`)
+  await mkdir(directory, { recursive: true })
+  try {
+    await writeFile(temp, `${JSON.stringify(preference)}\n`, { encoding: "utf8", mode: 0o600 })
+    await rename(temp, target)
+  } finally {
+    await rm(temp, { force: true }).catch(() => {})
+  }
 }
 
 function loopbackUrl(value: string): boolean {

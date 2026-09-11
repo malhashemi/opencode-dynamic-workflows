@@ -41,6 +41,8 @@ const RUN_LINE = /phase-gate\s+\d+\/\d+ · \d+[hms]/m
 const DETAIL_LINE = /phase \d+\/2 · (dispatch|finish)\s*$/m
 /** Line 1 once the run has settled successfully — the spinner has become an outcome glyph. */
 const SETTLED_LINE = /✓ phase-gate\s+\d+\/\d+ · \d+[hms]/m
+/** The dashboard's address, muted, under the heading — present from host start, runs or no runs. */
+const URL_LINE = /⌂ http:\/\/127\.0\.0\.1:\d+/m
 
 /**
  * The rightmost sidebar column, isolated from the session transcript sharing the same rows.
@@ -57,6 +59,8 @@ function sidebarLines(frame: string): string[] {
 }
 
 interface Frames {
+  /** The first frame the `⌂` address line rendered in — captured on its own wait, ahead of the run frames. */
+  withUrl: string
   /** The asserted frame, plain. */
   phased: string
   /** The SAME frame with SGR sequences intact — one capture, so colors and layout describe one instant. */
@@ -107,6 +111,14 @@ describeTui("live: workflow sidebar rendered in a real TUI", () => {
       'Call the workflow tool exactly once with {"name": "phase-gate", "args": {}} and then stop.',
     )
 
+    // The `⌂` line appears as soon as the SESSION view's sidebar mounts and the 2-second descriptor rescan
+    // lands — the block no longer waits for a run. It cannot be asserted on the boot screen: the host's home
+    // view renders no session sidebar at all (learned from a timed-out first run of this probe), so "before
+    // any run exists" is proven by the mounted zero-runs view test; here the claim is that the line is up and
+    // correct on a real host. A real wait on the rendered line itself, per the wait-pattern rule.
+    const withUrl = await tui.waitFor(URL_LINE, { timeoutMs: 120_000, intervalMs: 250 })
+    await saveFrame("10-sidebar-url", withUrl, withUrl)
+
     // ONE capture, in ANSI, polled tightly. The fixture's run lasts a handful of seconds; taking a second
     // capture for the colors would describe a different instant — often one where the run has already gone.
     const phasedAnsi = await tui.waitFor(DETAIL_LINE, {
@@ -120,7 +132,7 @@ describeTui("live: workflow sidebar rendered in a real TUI", () => {
     const settled = await tui.waitFor(SETTLED_LINE, { timeoutMs: RUN_TIMEOUT_MS, intervalMs: 200 })
     await saveFrame("30-sidebar-settled", stripAnsi(settled), settled)
 
-    frames = { phased, phasedAnsi, settled: stripAnsi(settled) }
+    frames = { withUrl: stripAnsi(withUrl), phased, phasedAnsi, settled: stripAnsi(settled) }
   }, BOOT_TIMEOUT_MS + RUN_TIMEOUT_MS)
 
   // Teardown gets a budget of its own — see `route.tui.live.ts` for why five seconds is not one.
@@ -129,14 +141,27 @@ describeTui("live: workflow sidebar rendered in a real TUI", () => {
     await scratch?.cleanup()
   }, 60_000)
 
-  it("renders the run as two lines directly under a `Workflows` heading", () => {
+  it("names the dashboard server: the muted `⌂` address line sits directly under the heading", () => {
+    // Captured on its own wait, independent of any run row rendering — the endpoint being live is what earns
+    // the block now. ("Before any run exists" is the mounted zero-runs view test's claim; a live host races
+    // the model, so this frame may or may not already carry a run row.)
+    const lines = sidebarLines(frames.withUrl)
+    const heading = lines.findIndex((line) => /^Workflows/.test(line))
+    expect(heading).toBeGreaterThanOrEqual(0)
+    expect(lines[heading + 1]).toMatch(URL_LINE)
+    // Bare address — no `?token=` in what a user would retype from their sidebar.
+    expect(frames.withUrl).not.toContain("token=")
+  })
+
+  it("renders the run as two lines under the heading, below the address line", () => {
     const lines = sidebarLines(frames.phased)
     expect(lines.length).toBeGreaterThan(0)
 
     const heading = lines.findIndex((line) => /^Workflows/.test(line))
     expect(heading).toBeGreaterThanOrEqual(0)
-    expect(lines[heading + 1]).toMatch(RUN_LINE)
-    expect(lines[heading + 2]).toMatch(DETAIL_LINE)
+    expect(lines[heading + 1]).toMatch(URL_LINE)
+    expect(lines[heading + 2]).toMatch(RUN_LINE)
+    expect(lines[heading + 3]).toMatch(DETAIL_LINE)
   })
 
   it("fits a real workflow name beside its counts without truncating at sidebar width", () => {
