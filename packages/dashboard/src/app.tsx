@@ -15,7 +15,7 @@
  *   redrew it. `connect()` already publishes a NEW state object per action through one plain signal, and this
  *   shell never puts a `createMemo` in front of that read — `snapshot()` below is a function call, every time.
  */
-import { createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
+import { createEffect, createSignal, on, onCleanup, Show, type JSX } from "solid-js"
 import type { RunSnapshot } from "./engine"
 import { createControls } from "./controls"
 import { connect, fetchRecord, type ConnectOptions, type DashboardScope, type DashboardState } from "./state"
@@ -81,18 +81,28 @@ export default function App(): JSX.Element {
 
   // A selected run the store does not hold is a HISTORY row: read its journaled record on demand, and say each
   // of the three endings out loud rather than showing an empty pane that could mean any of them.
+  //
+  // Whether the store holds it is TRACKED, not read once: a host restart's fresh snapshot drops every run the
+  // old process held, and the run the user is looking at becomes a history row without the selection changing.
+  // An effect keyed on the selection alone left the pane blank until they clicked away and back. The effect
+  // re-runs on every publish (that is what tracking live state costs) and acts only when the answer moved.
   const [archived, setArchived] = createSignal<ArchivedRead | null>(null)
-  createEffect(() => {
+  const selectedIsLive = (): boolean => {
     const id = selected()
-    setArchived(null)
-    if (!id) return
-    if (untrack(() => live.state()).runs.some((run) => run.runId === id)) return
-    setArchived({ runId: id, state: "reading" })
-    void fetchRecord(options, id).then((result) => {
-      if (selected() !== id) return
-      setArchived(result.ok ? { runId: id, state: "ok", run: result.record.run } : { runId: id, state: result.reason })
-    })
-  })
+    return id !== null && live.state().runs.some((run) => run.runId === id)
+  }
+  createEffect(
+    on([selected, selectedIsLive], ([id, isLive], previous) => {
+      if (previous && previous[0] === id && previous[1] === isLive) return
+      setArchived(null)
+      if (!id || isLive) return
+      setArchived({ runId: id, state: "reading" })
+      void fetchRecord(options, id).then((result) => {
+        if (selected() !== id) return
+        setArchived(result.ok ? { runId: id, state: "ok", run: result.record.run } : { runId: id, state: result.reason })
+      })
+    }),
+  )
 
   const run = (): RunSnapshot | undefined => {
     const id = selected()

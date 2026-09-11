@@ -15,6 +15,9 @@
     "src",
     "dashboard-dist"
   ],
+  "scripts": {
+    "prepack": "bun run --cwd ../.. build:dashboard"
+  },
   "dependencies": {
     "@opencode-ai/workflow": "workspace:*",
     "@opentui/core": "0.4.5",

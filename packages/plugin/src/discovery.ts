@@ -70,19 +70,40 @@ export async function readEndpointPreference(statePath: string, worktree: string
   }
 }
 
+/**
+ * Persist a worktree's address. Resolves `true` when this call's preference is the one on disk.
+ *
+ * `exclusive` is the first-boot claim: two hosts booting into a project with no preference both bind an
+ * ephemeral port and both arrive here, and only one of them may become the stable address. `O_EXCL` on the
+ * target makes the filesystem the referee — the second writer gets `false` and keeps its ephemeral address
+ * unwritten, rather than silently overwriting the winner. The default, non-exclusive write replaces
+ * atomically (temp + rename), for a preference that has drifted or gone stale.
+ */
 export async function writeEndpointPreference(
   statePath: string,
   worktree: string,
   preference: EndpointPreference,
-): Promise<void> {
+  options: { exclusive?: boolean } = {},
+): Promise<boolean> {
   if (!isPreference(preference)) throw new Error("invalid workflow endpoint preference")
   const target = endpointPreferencePath(statePath, worktree)
   const directory = path.dirname(target)
-  const temp = path.join(directory, `.${path.basename(target)}.${crypto.randomUUID()}.tmp`)
+  const payload = `${JSON.stringify(preference)}\n`
   await mkdir(directory, { recursive: true })
+  if (options.exclusive) {
+    try {
+      await writeFile(target, payload, { encoding: "utf8", mode: 0o600, flag: "wx" })
+      return true
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") return false
+      throw error
+    }
+  }
+  const temp = path.join(directory, `.${path.basename(target)}.${crypto.randomUUID()}.tmp`)
   try {
-    await writeFile(temp, `${JSON.stringify(preference)}\n`, { encoding: "utf8", mode: 0o600 })
+    await writeFile(temp, payload, { encoding: "utf8", mode: 0o600 })
     await rename(temp, target)
+    return true
   } finally {
     await rm(temp, { force: true }).catch(() => {})
   }

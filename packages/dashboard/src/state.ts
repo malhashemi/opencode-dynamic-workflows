@@ -34,7 +34,8 @@ export interface DashboardState {
 }
 
 export type DashboardAction =
-  | { type: "snapshot"; runs: RunSnapshot[]; revision: number }
+  /** `rebase`: a reconnect's snapshot, which may move the cursor DOWN. Side reads never set it. */
+  | { type: "snapshot"; runs: RunSnapshot[]; revision: number; rebase?: boolean }
   /** One SSE frame. `revision` is the frame's `id:`; a non-finite value means the frame carried none. */
   | { type: "event"; revision: number; event: RunEvent }
   | { type: "history"; history: RunSummary[] }
@@ -111,6 +112,11 @@ export function reduceDashboard(state: DashboardState, action: DashboardAction):
     }
   }
   if (action.type === "snapshot") {
+    // A side read (a scope switch, the everywhere poll) races the stream: the server takes the snapshot, an
+    // event lands and is applied, and only then does the snapshot arrive. Applying it would erase that event
+    // from the screen, and no frame will ever replay it. So a snapshot BEHIND the cursor is stale and ignored —
+    // except on reconnect, where a restarted host's counter starts over and its lower revision IS the truth.
+    if (!action.rebase && action.revision < state.revision) return state
     return { ...state, runs: sortRuns(action.runs.map(cloneRunSnapshot)), revision: action.revision }
   }
   // The revision handshake: a frame the snapshot already contains is DROPPED, not re-applied. A frame with no
@@ -239,8 +245,13 @@ export function connect(options: ConnectOptions): {
 
   let scope: DashboardScope = "project"
   const scopeQuery = (joiner: "?" | "&" = "?") => (scope === "everywhere" ? `${joiner}scope=everywhere` : "")
+  // Bumped on every scope change. A read carries the generation it was issued under, and a response whose
+  // generation has since moved on is dropped: a slow `everywhere` read that lands after a quick switch back to
+  // `project` would otherwise paint peer runs under a header that says `this project` — and stay that way,
+  // because project scope has no poll to correct it.
+  let generation = 0
 
-  const fetchHistory = async () => {
+  const fetchHistory = async (issued = generation) => {
     try {
       const response = await fetcher(`${options.baseUrl}/history${scopeQuery()}`, {
         headers,
@@ -248,6 +259,7 @@ export function connect(options: ConnectOptions): {
       })
       if (!response.ok) return
       const body: unknown = await response.json()
+      if (issued !== generation) return
       const history =
         typeof body === "object" && body !== null && "history" in body && Array.isArray(body.history)
           ? (body.history as RunSummary[])
@@ -258,8 +270,8 @@ export function connect(options: ConnectOptions): {
     }
   }
 
-  /** One `/state` read dispatched as a snapshot — the bootstrap, the scope switch, and the peer poll alike. */
-  const fetchSnapshot = async (): Promise<void> => {
+  /** One `/state` read, parsed — the bootstrap, the scope switch, and the peer poll all start here. */
+  const readSnapshot = async (): Promise<{ runs: RunSnapshot[]; revision: number }> => {
     const stateResponse = await fetcher(`${options.baseUrl}/state${scopeQuery()}`, {
       headers,
       signal: controller.signal,
@@ -278,17 +290,23 @@ export function connect(options: ConnectOptions): {
       Number.isInteger(snapshot.revision)
         ? snapshot.revision
         : -1
-    dispatch({ type: "snapshot", runs, revision })
+    return { runs, revision }
   }
 
-  /** An out-of-band re-read, for a scope change or the everywhere poll. Failure keeps the last good state. */
+  /**
+   * An out-of-band re-read, for a scope change or the everywhere poll. Failure keeps the last good state; a
+   * response from a superseded scope is dropped; and the reducer drops one the stream has already overtaken.
+   */
   const resync = async () => {
+    const issued = generation
     try {
-      await fetchSnapshot()
+      const snapshot = await readSnapshot()
+      if (issued !== generation) return
+      dispatch({ type: "snapshot", ...snapshot })
     } catch {
       // The SSE loop owns the connection story; a failed side read must not flap `connected`.
     }
-    void fetchHistory()
+    void fetchHistory(issued)
   }
 
   const run = async () => {
@@ -301,10 +319,15 @@ export function connect(options: ConnectOptions): {
         // the fresh snapshot's cursor is what keeps the restarted stream's frames applying.
         events = await fetcher(`${options.baseUrl}/events`, { headers, signal: controller.signal })
         if (!events.ok) throw new Error(`workflow events endpoint returned ${events.status}`)
-        await fetchSnapshot()
+        const issued = generation
+        // `rebase`: this is the one snapshot allowed to move the cursor DOWN — see the reducer.
+        dispatch({ type: "snapshot", ...(await readSnapshot()), rebase: true })
         dispatch({ type: "connection", connected: true })
         backoff = 250
-        void fetchHistory()
+        // A scope switch during the bootstrap read means the snapshot just applied answers the wrong
+        // question; the resync issued for that switch re-reads under the scope now in force.
+        if (issued !== generation) void resync()
+        else void fetchHistory(issued)
         await consumeSse(events, (frameRevision, event) => {
           dispatch({ type: "event", revision: frameRevision, event })
           // A run that just ended is a run the journal has just finished writing.
@@ -334,6 +357,7 @@ export function connect(options: ConnectOptions): {
     setScope(next) {
       if (next === scope) return
       scope = next
+      generation += 1
       void resync()
     },
     stop() {

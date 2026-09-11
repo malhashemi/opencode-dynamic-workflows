@@ -3,7 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { describe, expect, it } from "bun:test"
 import { createControlRegistry, createInteractionController } from "../src/control"
-import { readEndpointPreference, writeDescriptor } from "../src/discovery"
+import { readEndpointPreference, writeDescriptor, writeEndpointPreference } from "../src/discovery"
 import { startEndpoint, type RunOrigin } from "../src/endpoint"
 import type { Journal, JournalListOptions, RunSummary } from "../src/journal"
 import { createRunStore, type PendingInteraction, type RunSnapshot } from "../src/runs"
@@ -745,6 +745,16 @@ describe("workflow endpoint: stable address", () => {
       const first = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
       if (!first) throw new Error("expected endpoint")
       const preference = await readEndpointPreference(statePath, worktree)
+      // The first host's rendezvous entry, as its plugin writes it right after the endpoint starts. It is what
+      // tells the second host that the port it could not bind belongs to a live peer rather than a squatter.
+      await writeDescriptor(statePath, {
+        url: first.url,
+        token: first.token,
+        pid: process.pid,
+        directory: worktree,
+        worktree,
+        startedAt: Date.now(),
+      })
       const second = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
       if (!second) throw new Error("expected endpoint")
       try {
@@ -757,6 +767,52 @@ describe("workflow endpoint: stable address", () => {
       } finally {
         await second.stop()
         await first.stop()
+      }
+    })
+  })
+
+  it("reclaims a stale preference when nothing live holds its port", async () => {
+    await withStateDir(async (statePath, worktree) => {
+      // Something unrelated squats on the persisted port — no descriptor names it, so it is not a peer.
+      const squatter = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("busy") })
+      const held = squatter.port ?? 0
+      try {
+        await writeEndpointPreference(statePath, worktree, { port: held, token: "stale-token" })
+        const endpoint = await startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } })
+        if (!endpoint) throw new Error("expected endpoint")
+        try {
+          const port = Number(new URL(endpoint.url).port)
+          expect(port).not.toBe(held)
+          // Without this, every later boot would fall back again and the "stable" link would never recover.
+          expect(await readEndpointPreference(statePath, worktree)).toEqual({ port, token: "stale-token" })
+        } finally {
+          await endpoint.stop()
+        }
+      } finally {
+        await squatter.stop(true)
+      }
+    })
+  })
+
+  it("lets exactly one of two racing first boots claim the address", async () => {
+    await withStateDir(async (statePath, worktree) => {
+      // Both read "no preference", both bind an ephemeral port, both arrive at the write. Exactly one wins.
+      const [a, b] = await Promise.all([
+        startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } }),
+        startEndpoint(createRunStore(), {}, { discovery: { statePath, worktree } }),
+      ])
+      if (!a || !b) throw new Error("expected endpoints")
+      try {
+        const preference = await readEndpointPreference(statePath, worktree)
+        if (!preference) throw new Error("expected one of the two boots to claim the address")
+        const ports = [a, b].map((endpoint) => Number(new URL(endpoint.url).port))
+        expect(ports).toContain(preference.port)
+        // The claimant's token is the one on disk; the other host minted its own and wrote nothing.
+        const winner = [a, b].find((endpoint) => Number(new URL(endpoint.url).port) === preference.port)
+        expect(winner?.token).toBe(preference.token)
+      } finally {
+        await a.stop()
+        await b.stop()
       }
     })
   })
@@ -797,6 +853,7 @@ describe("workflow endpoint: everywhere scope", () => {
       peerWorktree: string
       peerRegistry: ReturnType<typeof createControlRegistry>
     }) => Promise<void>,
+    options: { mainStore?: ReturnType<typeof createRunStore>; fetch?: typeof fetch } = {},
   ): Promise<void> {
     const root = await mkdtemp(path.join(os.tmpdir(), "wf-endpoint-peers-"))
     const statePath = path.join(root, "state")
@@ -835,9 +892,17 @@ describe("workflow endpoint: everywhere scope", () => {
     if (!peer) throw new Error("expected peer endpoint")
 
     const main = await startEndpoint(
-      createRunStore(),
+      options.mainStore ?? createRunStore(),
       {},
-      { control: createControlRegistry(), discovery: { statePath, worktree: mainWorktree, isProcessAlive: alwaysAlive } },
+      {
+        control: createControlRegistry(),
+        discovery: {
+          statePath,
+          worktree: mainWorktree,
+          isProcessAlive: alwaysAlive,
+          ...(options.fetch ? { fetch: options.fetch } : {}),
+        },
+      },
     )
     if (!main) throw new Error("expected main endpoint")
 
@@ -934,5 +999,140 @@ describe("workflow endpoint: everywhere scope", () => {
       expect(response.status).toBe(404)
       expect(await response.json()).toEqual({ ok: false, reason: "unknown-run" })
     })
+  })
+
+  it("stamps a merged snapshot with the cursor its LOCAL rows were taken at, not one from after the peer read", async () => {
+    const mainStore = createRunStore()
+    let armed = false
+    // An event lands on the local store while the peer read is in flight — the window in which a cursor read
+    // afterwards would vouch for a run the rows do not carry, and the client would then drop that run's
+    // `run.started` frame as "already in the snapshot".
+    const slipping = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      if (armed && String(input).endsWith("/state")) {
+        armed = false
+        mainStore.create({ ...snapshot(), runId: "run-late" })
+      }
+      return fetch(input, init)
+    }) as unknown as typeof fetch
+    await withMachine(
+      async ({ main }) => {
+        const before = (await (await fetch(`${main.url}/state`)).json()) as { revision: number }
+        armed = true
+        const merged = (await (await fetch(`${main.url}/state?scope=everywhere`)).json()) as {
+          runs: RunSnapshot[]
+          revision: number
+        }
+        expect(merged.runs.map((run) => run.runId)).toEqual(["run-peer"])
+        expect(merged.revision).toBe(before.revision)
+        // The event is real; it is simply the NEXT read's (or the stream's) to deliver.
+        const after = (await (await fetch(`${main.url}/state`)).json()) as { runs: RunSnapshot[]; revision: number }
+        expect(after.revision).toBe(before.revision + 1)
+        expect(after.runs.map((run) => run.runId)).toEqual(["run-late"])
+      },
+      { mainStore, fetch: slipping },
+    )
+  })
+})
+
+/**
+ * The loopback bind's BROWSER boundary. Tokenless on loopback is the deliberate shape; what it must still
+ * refuse is a request the user's own browser was talked into sending by a page from somewhere else.
+ * Reproduced before the check existed: a cross-site `stop.run` came back `200 {"ok":true}` and the run was
+ * gone. Non-browser callers — the TUI client, the probes, `curl` — send no `Origin` and a loopback `Host`, so
+ * none of this touches them.
+ */
+describe("workflow endpoint: browser boundary on loopback", () => {
+  async function stoppable() {
+    const registry = createControlRegistry()
+    const controller = new AbortController()
+    registry.registerRun("run-endpoint", controller)
+    const store = createRunStore()
+    store.create(snapshot())
+    const endpoint = await startEndpoint(store, {}, { control: registry })
+    if (!endpoint) throw new Error("expected endpoint")
+    return { endpoint, controller }
+  }
+  const stopRun = JSON.stringify({ action: "stop.run", runId: "run-endpoint" })
+
+  it("refuses a cross-site write — the simple POST a foreign page can send without a preflight", async () => {
+    const { endpoint, controller } = await stoppable()
+    try {
+      const crossSite = await fetch(`${endpoint.url}/control`, {
+        method: "POST",
+        headers: { origin: "https://evil.example", "content-type": "text/plain" },
+        body: stopRun,
+      })
+      expect(crossSite.status).toBe(403)
+      expect(controller.signal.aborted).toBe(false)
+      // `Origin: null` — a sandboxed frame, a file:// page — is a browser declining to say, and is refused too.
+      const anonymous = await fetch(`${endpoint.url}/control`, {
+        method: "POST",
+        headers: { origin: "null", "content-type": "application/json" },
+        body: stopRun,
+      })
+      expect(anonymous.status).toBe(403)
+      expect(controller.signal.aborted).toBe(false)
+      // A cross-site READ is refused the same way; it is the same header.
+      expect((await fetch(`${endpoint.url}/state`, { headers: { origin: "https://evil.example" } })).status).toBe(403)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("refuses a rebound request — a Host header that names something other than loopback", async () => {
+    const { endpoint } = await stoppable()
+    try {
+      const port = new URL(endpoint.url).port
+      const rebound = await fetch(`${endpoint.url}/state`, { headers: { host: `attacker.example:${port}` } })
+      expect(rebound.status).toBe(403)
+      // Every loopback spelling is this machine: the IP the link carries, `localhost`, and IPv6.
+      for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]) {
+        expect((await fetch(`${endpoint.url}/state`, { headers: { host } })).status).toBe(200)
+      }
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("keeps every loopback origin — the app served from here, and the dev server on another port", async () => {
+    const { endpoint, controller } = await stoppable()
+    try {
+      expect((await fetch(`${endpoint.url}/state`, { headers: { origin: endpoint.url } })).status).toBe(200)
+      expect((await fetch(`${endpoint.url}/state`, { headers: { origin: "http://localhost:5173" } })).status).toBe(200)
+      const own = await fetch(`${endpoint.url}/control`, {
+        method: "POST",
+        headers: { origin: endpoint.url, "content-type": "application/json" },
+        body: stopRun,
+      })
+      expect(own.status).toBe(200)
+      expect(controller.signal.aborted).toBe(true)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("leaves a non-loopback bind to its token — the bearer is the boundary there, not the browser's headers", async () => {
+    const endpoint = await startEndpoint(createRunStore(), { host: "0.0.0.0" })
+    if (!endpoint) throw new Error("expected endpoint")
+    const base = `http://127.0.0.1:${new URL(endpoint.url).port}`
+    try {
+      const foreign = { origin: "https://evil.example", host: `attacker.example:${new URL(endpoint.url).port}` }
+      expect((await fetch(`${base}/state`, { headers: foreign })).status).toBe(401)
+      expect(
+        (await fetch(`${base}/state`, { headers: { ...foreign, authorization: `Bearer ${endpoint.token}` } })).status,
+      ).toBe(200)
+    } finally {
+      await endpoint.stop()
+    }
+  })
+
+  it("leaves the public app shell open to any origin — it is code, not state", async () => {
+    const { endpoint } = await stoppable()
+    try {
+      const shell = await fetch(`${endpoint.url}/`, { headers: { origin: "https://evil.example" } })
+      expect(shell.status).toBe(200)
+    } finally {
+      await endpoint.stop()
+    }
   })
 })

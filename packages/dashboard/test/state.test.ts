@@ -163,6 +163,25 @@ describe("reduceDashboard", () => {
     expect(reduceDashboard(withHistory, { type: "snapshot", runs: [], revision: 10 }).history).toHaveLength(1)
   })
 
+  it("ignores a side read the stream has overtaken, but lets a reconnect rebase the cursor down", () => {
+    const live = reduceAll(initialDashboardState(), [
+      { type: "snapshot", runs: [run()], revision: 3 },
+      { type: "event", revision: 4, event: { type: "run.log", runId: "run-1", value: "after-the-server-snapshot" } },
+    ])
+    // The everywhere poll's answer, taken at revision 3, lands now. Applying it would erase the log line, and
+    // no frame will ever replay it — so it is stale, and state is untouched by identity.
+    expect(reduceDashboard(live, { type: "snapshot", runs: [run()], revision: 3 })).toBe(live)
+    // A restarted host's counter starts over. Its snapshot carries `rebase` and IS the new truth.
+    const restarted = reduceDashboard(live, {
+      type: "snapshot",
+      runs: [run({ logs: ["fresh-boot"] })],
+      revision: 1,
+      rebase: true,
+    })
+    expect(restarted.runs[0]?.logs).toEqual(["fresh-boot"])
+    expect(restarted.revision).toBe(1)
+  })
+
   it("folds unit and phase events into the addressed run and leaves the others untouched by identity", () => {
     const base = reduceDashboard(initialDashboardState(), {
       type: "snapshot",
@@ -391,6 +410,58 @@ describe("connect", () => {
       live.setScope("project")
       await waitFor(() => live.state().runs.length === 1)
       await waitFor(() => live.state().history.length === 0)
+    } finally {
+      live.stop()
+    }
+  })
+
+  it("drops a scope read that a later switch has superseded", async () => {
+    // A slow `everywhere` read, a quick switch back to `project`: the project answer lands first, then the
+    // obsolete everywhere answer arrives. Without a generation check it would paint peer runs under a header
+    // that says `this project` — and leave them there, since project scope has no poll to correct it.
+    const encoder = new TextEncoder()
+    const origin: RunOrigin = { worktree: "/elsewhere/project", url: "http://127.0.0.1:9999" }
+    let releaseEverywhere: (() => void) | null = null
+    const fakeFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/events")) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(": connected\n\n"))
+          },
+        })
+        return new Response(body, { status: 200 })
+      }
+      if (url.includes("/state")) {
+        if (url.includes("scope=everywhere")) {
+          await new Promise<void>((resolve) => {
+            releaseEverywhere = resolve
+          })
+          return Response.json({ runs: [run(), { ...run({ runId: "run-far", startedAt: 900 }), origin }], revision: 3 })
+        }
+        return Response.json({ runs: [run()], revision: 3 })
+      }
+      if (url.includes("/history")) {
+        if (url.includes("scope=everywhere")) {
+          await new Promise((resolve) => setTimeout(resolve, 40))
+          return Response.json({ history: [{ ...summary("hist-far", 100), origin }] })
+        }
+        return Response.json({ history: [] })
+      }
+      return new Response("not found", { status: 404 })
+    }) as typeof fetch
+
+    const live = connect({ baseUrl: "http://dash.test", fetch: fakeFetch })
+    try {
+      await waitFor(() => live.state().runs.length === 1 && live.state().connected)
+      live.setScope("everywhere")
+      await waitFor(() => releaseEverywhere !== null)
+      live.setScope("project")
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      releaseEverywhere!()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(live.state().runs.map((candidate) => candidate.runId)).toEqual(["run-1"])
+      expect(live.state().history).toHaveLength(0)
     } finally {
       live.stop()
     }

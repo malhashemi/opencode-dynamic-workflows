@@ -19,6 +19,7 @@ import {
   settledUnits,
 } from "../progress"
 import type { ControlAction } from "../control"
+import type { EndpointDescriptor } from "../discovery"
 import type { RunSummary } from "../journal"
 import type {
   InteractionQuestion,
@@ -278,6 +279,29 @@ export function samePath(a: string, b: string): boolean {
   const left = a.replace(/\/+$/, "")
   const right = b.replace(/\/+$/, "")
   return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`)
+}
+
+/**
+ * The endpoint the sidebar's `⌂` line names for THIS project.
+ *
+ * Descriptors arrive newest first, and newest is exactly the wrong tie-break here: a second host in the same
+ * project binds an ephemeral fallback port BECAUSE the first one holds the stable address, so "newest" would
+ * hand the link to the host that will not answer at that URL after a restart. Own process first — on the
+ * default `opencode` the TUI and its server share a pid, so the descriptor with this pid is this host's —
+ * then the longest-lived host, which is the one that took the stable port.
+ */
+export function projectEndpoint(
+  descriptors: readonly EndpointDescriptor[],
+  project: string,
+  selfPid?: number,
+): EndpointDescriptor | null {
+  const mine = descriptors.filter(
+    (candidate) => samePath(candidate.worktree, project) || samePath(candidate.directory, project),
+  )
+  if (mine.length === 0) return null
+  const own = selfPid === undefined ? undefined : mine.find((candidate) => candidate.pid === selfPid)
+  if (own) return own
+  return mine.reduce((oldest, candidate) => (candidate.startedAt < oldest.startedAt ? candidate : oldest))
 }
 
 const FILTER_ORDER: readonly RunStatusFilter[] = ["all", "active", "done", "failed"]

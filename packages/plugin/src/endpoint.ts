@@ -126,6 +126,44 @@ function authorized(request: Request, url: URL, token: string): boolean {
   return header === `Bearer ${token}` || url.searchParams.get("token") === token
 }
 
+/** `127.0.0.1:4321`, `localhost`, `[::1]:80` — an authority (Host header) or an origin's host, port and all. */
+function isLoopbackAuthority(authority: string): boolean {
+  try {
+    return isLoopbackHost(new URL(`http://${authority}`).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The browser-side half of the loopback trust boundary — the half a bare bind does NOT get for free.
+ *
+ * "Reachable only from this machine" is not "reachable only on this user's intent". Any web page the user
+ * visits can make their browser send a simple POST (`text/plain`, so no preflight) to a loopback port, and
+ * `request.json()` parses it regardless of the declared type — a stop, or an answer, issued by a page that was
+ * merely open in another tab. Reproduced before this check existed: a cross-site `stop.run` aborted the run
+ * and got `200 {"ok":true}`. DNS rebinding is the read-side twin: a hostname the attacker points at
+ * 127.0.0.1 lets their page read `/state` as if it were same-origin.
+ *
+ * Two headers close both, and neither touches a non-browser caller — the TUI client, a probe, `curl` send no
+ * `Origin` and a loopback `Host`. `Host` must name a loopback address, because a rebound request carries the
+ * attacker's hostname. `Origin`, when a browser sends one, must be a loopback origin too: loopback rather than
+ * this exact origin, because the Vite dev server serves the same app from another loopback port, and a
+ * loopback origin is by definition another process of this same user — the boundary already accepted.
+ * `Origin: null` (sandboxed frames, `file://` pages) is a browser saying "I will not tell you", and is refused.
+ */
+function fromThisMachine(request: Request): boolean {
+  const host = request.headers.get("host")
+  if (host !== null && !isLoopbackAuthority(host)) return false
+  const origin = request.headers.get("origin")
+  if (origin === null) return true
+  try {
+    return isLoopbackHost(new URL(origin).hostname)
+  } catch {
+    return false
+  }
+}
+
 function json(value: unknown, status = 200): Response {
   return Response.json(value, {
     status,
@@ -295,6 +333,18 @@ export async function startEndpoint(
     return descriptors.filter((descriptor) => descriptor.url !== selfUrl)
   }
 
+  /** Whether a live peer endpoint answers at `port` — the difference between a second host and a squatter. */
+  const peerHoldsPort = async (port: number): Promise<boolean> => {
+    for (const descriptor of await peers()) {
+      try {
+        if (Number(new URL(descriptor.url).port) === port) return true
+      } catch {
+        // An unparsable descriptor URL cannot hold anything.
+      }
+    }
+    return false
+  }
+
   /** One peer read, bounded and failure-shaped: a dead or slow peer is `null`, never an error. */
   const peerJson = async (descriptor: EndpointDescriptor, pathAndQuery: string): Promise<unknown> => {
     try {
@@ -377,7 +427,11 @@ export async function startEndpoint(
             return serveAsset(typeof options.assets === "string" ? [options.assets] : defaultAssetRoots(), url.pathname)
           }
           // Loopback (the default) is tokenless by design — see `authorized` for the trust-boundary argument.
-          // Only a deliberately non-loopback bind keeps the bearer/query-token gate.
+          // Only a deliberately non-loopback bind keeps the bearer/query-token gate. What loopback keeps instead
+          // is the browser boundary: see `fromThisMachine` for the cross-site write it refuses.
+          if (loopback && !fromThisMachine(request)) {
+            return json({ error: "forbidden" }, 403)
+          }
           if (!loopback && !authorized(request, url, token)) {
             return json({ error: "unauthorized" }, 401)
           }
@@ -432,7 +486,11 @@ export async function startEndpoint(
           // says so with `outputElided`, so nothing has to guess whether a unit produced nothing.
           if (url.pathname === "/state") {
             const local: TaggedRun[] = store.list().map(elideRunOutputs)
-            if (url.searchParams.get("scope") !== "everywhere" || !discovery) return json({ runs: local, revision })
+            // The cursor is captured WITH the rows, synchronously, before anything awaits: a client drops every
+            // buffered frame at or below the revision a snapshot names, so a revision read after the peer fetch
+            // below would vouch for an event the rows do not contain, and that event would be lost.
+            const cursor = revision
+            if (url.searchParams.get("scope") !== "everywhere" || !discovery) return json({ runs: local, revision: cursor })
             // `everywhere`, merged SERVER-side: the browser holds one connection and this endpoint does the
             // legwork its peers' descriptors make possible. Local rows win an id collision (they are the
             // freshest fact about a run this process owns); the `revision` stays this endpoint's own cursor,
@@ -444,7 +502,7 @@ export async function startEndpoint(
               seen.add(run.runId)
               merged.push(run)
             }
-            return json({ runs: merged, revision })
+            return json({ runs: merged, revision: cursor })
           }
           if (url.pathname === "/history") {
             const status = historyStatuses(url)
@@ -561,19 +619,44 @@ export async function startEndpoint(
   const url = `http://${urlHost}:${boundPort}`
   selfUrl = url
 
-  // Persist the stable address on the boot that owns it: the first boot (which just learned its OS-assigned
-  // port), or one whose preference drifted. The fallback boot never writes — see above. A failed write costs
-  // stability across restarts, never the endpoint itself.
-  if (
-    discovery &&
-    boundPreferred &&
-    boundPort > 0 &&
-    (preference === null || preference.port !== boundPort || preference.token !== token)
-  ) {
-    try {
-      await writeEndpointPreference(discovery.statePath, discovery.worktree, { port: boundPort, token })
-    } catch {
-      // A read-only state directory must not take the endpoint down with it.
+  // Persist the stable address on the boot that owns it. Three cases, and the difference between them is who
+  // holds the persisted port:
+  //
+  // - A FIRST boot (no preference) just learned its OS-assigned port and claims it — exclusively. Two first
+  //   boots racing each other both read "no preference" and both bind an ephemeral port; with a plain write
+  //   the last one to land would own the address while the other believed it did. `exclusive` makes exactly one
+  //   of them the claimant, and the loser keeps its ephemeral address without writing.
+  // - A boot that bound the preferred port but whose preference drifted (an explicit `options.port`/`token`)
+  //   replaces it.
+  // - A FALLBACK boot asks who holds the port it could not bind. A live peer descriptor naming it is a second
+  //   host in this project, and the address is theirs — never written. No live endpoint naming it means
+  //   something unrelated squats there, and without this the preference would be stale forever: every later
+  //   single-host boot would fall back, and the "stable" link would never recover. So the stale entry is
+  //   replaced with the address this boot actually has. (A peer that bound the port but has not yet written
+  //   its descriptor reads as a squatter for that instant; the cost is the stable address moving once.)
+  //
+  // A failed write costs stability across restarts, never the endpoint itself.
+  if (discovery && boundPort > 0) {
+    const claim: "first" | "replace" | "none" = boundPreferred
+      ? preference === null
+        ? "first"
+        : preference.port !== boundPort || preference.token !== token
+          ? "replace"
+          : "none"
+      : (await peerHoldsPort(preferredPort))
+        ? "none"
+        : "replace"
+    if (claim !== "none") {
+      try {
+        await writeEndpointPreference(
+          discovery.statePath,
+          discovery.worktree,
+          { port: boundPort, token },
+          { exclusive: claim === "first" },
+        )
+      } catch {
+        // A read-only state directory must not take the endpoint down with it.
+      }
     }
   }
 

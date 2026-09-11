@@ -101,6 +101,21 @@ describe("endpoint address preference", () => {
     }
   })
 
+  it("lets an exclusive write claim an address exactly once, and a plain write replace it", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "wf-preference-"))
+    try {
+      // Two first boots racing: the filesystem is the referee, and the loser learns it lost.
+      expect(await writeEndpointPreference(root, "/project/a", { port: 1_001, token: "first" }, { exclusive: true })).toBe(true)
+      expect(await writeEndpointPreference(root, "/project/a", { port: 1_002, token: "second" }, { exclusive: true })).toBe(false)
+      expect(await readEndpointPreference(root, "/project/a")).toEqual({ port: 1_001, token: "first" })
+      // A stale or drifted address is replaced by the ordinary write.
+      expect(await writeEndpointPreference(root, "/project/a", { port: 1_003, token: "third" })).toBe(true)
+      expect(await readEndpointPreference(root, "/project/a")).toEqual({ port: 1_003, token: "third" })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("never files a preference where the descriptor pruner would eat it", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "wf-preference-"))
     try {

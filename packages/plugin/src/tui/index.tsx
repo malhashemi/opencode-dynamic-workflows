@@ -4,7 +4,7 @@ import { registerAnnouncer } from "./announce"
 import { createRunClient } from "./client"
 import { createControlClient } from "./control"
 import { registerOpenCommand, WORKFLOW_ROUTE } from "./keymap"
-import { pendingInteractions, runOfInteraction, samePath } from "./route-model"
+import { pendingInteractions, projectEndpoint, runOfInteraction } from "./route-model"
 import WorkflowRoute from "./route"
 import { registerSidebar } from "./sidebar"
 
@@ -51,16 +51,14 @@ const tui: TuiPlugin = async (api, options) => {
     return run ? { runId: run.runId, requestID: oldest.requestID } : null
   })
   // The strip's `⌂` line: THIS project's endpoint, found the same way the route's scope filter decides project
-  // membership (`samePath`, which tolerates the /var vs /private/var alias). Loopback needs no token, so the
+  // membership (`samePath`, which tolerates the /var vs /private/var alias), and among several hosts in the
+  // project the one that holds the stable address — see `projectEndpoint`. Loopback needs no token, so the
   // descriptor's bare URL is the whole address. An accessor, because the endpoint (and even `api.state.path`)
   // can arrive after registration — the view re-reads it on its clock.
   const dashboardUrl = () => {
     const project = api.state.path.worktree || api.state.path.directory || null
     if (!project) return null
-    const descriptor = client
-      .endpoints()
-      .find((candidate) => samePath(candidate.worktree, project) || samePath(candidate.directory, project))
-    return descriptor?.url ?? null
+    return projectEndpoint(client.endpoints(), project, process.pid)?.url ?? null
   }
   registerSidebar(api, client.runs, dashboardUrl)
   // Mounted in the host's root overlay rather than driven from here: an effect created outside the renderer's
