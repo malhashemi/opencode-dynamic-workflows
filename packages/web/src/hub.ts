@@ -86,12 +86,12 @@ export class EventHub {
     }
     if (!event || typeof event !== "object" || typeof event.type !== "string") return
     if (event.type === "resync.required") {
-      if (typeof event.seq === "number") tracker.resyncTo(event.seq)
+      if (typeof event.seq === "number") tracker.resyncTo(event.seq, event.epoch)
       const reason = (event.data as { reason?: string } | undefined)?.reason ?? "resync required"
       this.resync(location, reason)
       return
     }
-    const verdict = tracker.observe(event.seq)
+    const verdict = tracker.observe(event.seq, event.epoch)
     if (verdict !== "ok") this.resync(location, verdict === "gap" ? "missed events" : "the service restarted")
     for (const listener of [...this.listeners]) listener.event?.(event)
   }

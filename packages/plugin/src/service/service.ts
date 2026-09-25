@@ -14,7 +14,7 @@ import path from "node:path"
 import type { Broker } from "../broker"
 import type { ReplayPlan } from "../context"
 import type { EngineHost } from "../host"
-import { processAlive, type Journal } from "../journal"
+import { ownerAlive, type Journal } from "../journal"
 import { loadWorkflow, loadWorkflowConfig, sha256 } from "../loader"
 import { runWorkflow, type RunWorkflowOutput } from "../orchestrator"
 import {
@@ -251,9 +251,9 @@ export class WorkflowService {
     }
   }
 
-  eventsSince(after = 0) {
-    const tail = this.deps.store.eventsSince(after)
-    return { events: tail.events.map((event) => elideEvent(event)), complete: tail.complete, latest: tail.latest }
+  eventsSince(after = 0, epoch?: string) {
+    const tail = this.deps.store.eventsSince(after, epoch)
+    return { events: tail.events.map((event) => elideEvent(event)), complete: tail.complete, latest: tail.latest, epoch: tail.epoch }
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -487,13 +487,23 @@ export class WorkflowService {
     )
   }
 
+  /** Native OpenCode forms are answered through OpenCode's own form API (the TUI does), not through the engine. */
+  private refuseNativeForm(runId: string, interactionId: string): void {
+    const pending = this.deps.store.get(runId)?.interactions.find((candidate) => candidate.interactionId === interactionId)
+    if (pending?.form) {
+      throw new WorkflowProtocolError("unsupported", "This is a native OpenCode form; answer or dismiss it in the OpenCode TUI (/workflows).")
+    }
+  }
+
   async replyInteraction(runId: string, interactionId: string, answers: string[][]): Promise<void> {
+    this.refuseNativeForm(runId, interactionId)
     if (!(await this.deps.broker.reply(runId, interactionId, answers))) {
       throw new WorkflowProtocolError("conflict", "That interaction is not pending, or the answer does not fit its options.")
     }
   }
 
   async cancelInteraction(runId: string, interactionId: string): Promise<void> {
+    this.refuseNativeForm(runId, interactionId)
     if (!(await this.deps.broker.cancel(runId, interactionId))) {
       throw new WorkflowProtocolError("conflict", "That interaction is not pending.")
     }
@@ -566,7 +576,7 @@ export class WorkflowService {
       const record = await this.deps.journal.read(entry.runId)
       if (!record) continue
       const owner = record.owner
-      if (owner && owner.pid !== process.pid && processAlive(owner.pid)) continue
+      if (owner && owner.pid !== process.pid && ownerAlive(owner)) continue
       if (owner && owner.pid === process.pid && owner.instance === this.deps.instance) continue
       await this.deps.journal.update({
         ...record.run,

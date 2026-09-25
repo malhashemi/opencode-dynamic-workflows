@@ -232,7 +232,8 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
     })
   }
 
-  function events(request: Request, service: WorkflowService, lastEventId: number | null): Response {
+  /** SSE ids are `<epoch>.<seq>`; a bare number (older clients, `?after=`) is a seq of an unknown epoch. */
+  function events(request: Request, service: WorkflowService, lastEventId: { seq: number; epoch?: string } | null): Response {
     const location = service.location
     let unsubscribe = () => {}
     let heartbeat: ReturnType<typeof setInterval> | undefined
@@ -240,12 +241,13 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         subscribers.set(location, (subscribers.get(location) ?? 0) + 1)
-        const send = (event: ProtocolEvent) => controller.enqueue(encoder.encode(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(elideEvent(event))}\n\n`))
+        const send = (event: ProtocolEvent) => controller.enqueue(encoder.encode(`id: ${event.epoch ?? ""}.${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(elideEvent(event))}\n\n`))
         controller.enqueue(encoder.encode(`retry: 2000\n: ${PLUGIN_NAME} protocol ${PROTOCOL_VERSION}\n\n`))
         if (lastEventId !== null) {
-          const tail = service.eventsSince(lastEventId)
+          const tail = service.eventsSince(lastEventId.seq, lastEventId.epoch)
           if (!tail.complete) {
-            controller.enqueue(encoder.encode(`event: resync.required\ndata: ${JSON.stringify({ protocol: PROTOCOL_VERSION, seq: tail.latest, time: Date.now(), location, runId: "", type: "resync.required", revision: 0, data: { reason: "events were missed" } })}\n\n`))
+            const reason = lastEventId.epoch !== undefined && lastEventId.epoch !== tail.epoch ? "the service restarted" : "events were missed"
+            controller.enqueue(encoder.encode(`id: ${tail.epoch}.${tail.latest}\nevent: resync.required\ndata: ${JSON.stringify({ protocol: PROTOCOL_VERSION, seq: tail.latest, epoch: tail.epoch, time: Date.now(), location, runId: "", type: "resync.required", revision: 0, data: { reason } })}\n\n`))
           } else for (const event of tail.events) send(event)
         }
         unsubscribe = service.deps.store.subscribe((event) => {
@@ -339,7 +341,8 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
         }
         if (parts[0] === "events" && parts.length === 1) {
           const header = request.headers.get("last-event-id") ?? url.searchParams.get("after")
-          const after = header !== null && /^\d+$/.test(header) ? Number(header) : null
+          const match = header?.match(/^(?:([A-Za-z0-9-]*)\.)?(\d+)$/)
+          const after = match ? { seq: Number(match[2]), ...(match[1] ? { epoch: match[1] } : {}) } : null
           return events(request, serviceFor(location), after)
         }
         if (parts[0] === "workflows" && parts.length === 1) return json(await serviceFor(location).listWorkflows(), 200, extra)

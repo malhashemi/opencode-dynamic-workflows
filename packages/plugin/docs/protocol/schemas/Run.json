@@ -229,6 +229,9 @@
                 },
                 "error": {
                   "type": "string"
+                },
+                "note": {
+                  "type": "string"
                 }
               },
               "required": [

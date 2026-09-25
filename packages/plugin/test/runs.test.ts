@@ -115,6 +115,18 @@ describe("run store", () => {
     expect(store.eventsSince(store.latestSeq() + 100).complete).toBe(false)
   })
 
+  it("a client from another epoch (the service restarted) is told to resync even when seq lines up", () => {
+    const store = createRunStore("/p")
+    let seen: ProtocolEvent | undefined
+    store.subscribe((event) => (seen = event))
+    store.create(run())
+    expect(seen?.epoch).toBe(store.epoch)
+    expect(store.eventsSince(0, store.epoch).complete).toBe(true)
+    const other = store.eventsSince(0, "old-epoch")
+    expect(other.complete).toBe(false)
+    expect(other.epoch).toBe(store.epoch)
+  })
+
   it("elides large outputs for transports but keeps them in the store", () => {
     const store = createRunStore("/p")
     store.create(run())

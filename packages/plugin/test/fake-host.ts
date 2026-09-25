@@ -32,6 +32,14 @@ export interface FakeHostOptions {
   model?: { providerID: string; id: string }
   /** Make `create` fail. */
   createError?: string
+  /** Hold `create` open this long (lets a test stop the Run while the session is being created). */
+  createDelayMs?: number
+  /** `prompt` never resolves (a hung admission). */
+  promptHang?: boolean
+  /** `prompt` rejects with this message. */
+  promptError?: string
+  /** `wait` rejects with this message. */
+  waitError?: string
   /** Steps (model requests) each prompt takes — drives the step guard via the index. */
   stepsPerPrompt?: number
   /** Extraction reply for `generateText`; absent ⇒ no extraction support. */
@@ -166,6 +174,7 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
     session: {
       async create(input) {
         creates.push(structuredClone(input))
+        if (options.createDelayMs) await new Promise((resolve) => setTimeout(resolve, options.createDelayMs))
         if (options.createError) throw new Error(options.createError)
         counter += 1
         const id = `ses_fake_${counter}`
@@ -181,6 +190,8 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
       async prompt(input) {
         const session = sessions.get(input.sessionID)
         if (!session) throw new Error(`unknown session ${input.sessionID}`)
+        if (options.promptHang) return new Promise(() => {})
+        if (options.promptError) throw new Error(options.promptError)
         promptIndex += 1
         const call: PromptCall = { sessionID: input.sessionID, text: input.text, turn: session.turns++ }
         prompts.push(call)
@@ -195,6 +206,7 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
         return { id: `msg_${promptIndex}` }
       },
       async wait(input) {
+        if (options.waitError) throw new Error(options.waitError)
         const session = sessions.get(input.sessionID)
         await session?.running
       },

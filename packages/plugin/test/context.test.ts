@@ -268,3 +268,73 @@ describe("ctx.ask and Unit questions", () => {
     expect(asked).toEqual(["true:ses_fake_1:red or blue?"])
   })
 })
+
+describe("audit regressions — a Unit never outlives its stop, and never throws", () => {
+  test("stopped while the session was being created: the new session is interrupted", async () => {
+    const controller = new AbortController()
+    const { ctx, host } = makeCtx({ createDelayMs: 30 }, { signal: controller.signal })
+    const pending = ctx.agent("x")
+    setTimeout(() => controller.abort(), 5)
+    expect(await pending).toBeNull()
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+    expect(host.prompts).toHaveLength(0)
+  })
+
+  test("a hung prompt admission still honours the Unit timeout, and the session is interrupted", async () => {
+    const { ctx, host, state } = makeCtx({ promptHang: true })
+    expect(await ctx.agent("x", { timeoutMs: 20 })).toBeNull()
+    expect(state.errors[0]?.error).toContain("20ms timeout")
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+  })
+
+  test("a rejected prompt interrupts the session it may have started", async () => {
+    const { ctx, host, state } = makeCtx({ promptError: "boom" })
+    expect(await ctx.agent("x")).toBeNull()
+    expect(state.errors[0]?.error).toBe("could not prompt the Unit session: boom")
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+  })
+
+  test("a rejected wait is a failed Unit (recorded, interrupted), not a thrown error", async () => {
+    const units: Unit[] = []
+    const { ctx, host, state } = makeCtx({ waitError: "socket closed" }, { events: { onUnit: (u) => units.push(u) } })
+    expect(await ctx.agent("x")).toBeNull()
+    expect(state.errors[0]?.error).toBe("waiting for the Unit session failed: socket closed")
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+    expect(units.at(-1)?.status).toBe("failed")
+  })
+})
+
+describe("audit regressions — hard budget covers repairs and extraction", () => {
+  const Rating = z.object({ score: z.number() })
+
+  test("no repair turn once a hard budget is spent", async () => {
+    const { ctx, host, state } = makeCtx({ reply: { text: "no json here" }, outputTokens: 80 }, { budget: 50, hardBudget: true })
+    expect(await ctx.agent("rate", { schema: Rating })).toBeNull()
+    expect(host.prompts).toHaveLength(1)
+    expect(state.errors[0]?.error).toContain("budget exhausted before repair turn 1")
+  })
+
+  test("no extraction once a hard budget is spent", async () => {
+    const { ctx, host, state } = makeCtx(
+      { reply: { text: "score four" }, outputTokens: 30, generate: () => '{"score": 4}' },
+      { budget: 50, hardBudget: true },
+    )
+    expect(await ctx.agent("rate", { schema: Rating, retries: 1 })).toBeNull()
+    expect(host.generates).toHaveLength(0)
+    expect(state.errors[0]?.error).toContain("budget exhausted before extraction")
+  })
+
+  test("extraction's (estimated) tokens are counted in the Unit's usage and the budget", async () => {
+    const units: Unit[] = []
+    const { ctx, state } = makeCtx(
+      { reply: { text: "score four" }, outputTokens: 0, generate: () => '{"score": 4}' },
+      { events: { onUnit: (u) => units.push(u) } },
+    )
+    expect(await ctx.agent("rate", { schema: Rating, retries: 0 })).toEqual({ score: 4 })
+    const done = units.at(-1)!
+    expect(done.resultPath).toBe("extract")
+    expect(done.usage.tokens.output).toBeGreaterThan(0)
+    expect(done.attempts.at(-1)?.note).toContain("estimated")
+    expect(state.tokensSpent).toBe(done.usage.tokens.output)
+  })
+})

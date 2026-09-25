@@ -11,6 +11,9 @@
     "seq": {
       "type": "number"
     },
+    "epoch": {
+      "type": "string"
+    },
     "time": {
       "type": "number"
     },

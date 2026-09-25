@@ -59,7 +59,9 @@ export interface RunStore {
   subscribe(subscriber: RunSubscriber): () => void
   subscribers(): number
   /** Events after `seq`, oldest first. `complete` is false when some were already dropped from the window. */
-  eventsSince(seq: number): { events: ProtocolEvent[]; complete: boolean; latest: number }
+  eventsSince(seq: number, epoch?: string): { events: ProtocolEvent[]; complete: boolean; latest: number; epoch: string }
+  /** Random per store instance (per service process): tells clients the seq sequence started again. */
+  readonly epoch: string
   /** Emit a location-wide event (no Run). */
   emit(type: "library.changed" | "resync.required", data: unknown): void
   latestSeq(): number
@@ -267,6 +269,7 @@ export function createRunStore(location: string): RunStore {
   const subscribers = new Set<RunSubscriber>()
   const window: ProtocolEvent[] = []
   let seq = 0
+  const epoch = crypto.randomUUID().slice(0, 8)
 
   const publish = (event: ProtocolEvent) => {
     window.push(event)
@@ -283,6 +286,7 @@ export function createRunStore(location: string): RunStore {
   const event = (run: Run | null, type: ProtocolEvent["type"], data: unknown): ProtocolEvent => ({
     protocol: PROTOCOL_VERSION,
     seq: ++seq,
+    epoch,
     time: Date.now(),
     location,
     runId: run?.runId ?? "",
@@ -423,14 +427,19 @@ export function createRunStore(location: string): RunStore {
     subscribers() {
       return subscribers.size
     },
-    eventsSince(after) {
+    epoch,
+    eventsSince(after, clientEpoch) {
       const first = window[0]
+      if (clientEpoch !== undefined && clientEpoch !== epoch) {
+        return { events: window.map((entry) => structuredClone(entry)), complete: false, latest: seq, epoch }
+      }
       // A client ahead of us saw another epoch (the service restarted and seq started again): not complete.
       const complete = after <= seq && (after === seq || (first !== undefined && after >= first.seq - 1))
       return {
         events: window.filter((entry) => entry.seq > after).map((entry) => structuredClone(entry)),
         complete,
         latest: seq,
+        epoch,
       }
     },
     emit(type, data) {

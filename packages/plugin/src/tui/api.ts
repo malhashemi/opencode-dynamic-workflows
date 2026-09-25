@@ -37,7 +37,7 @@ export interface WorkflowApi {
   cleanupRun(input: { runId: string; deleted?: string[] }): Promise<{ deleted: number; pending: number }>
   attach(input: { surface: string; sessionID?: string; ttlMs?: number }): Promise<{ ok: true }>
   detach(input: { surface: string }): Promise<{ ok: true }>
-  eventsSince(input: { after?: number }): Promise<{ events: ProtocolEvent[]; complete: boolean; latest: number }>
+  eventsSince(input: { after?: number; epoch?: string }): Promise<{ events: ProtocolEvent[]; complete: boolean; latest: number; epoch?: string }>
   pair(): Promise<{ code: string; expiresAt: number; url: string }>
 }
 

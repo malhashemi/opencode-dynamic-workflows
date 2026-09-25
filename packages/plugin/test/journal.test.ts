@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createJournal, journalRoot, subscribeJournal, type Journal } from "../src/journal"
+import { createJournal, journalRoot, ownerAlive, processStartedAt, subscribeJournal, type Journal } from "../src/journal"
 import { emptyUsage, type Unit } from "../src/protocol"
 import { createRunStore, newRun } from "../src/runs"
 
@@ -57,7 +57,7 @@ describe("journal", () => {
     const partial = await journal.read("r1")
     expect(partial?.run.status).toBe("running")
     expect(partial?.run.units.map((u) => `${u.unitId}:${u.status}:${u.output}`)).toEqual(["u1:succeeded:answer"])
-    expect(partial?.owner).toEqual({ pid: process.pid, instance: "i1" })
+    expect(partial?.owner).toMatchObject({ pid: process.pid, instance: "i1" })
     expect(partial?.source).toBe(SOURCE)
 
     store.apply({ type: "run.ended", runId: "r1", patch: { status: "succeeded", endedAt: 3 } })
@@ -123,5 +123,32 @@ describe("journal", () => {
     expect(raw.run.status).toBe("interrupted")
     expect(raw.run.cleanup).toBe("pending")
     expect(raw.args).toEqual({ keep: true })
+  })
+})
+
+describe("audit regressions — journal", () => {
+  it("an older transition never rolls back a newer run.json (a lost append)", async () => {
+    const finished = { ...baseRun(), status: "succeeded" as const, revision: 10, units: [unit({ status: "succeeded", output: "final" })] }
+    await journal.begin(baseRun(), { source: SOURCE, args: null, instance: "i" })
+    await journal.append({ protocol: 1, seq: 5, time: 1, location: dir, runId: "r1", type: "unit.updated", revision: 5, data: unit({ status: "running", output: undefined }) })
+    await journal.finish(finished, "done")
+    const record = await journal.read("r1")
+    expect(record?.run.units[0]?.status).toBe("succeeded")
+    expect(record?.run.units[0]?.output).toBe("final")
+  })
+
+  it("a reused PID is not the owner: the start time must match too", () => {
+    const self = { pid: process.pid, instance: "i", startedAt: 1_000_000 }
+    expect(ownerAlive(self, () => 1_000_500)).toBe(true)
+    expect(ownerAlive(self, () => 9_000_000)).toBe(false)
+    expect(ownerAlive({ pid: process.pid, instance: "i" }, () => 9_000_000)).toBe(true)
+    expect(ownerAlive({ pid: 2 ** 30, instance: "i", startedAt: 1 })).toBe(false)
+  })
+
+  it("records the owning process's start time", async () => {
+    await journal.begin(baseRun(), { source: SOURCE, args: null, instance: "i" })
+    await journal.flush()
+    const record = await journal.read("r1")
+    expect(Math.abs((record?.owner?.startedAt ?? 0) - (processStartedAt(process.pid) ?? 0))).toBeLessThan(3_000)
   })
 })

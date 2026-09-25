@@ -28,6 +28,8 @@ export interface SyncState {
   readonly location: string | null
   /** The last applied event `seq`; 0 before the first snapshot. */
   readonly seq: number
+  /** The service epoch `seq` belongs to (it changes when the service restarts). */
+  readonly epoch?: string
   readonly runs: Readonly<Record<string, RunSlot>>
   /** False until the first snapshot has loaded. */
   readonly ready: boolean
@@ -64,7 +66,7 @@ function withSlot(state: SyncState, runId: string, slot: RunSlot): SyncState {
 }
 
 /** A fresh state from a full re-read: the library, the Runs read in full, and the `seq` it is current to. */
-export function fromSnapshot(input: { location: string; seq: number; entries: readonly LibraryEntry[]; runs: readonly Run[]; previous?: SyncState }): SyncState {
+export function fromSnapshot(input: { location: string; seq: number; epoch?: string; entries: readonly LibraryEntry[]; runs: readonly Run[]; previous?: SyncState }): SyncState {
   const runs: Record<string, RunSlot> = {}
   for (const entry of input.entries) runs[entry.runId] = { entry: { ...entry, live: live(entry.status) }, run: null, snapshotRevision: 0, activity: null }
   for (const run of input.runs) runs[run.runId] = slotOf(run, input.previous?.runs[run.runId]?.activity ?? null)
@@ -72,7 +74,7 @@ export function fromSnapshot(input: { location: string; seq: number; entries: re
   for (const [runId, slot] of Object.entries(input.previous?.runs ?? {})) {
     if (!runs[runId] && slot.run) runs[runId] = slot
   }
-  return { location: input.location, seq: input.seq, runs, ready: true }
+  return { location: input.location, seq: input.seq, ...(input.epoch ? { epoch: input.epoch } : {}), runs, ready: true }
 }
 
 /** Apply a full `getRun` snapshot (a hydrate or a view opening a Run). Never goes backwards. */
@@ -153,6 +155,9 @@ function applyToRun(run: Run, event: ProtocolEvent): Run {
  */
 export function applyEvent(state: SyncState, event: ProtocolEvent): Applied {
   if (!state.ready || event.location !== state.location) return { state, effects: [] }
+  if (event.epoch && state.epoch && event.epoch !== state.epoch) {
+    return { state, effects: [{ kind: "resync", reason: "the service restarted" }] }
+  }
   if (event.seq <= state.seq) {
     // A lower `seq` for a Run we have never seen means the service restarted and numbering began again.
     if (event.type === "run.started" && !state.runs[event.runId]) return { state, effects: [{ kind: "resync", reason: "event sequence restarted" }] }

@@ -78,6 +78,13 @@ describe("resync", () => {
 })
 
 describe("SeqTracker", () => {
+  test("a new epoch is a reset even when its seq lines up (the service restarted)", () => {
+    const tracker = new SeqTracker()
+    expect(tracker.observe(5, "a")).toBe("ok")
+    expect(tracker.observe(6, "b")).toBe("reset")
+    expect(tracker.observe(7, "b")).toBe("ok")
+  })
+
   test("contiguous is ok, a jump is a gap, going backwards is a reset", () => {
     const tracker = new SeqTracker()
     expect(tracker.observe(10)).toBe("ok")

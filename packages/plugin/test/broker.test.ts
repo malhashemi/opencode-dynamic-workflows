@@ -124,3 +124,64 @@ describe("coerceAnswers", () => {
     expect(coerceAnswers(questions, [["Z"]])).toBeNull()
   })
 })
+
+describe("audit regressions — permission decisions and native forms", () => {
+  const slowSetup = () => {
+    const store = createRunStore("/p")
+    store.create(newRun({ runId: "r1", workflow: { key: null, name: "wf", description: "", provenance: "inline" }, location: "/p", parentSessionID: "ses_p" }))
+    const replies: Array<{ requestID: string; decision: PermissionDecision }> = []
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const broker = createBroker({
+      store,
+      attached: () => true,
+      replyPermission: async (input) => {
+        replies.push({ requestID: input.requestID, decision: input.decision })
+        await gate
+      },
+    })
+    return { store, broker, replies, release }
+  }
+  const detail = { action: "shell", resources: ["ls"], save: [], requestID: "per_9" }
+
+  it("a second decision cannot start while the first is on its way to the host", async () => {
+    const { store, broker, replies, release } = slowSetup()
+    broker.permission({ runId: "r1", unitId: "u", sessionID: "su", detail })
+    const id = store.get("r1")!.interactions[0]!.interactionId
+    const first = broker.reply("r1", id, [["Allow once"]])
+    const second = broker.cancel("r1", id)
+    expect(await second).toBe(false)
+    release()
+    expect(await first).toBe(true)
+    expect(replies).toEqual([{ requestID: "per_9", decision: "once" }])
+  })
+
+  it("a delivered decision succeeds even when the host's own event filed the record first", async () => {
+    const { store, broker, release } = slowSetup()
+    broker.permission({ runId: "r1", unitId: "u", sessionID: "su", detail })
+    const id = store.get("r1")!.interactions[0]!.interactionId
+    const reply = broker.reply("r1", id, [["Reject"]])
+    broker.permissionResolved("per_9", "reject")
+    release()
+    expect(await reply).toBe(true)
+    expect(store.get("r1")!.resolved).toHaveLength(1)
+  })
+
+  it("ending a Run rejects the permission requests its Units still wait on", async () => {
+    const { broker, replies, release } = slowSetup()
+    release()
+    broker.permission({ runId: "r1", unitId: "u", sessionID: "su", detail })
+    broker.releaseRun("r1")
+    await Promise.resolve()
+    expect(replies).toEqual([{ requestID: "per_9", decision: "reject" }])
+  })
+
+  it("native forms cannot be answered or dismissed through the engine", async () => {
+    const { store, broker } = slowSetup()
+    broker.form({ runId: "r1", unitId: "u", sessionID: "su", formID: "frm_1", questions: [{ header: "h", prompt: "p", options: [], multiple: false, custom: true }] })
+    const id = store.get("r1")!.interactions[0]!.interactionId
+    expect(await broker.reply("r1", id, [["x"]])).toBe(false)
+    expect(await broker.cancel("r1", id)).toBe(false)
+    expect(store.get("r1")!.interactions).toHaveLength(1)
+  })
+})

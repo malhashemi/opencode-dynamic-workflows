@@ -28,17 +28,23 @@ export type SeqVerdict = "ok" | "gap" | "reset"
 /** Per-location `seq` watch: contiguous is fine, a jump means missed events, going backwards means a restart. */
 export class SeqTracker {
   last: number | null = null
+  /** The service's epoch; a different one means it restarted, even when the new `seq` happens to line up. */
+  epoch: string | null = null
 
-  observe(seq: number): SeqVerdict {
+  observe(seq: number, epoch?: string): SeqVerdict {
     const previous = this.last
+    const previousEpoch = this.epoch
     this.last = seq
+    if (epoch !== undefined) this.epoch = epoch
+    if (epoch !== undefined && previousEpoch !== null && epoch !== previousEpoch) return "reset"
     if (previous === null || seq === previous + 1) return "ok"
     return seq > previous ? "gap" : "reset"
   }
 
-  /** A `resync.required` carries the server's latest seq: continue from there. */
-  resyncTo(seq: number): void {
+  /** A `resync.required` carries the server's latest seq (and epoch): continue from there. */
+  resyncTo(seq: number, epoch?: string): void {
     this.last = seq
+    if (epoch !== undefined) this.epoch = epoch
   }
 }
 

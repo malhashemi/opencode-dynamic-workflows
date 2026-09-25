@@ -239,7 +239,17 @@ describe("live: gateway", () => {
     }
     controller.abort()
     expect(text).toContain("event: run.started")
-    expect(text).toMatch(/id: \d+/)
+    expect(text).toMatch(/id: [0-9a-f]+\.\d+/)
+
+    // An id from another epoch (a restarted service) is answered with resync.required, not a silent replay.
+    const stale = new AbortController()
+    const again = await fetch(`${base()}/v1/events`, { signal: stale.signal, headers: { "last-event-id": "deadbeef.1" } })
+    const staleReader = again.body!.getReader()
+    let more = ""
+    for (let i = 0; i < 5 && !more.includes("resync.required"); i++) more += new TextDecoder().decode((await staleReader.read()).value)
+    stale.abort()
+    expect(more).toContain("event: resync.required")
+    expect(more).toContain("the service restarted")
   })
 
   test("the tool result links to the run page, which the gateway serves", async () => {

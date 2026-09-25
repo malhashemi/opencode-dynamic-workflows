@@ -15,7 +15,7 @@
  * - The runner never throws: a failed Unit is a value (error model D9), recorded by the context in `ctx.errors`.
  */
 import type { z } from "zod"
-import { emptyUsage, type ResultPath, type UnitAttempt, type Usage } from "./protocol"
+import { addUsage, emptyUsage, type ResultPath, type UnitAttempt, type Usage } from "./protocol"
 import {
   finalAssistant,
   type EngineHost,
@@ -83,6 +83,11 @@ export interface UnitSpec {
   onSession?: (sessionID: string, stop: () => void, model: HostModelRef | undefined) => void
   /** Called when the Unit moves into repair turns. */
   onRepairing?: () => void
+  /**
+   * Hard budget: may this Unit spend more? Receives the output tokens the Unit has used so far. Checked before
+   * every repair turn and before extraction, so a typed Unit cannot overrun a hard budget on its own.
+   */
+  mayContinue?: (unitOutputTokens: number) => boolean
 }
 
 export type UnitRunResult =
@@ -157,7 +162,15 @@ export function usageFromSession(info: HostSessionInfo | undefined): Usage {
   }
 }
 
-type Settle = "settled" | "stopped" | "aborted" | "timeout" | "steps"
+type Settle = "settled" | "stopped" | "aborted" | "timeout" | "steps" | { error: string }
+
+/** How long to wait for a session to go quiet after `interrupt`, before reading its final usage. */
+const DRAIN_MS = 5_000
+
+/** Rough token count for host calls that report no usage (`generate.text` on 2.0.16): ~4 characters a token. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
 
 function repairText(binding: UnitBinding, lastError: string | undefined): string {
   const reason = lastError
@@ -170,6 +183,23 @@ function repairText(binding: UnitBinding, lastError: string | undefined): string
  * Run one Unit to a result. Never throws.
  */
 export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec): Promise<UnitRunResult> {
+  try {
+    return await runUnitUnsafe(host, index, spec)
+  } catch (error) {
+    // The contract is "never throws": a failed Unit is a value (D9). This is the backstop for host surprises.
+    return {
+      ok: false,
+      error: `the Unit failed unexpectedly: ${stringifyError(error)}`,
+      stopped: false,
+      sessionID: null,
+      usage: emptyUsage(),
+      model: spec.model,
+      attempts: [],
+    }
+  }
+}
+
+async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec): Promise<UnitRunResult> {
   const attempts: UnitAttempt[] = []
   let sessionID: string | null = null
   let model: HostModelRef | undefined = spec.model
@@ -249,29 +279,69 @@ export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec
   const guards = [spec.signal, stop.signal, stepLimit.signal, timeout].filter((signal): signal is AbortSignal => !!signal)
   const guard = AbortSignal.any(guards)
 
-  const settle = async (id: string): Promise<Settle> => {
-    const reason = (): Settle =>
-      stop.signal.aborted ? "stopped" : stepLimit.signal.aborted ? "steps" : timeout?.aborted ? "timeout" : "aborted"
-    if (guard.aborted) return reason()
-    const aborted = new Promise<Settle>((resolve) => guard.addEventListener("abort", () => resolve(reason()), { once: true }))
-    const outcome = await Promise.race([host.session.wait({ sessionID: id }).then(() => "settled" as const), aborted])
-    if (outcome !== "settled") {
-      await Promise.resolve(host.session.interrupt({ sessionID: id })).catch(() => {})
+  const reason = (): Settle =>
+    stop.signal.aborted ? "stopped" : stepLimit.signal.aborted ? "steps" : timeout?.aborted ? "timeout" : "aborted"
+  const aborted = new Promise<Settle>((resolve) => {
+    if (guard.aborted) resolve(reason())
+    else guard.addEventListener("abort", () => resolve(reason()), { once: true })
+  })
+
+  /** Stop the session and give it a bounded moment to go quiet, so its usage is final and no work outlives the Unit. */
+  const halt = async (id: string) => {
+    await Promise.resolve()
+      .then(() => host.session.interrupt({ sessionID: id }))
+      .catch(() => {})
+    await Promise.race([Promise.resolve(host.session.wait({ sessionID: id })).catch(() => {}), Bun.sleep(DRAIN_MS)])
+  }
+
+  /** Admit a prompt, racing the stop signals; a rejection or a stop halts the session (it may have started). */
+  const admit = async (id: string, text: string): Promise<Settle> => {
+    if (guard.aborted) {
+      await halt(id)
+      return reason()
     }
+    const outcome = await Promise.race([
+      Promise.resolve(host.session.prompt({ sessionID: id, text })).then(
+        () => "settled" as const,
+        (error: unknown) => ({ error: `could not prompt the Unit session: ${stringifyError(error)}` }),
+      ),
+      aborted,
+    ])
+    if (outcome !== "settled") await halt(id)
     return outcome
   }
+
+  const settle = async (id: string): Promise<Settle> => {
+    if (guard.aborted) {
+      await halt(id)
+      return reason()
+    }
+    const outcome = await Promise.race([
+      Promise.resolve(host.session.wait({ sessionID: id })).then(
+        () => "settled" as const,
+        (error: unknown) => ({ error: `waiting for the Unit session failed: ${stringifyError(error)}` }),
+      ),
+      aborted,
+    ])
+    if (outcome !== "settled") await halt(id)
+    return outcome
+  }
+
+  /** Output tokens and cost of host calls the session does not count (extraction). */
+  let extra = emptyUsage()
 
   const readUsage = async (): Promise<Usage> => {
     try {
       const current = await host.session.get({ sessionID: sessionID! })
       model = current.model ?? model
-      return usageFromSession(current)
+      return addUsage(usageFromSession(current), extra)
     } catch {
-      return emptyUsage()
+      return extra
     }
   }
 
   const interruptedMessage = (outcome: Exclude<Settle, "settled">): string => {
+    if (typeof outcome === "object") return outcome.error
     if (outcome === "stopped") return "unit stopped before completion"
     if (outcome === "steps") return `unit exceeded its step limit (${binding.maxSteps} model requests) and was stopped`
     if (outcome === "timeout")
@@ -286,11 +356,20 @@ export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec
     let lastError: string | undefined
     let restarts = 0
 
+    const overBudget = async (): Promise<Usage | null> => {
+      if (!spec.mayContinue) return null
+      const usage = await readUsage()
+      return spec.mayContinue(usage.tokens.output) ? null : usage
+    }
+
     for (let turn = 0; turn <= retries; turn++) {
-      try {
-        await host.session.prompt({ sessionID, text })
-      } catch (error) {
-        return fail(`could not prompt the Unit session: ${stringifyError(error)}`, false, await readUsage())
+      if (turn > 0) {
+        const spent = await overBudget()
+        if (spent) return fail(`budget exhausted before repair turn ${turn}: ${lastError ?? "workflow_result was not called"}`, false, spent)
+      }
+      const admitted = await admit(sessionID, text)
+      if (admitted !== "settled") {
+        return fail(interruptedMessage(admitted), admitted === "stopped" || admitted === "aborted", await readUsage())
       }
       const outcome = await settle(sessionID)
       if (outcome === "settled" && binding.restart && restarts < MAX_RESTARTS) {
@@ -361,18 +440,22 @@ export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec
     }
 
     // Last resort: extract JSON from the final reply with a plain generation call.
+    const spentBeforeExtract = lastText && host.generateText && model ? await overBudget() : null
+    if (spentBeforeExtract) {
+      return fail(`budget exhausted before extraction: ${lastError ?? "workflow_result was never called"}`, false, spentBeforeExtract)
+    }
     if (lastText && host.generateText && model) {
       try {
-        const generated = await host.generateText({
-          model,
-          prompt:
-            "Extract the answer below into ONE JSON value that matches this JSON Schema. Output only the JSON.\n" +
-            `Schema: ${JSON.stringify(jsonSchema)}\n\nAnswer:\n${lastText}`,
-        })
+        const prompt =
+          "Extract the answer below into ONE JSON value that matches this JSON Schema. Output only the JSON.\n" +
+          `Schema: ${JSON.stringify(jsonSchema)}\n\nAnswer:\n${lastText}`
+        const generated = await host.generateText({ model, prompt })
+        // The host reports no usage for this call; count an estimate so budgets and totals are not blind to it.
+        extra = addUsage(extra, { ...emptyUsage(), tokens: { ...emptyUsage().tokens, input: estimateTokens(prompt), output: estimateTokens(generated.text) } })
         const parsed = parseJsonFromText(generated.text)
         const valid = parsed.ok ? spec.schema!.safeParse(parsed.value) : undefined
         if (valid?.success) {
-          attempts.push({ turn: attempts.length, path: "extract", ok: true })
+          attempts.push({ turn: attempts.length, path: "extract", ok: true, note: "usage estimated (the host reports none for extraction)" })
           return { ok: true, value: valid.data, sessionID, usage: await readUsage(), model, path: "extract", attempts }
         }
         attempts.push({

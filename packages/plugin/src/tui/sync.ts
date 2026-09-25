@@ -137,11 +137,11 @@ export class WorkflowSync {
       const { api } = this.options
       const info = await api.info()
       // Asking for events after "infinity" returns none, cheaply, and tells us the current `seq`.
-      const { latest } = await api.eventsSince({ after: Number.MAX_SAFE_INTEGER })
+      const { latest, epoch } = await api.eventsSince({ after: Number.MAX_SAFE_INTEGER })
       const { runs: entries } = await api.listRuns({ limit: this.options.historyLimit ?? 200 })
       const live = entries.filter((entry) => entry.live || entry.waiting).slice(0, this.options.hydrateLimit ?? 25)
       const runs = (await Promise.all(live.map((entry) => api.getRun({ runId: entry.runId }).then((out) => out.run, () => null)))).filter((run) => run !== null)
-      this.set(fromSnapshot({ location: info.location, seq: latest, entries, runs, previous: this.state }))
+      this.set(fromSnapshot({ location: info.location, seq: latest, ...(epoch ? { epoch } : {}), entries, runs, previous: this.state }))
     })
   }
 
@@ -150,8 +150,9 @@ export class WorkflowSync {
     if (this.busy) return
     const outcome: { resync: string | null } = { resync: null }
     await this.exclusive(async () => {
-      const tail = await this.options.api.eventsSince({ after })
-      if (tail.latest < after) outcome.resync = "the service restarted"
+      const epoch = this.state.epoch
+      const tail = await this.options.api.eventsSince({ after, ...(epoch ? { epoch } : {}) })
+      if (tail.latest < after || (epoch && tail.epoch && tail.epoch !== epoch)) outcome.resync = "the service restarted"
       else if (!tail.complete) outcome.resync = "missed events are no longer retained"
       else for (const event of tail.events) this.dispatchQuietly(event)
     })

@@ -501,7 +501,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     cleanupRun: (input, c) => guard(c.error as never, () => service.cleanupRun(input.runId, input.deleted ?? [])),
     attach: (input, c) => guard(c.error as never, () => (service.attach(input.surface, input.ttlMs, input.sessionID), { ok: true as const })),
     detach: (input, c) => guard(c.error as never, () => (service.detach(input.surface), { ok: true as const })),
-    eventsSince: (input, c) => guard(c.error as never, () => service.eventsSince(input.after ?? 0)),
+    eventsSince: (input, c) => guard(c.error as never, () => service.eventsSince(input.after ?? 0, input.epoch)),
     pair: (_input, c) =>
       guard(c.error as never, () => {
         const current = engineGlobal().singletons.get("gateway") as GatewayHandle | undefined

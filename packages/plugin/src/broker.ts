@@ -125,6 +125,8 @@ interface Waiter {
   settle: (result: { answers: string[][] | null; by: ResolvedInteraction["by"]; outcome: ResolvedInteraction["outcome"] }) => void
   accept: (answers: string[][]) => string[][] | null
   timer: ReturnType<typeof setTimeout> | null
+  /** A permission decision is on its way to the host: no second decision may start. */
+  sending?: boolean
 }
 
 export function createBroker(options: BrokerOptions): Broker {
@@ -166,6 +168,36 @@ export function createBroker(options: BrokerOptions): Broker {
     if (waiter.timer) clearTimeout(waiter.timer)
     resolveRecord(waiter.runId, interactionId, result.by, result.answers ?? undefined, result.outcome)
     waiter.settle(result)
+    return true
+  }
+
+  /**
+   * Send one permission decision to the host. The waiter is reserved first, so a concurrent reply or cancel cannot
+   * send a second, conflicting decision. Once the host has it, the call succeeds even if the host's own
+   * "replied" event (or the Run ending) filed the record first — the decision WAS delivered.
+   */
+  const sendPermission = async (
+    interactionId: string,
+    waiter: Waiter,
+    decision: PermissionDecision,
+    answers: string[][],
+    message?: string,
+  ): Promise<boolean> => {
+    if (!options.replyPermission || !waiter.interaction.permission) return false
+    waiter.sending = true
+    try {
+      await options.replyPermission({
+        sessionID: waiter.interaction.sessionID,
+        requestID: waiter.interaction.permission.requestID,
+        decision,
+        ...(message ? { message } : {}),
+      })
+    } catch {
+      waiter.sending = false
+      return false
+    }
+    permissions.delete(waiter.interaction.permission.requestID)
+    finish(interactionId, { answers, by: "human", outcome: decision === "reject" ? "rejected" : "answered" })
     return true
   }
 
@@ -354,45 +386,24 @@ export function createBroker(options: BrokerOptions): Broker {
 
     async reply(runId, interactionId, answers) {
       const waiter = waiters.get(interactionId)
-      if (!waiter || waiter.runId !== runId) return false
+      if (!waiter || waiter.runId !== runId || waiter.sending) return false
+      if (waiter.interaction.form) return false // native forms are answered through OpenCode's form API (the TUI)
       const accepted = waiter.accept(answers)
       if (!accepted) return false
       if (waiter.interaction.kind === "permission" && waiter.interaction.permission) {
         const label = accepted[0]?.[0]
         const decision: PermissionDecision = label === "Allow once" ? "once" : label === "Always allow" ? "always" : "reject"
-        if (!options.replyPermission) return false
-        try {
-          await options.replyPermission({
-            sessionID: waiter.interaction.sessionID,
-            requestID: waiter.interaction.permission.requestID,
-            decision,
-          })
-        } catch {
-          return false
-        }
-        permissions.delete(waiter.interaction.permission.requestID)
-        return finish(interactionId, { answers: accepted, by: "human", outcome: decision === "reject" ? "rejected" : "answered" })
+        return sendPermission(interactionId, waiter, decision, accepted)
       }
       return finish(interactionId, { answers: accepted, by: "human", outcome: "answered" })
     },
 
     async cancel(runId, interactionId) {
       const waiter = waiters.get(interactionId)
-      if (!waiter || waiter.runId !== runId) return false
+      if (!waiter || waiter.runId !== runId || waiter.sending) return false
+      if (waiter.interaction.form) return false
       if (waiter.interaction.kind === "permission" && waiter.interaction.permission) {
-        if (!options.replyPermission) return false
-        try {
-          await options.replyPermission({
-            sessionID: waiter.interaction.sessionID,
-            requestID: waiter.interaction.permission.requestID,
-            decision: "reject",
-            message: "Rejected from the workflow surface.",
-          })
-        } catch {
-          return false
-        }
-        permissions.delete(waiter.interaction.permission.requestID)
-        return finish(interactionId, { answers: [["Reject"]], by: "human", outcome: "rejected" })
+        return sendPermission(interactionId, waiter, "reject", [["Reject"]], "Rejected from the workflow surface.")
       }
       // A script ask handed back settles on the author's own fallback (its `ask` maps `null` to it); a Unit's
       // question is dismissed and the model is told to proceed; an approval is refused.
@@ -400,11 +411,20 @@ export function createBroker(options: BrokerOptions): Broker {
     },
 
     releaseRun(runId) {
+      // The Run is over: refuse what its Units were still asking for, so no native request outlives it.
+      for (const [requestID, entry] of [...permissions]) {
+        if (entry.runId !== runId) continue
+        permissions.delete(requestID)
+        const waiter = waiters.get(entry.interactionId)
+        if (waiter?.sending || !options.replyPermission) continue
+        void options
+          .replyPermission({ sessionID: entry.sessionID, requestID, decision: "reject", message: "The workflow Run ended." })
+          .catch(() => {})
+      }
       for (const [interactionId, waiter] of [...waiters]) {
         if (waiter.runId !== runId) continue
         finish(interactionId, { answers: null, by: "automation", outcome: "cancelled" })
       }
-      for (const [requestID, entry] of [...permissions]) if (entry.runId === runId) permissions.delete(requestID)
       for (const [formID, entry] of [...forms]) if (entry.runId === runId) forms.delete(formID)
     },
 

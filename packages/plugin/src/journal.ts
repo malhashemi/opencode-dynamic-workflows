@@ -29,7 +29,14 @@ export interface JournalRecord {
   result?: unknown
   /** `units.jsonl`, in the order the transitions happened. */
   transitions: ProtocolEvent[]
-  owner: { pid: number; instance: string } | null
+  owner: JournalOwner | null
+}
+
+/** The process that ran a Run. `startedAt` (process start, ms) tells a reused PID apart from the original. */
+export interface JournalOwner {
+  pid: number
+  instance: string
+  startedAt?: number
 }
 
 export interface JournalListOptions {
@@ -70,7 +77,7 @@ interface RunDocument {
   version: number
   run: Run
   args: unknown
-  owner: { pid: number; instance: string } | null
+  owner: JournalOwner | null
 }
 
 /** `<root>/.opencode/workflows/runs` — the journal for one project. */
@@ -174,6 +181,9 @@ function foldTransitions(run: Run, transitions: ProtocolEvent[]): Run {
   const units = new Map(run.units.map((unit) => [unit.unitId, unit] as const))
   const resolved = new Map(run.resolved.map((record) => [record.interactionId, record] as const))
   for (const event of transitions) {
+    // `run.json` already holds everything up to its revision. An older line (e.g. the last append failed but the
+    // final snapshot was written) must not roll a Unit back to an earlier state.
+    if (typeof event.revision === "number" && run.revision > 0 && event.revision <= run.revision) continue
     if (event.type === "unit.updated") {
       const unit = normalizeUnit(event.data, run.runId)
       if (unit) units.set(unit.unitId, unit)
@@ -257,7 +267,7 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
     root,
 
     begin(run, input) {
-      const owner = { pid: process.pid, instance: input.instance }
+      const owner: JournalOwner = { pid: process.pid, instance: input.instance, startedAt: processStartedAtSelf() }
       opened.set(run.runId, { args: input.args, owner })
       return chain(
         run.runId,
@@ -359,6 +369,34 @@ export function subscribeJournal(store: RunStore, journal: Journal): () => void 
   return store.subscribe((event) => {
     if (isJournaledEvent(event)) void journal.append(event)
   })
+}
+
+/** This process's start time (ms since epoch). */
+export function processStartedAtSelf(): number {
+  return Math.round(Date.now() - process.uptime() * 1000)
+}
+
+/** Another process's start time from `ps` (second precision), or null when it cannot be read. */
+export function processStartedAt(pid: number): number | null {
+  try {
+    // `lstart` is printed in the TZ of `ps`: pin it to UTC so the parse does not depend on anyone's timezone.
+    const out = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, TZ: "UTC" } }).stdout.toString().trim()
+    const time = out ? Date.parse(`${out} GMT`) : Number.NaN
+    return Number.isFinite(time) ? time : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Does the process that owned a Run still exist? A live PID is not enough — PIDs are reused — so when the owner
+ * recorded its start time, the process at that PID must have started then too (within `ps`'s one-second grain).
+ */
+export function ownerAlive(owner: JournalOwner, startedAt: (pid: number) => number | null = processStartedAt): boolean {
+  if (!processAlive(owner.pid)) return false
+  if (owner.startedAt === undefined) return true
+  const actual = startedAt(owner.pid)
+  return actual === null || Math.abs(actual - owner.startedAt) < 3_000
 }
 
 /** Is a process alive? `EPERM` means it exists but belongs to someone else. */

@@ -105,6 +105,8 @@ export const UnitAttempt = z.object({
   path: ResultPath,
   ok: z.boolean(),
   error: z.string().optional(),
+  /** Context for a successful attempt, e.g. that its usage is estimated. */
+  note: z.string().optional(),
 })
 export type UnitAttempt = z.infer<typeof UnitAttempt>
 
@@ -331,6 +333,8 @@ export const ProtocolEvent = z.object({
   protocol: z.literal(PROTOCOL_VERSION),
   /** Monotonic per service (per location). Gaps mean the client missed events. */
   seq: z.number(),
+  /** Changes when the service restarts (seq starts again). A different epoch than the one you hold means resync. */
+  epoch: z.string().optional(),
   time: z.number(),
   location: z.string(),
   /** Empty for location-wide events (`library.changed`, `resync.required`). */
@@ -440,12 +444,17 @@ export const OkOutput = z.object({ ok: z.literal(true) })
 
 export const ActivityOutput = z.object({ entries: z.array(ActivityEntry) })
 
-export const EventsSinceInput = z.object({ after: z.number().optional() })
+export const EventsSinceInput = z.object({
+  after: z.number().optional(),
+  /** The epoch `after` belongs to. A different epoch answers `complete: false`. */
+  epoch: z.string().optional(),
+})
 export const EventsSinceOutput = z.object({
   events: z.array(ProtocolEvent),
   /** False when `after` is older than the retained window: re-read snapshots. */
   complete: z.boolean(),
   latest: z.number(),
+  epoch: z.string().optional(),
 })
 
 /** Every schema published as JSON Schema, by file name. */

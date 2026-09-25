@@ -169,3 +169,14 @@ describe("snapshots and selectors", () => {
     expect(sessionEntries(state, "ses_parent").map((e) => e.runId)).toEqual(["b", "a"])
   })
 })
+
+describe("audit regression — service epoch", () => {
+  test("an event from another epoch asks for a resync, even with the next seq", () => {
+    const state = fromSnapshot({ location: LOCATION, seq: 4, epoch: "old", entries: [], runs: [] })
+    const next = { ...event("library.changed", {}, { seq: 5, runId: "" }), epoch: "new" }
+    expect(applyEvent(state, next).effects).toEqual([{ kind: "resync", reason: "the service restarted" }])
+    const same = { ...event("library.changed", {}, { seq: 5, runId: "" }), epoch: "old" }
+    expect(applyEvent(state, same).effects.find((effect) => effect.kind === "resync")).toBeUndefined()
+  })
+})
+

@@ -268,6 +268,9 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
             emit(current)
             events?.onUnitSession?.(unitId, sessionID, stop)
           },
+          ...(input.hardBudget && budgetTotal !== null
+            ? { mayContinue: (unitOutput: number) => state.tokensSpent + unitOutput < budgetTotal }
+            : {}),
           onRepairing: () => {
             current = { ...current, status: "repairing" }
             emit(current)
