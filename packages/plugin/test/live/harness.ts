@@ -3,7 +3,7 @@
  * that loads THIS plugin, and an authenticated client. No user configuration is touched.
  *
  * Environment:
- * - `WF_LIVE_MODEL` — model for every agent (default `google/gemini-3.1-flash-lite`, cheap).
+ * - `WF_LIVE_MODEL` — model for every agent (default `claude-work/claude-opus-5-5`, subscription; `openai/gpt-6-sol` also allowed).
  * - `WF_LIVE_PLUGIN` — plugin package spec (default: this package by path; set a `git+file://…#<sha>` spec to
  *   test the installed-package path).
  * - `WF_LIVE_KEEP=1` — keep the project and database after the run.
@@ -14,7 +14,7 @@ import os from "node:os"
 import path from "node:path"
 import { WorkflowRpc } from "../../src/service/rpc"
 
-export const LIVE_MODEL = process.env.WF_LIVE_MODEL ?? "google/gemini-3.1-flash-lite"
+export const LIVE_MODEL = process.env.WF_LIVE_MODEL ?? "claude-work/claude-opus-5-5"
 export const PLUGIN_PATH = path.resolve(import.meta.dir, "..", "..")
 
 export interface LiveServer {

@@ -158,4 +158,4 @@ bun test ./packages/plugin/test/live --timeout 300000    # real OpenCode on a pr
 ```
 
 The live harness starts `opencode serve` with its own database under `$TMPDIR/opencode`; it never touches
-your configuration. `WF_LIVE_MODEL` picks the model (default `google/gemini-3.1-flash-lite`).
+your configuration. `WF_LIVE_MODEL` picks the model (default `claude-work/claude-opus-5-5`).
