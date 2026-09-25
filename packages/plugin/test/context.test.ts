@@ -18,8 +18,9 @@ describe("ctx.agent — text Units", () => {
     expect(create.title).toBe("⟡ wf · test · greeter")
     expect(create.agent).toBe("general")
     expect(create.metadata).toMatchObject({ workflow: { protocol: 1, runId: "run-test", ordinal: 1, parentSessionID: "ses_parent" } })
-    expect(create.permissions.slice(-3).map((rule) => `${rule.action}:${rule.effect}`)).toEqual([
+    expect(create.permissions.slice(-4).map((rule) => `${rule.action}:${rule.effect}`)).toEqual([
       "workflow_result:allow",
+      "question:allow",
       "workflow:deny",
       "workflow_inline:deny",
     ])
@@ -38,7 +39,7 @@ describe("ctx.agent — text Units", () => {
   test("Workflow and Unit permission rules precede the engine rules", async () => {
     const { ctx, host } = makeCtx({}, { permissions: [{ action: "edit", resource: "*", effect: "allow" }] })
     await ctx.agent("x", { permissions: [{ action: "shell", resource: "*", effect: "deny" }] })
-    expect(host.creates[0]!.permissions.map((rule) => rule.action)).toEqual(["edit", "shell", "workflow_result", "workflow", "workflow_inline"])
+    expect(host.creates[0]!.permissions.map((rule) => rule.action)).toEqual(["edit", "shell", "workflow_result", "question", "workflow", "workflow_inline"])
   })
 
   test("a provider failure resolves to null and is recorded", async () => {
@@ -227,6 +228,15 @@ describe("ctx.agent — resume replay", () => {
       { fallback: [["Fast"]] },
     )
     expect(answer).toEqual([["Thorough"]])
+  })
+
+  test("a recorded hand-back (null) replays the fallback", async () => {
+    const { ctx } = makeCtx({}, { replay: plan({ answers: [null] }) })
+    const answer = await ctx.ask(
+      { header: "Depth", prompt: "How deep?", options: [{ label: "Fast", description: "" }, { label: "Thorough", description: "" }] },
+      { fallback: [["Fast"]] },
+    )
+    expect(answer).toEqual([["Fast"]])
   })
 })
 

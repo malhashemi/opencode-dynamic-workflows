@@ -360,8 +360,10 @@ export class WorkflowService {
           onUnitSession: (_id, unitId, _sessionID, stop) => {
             live.units.set(unitId, stop)
           },
-          onSettled: (run, result) => {
-            this.results.set(run.runId, result)
+          onResult: (id, result) => {
+            this.results.set(id, result)
+          },
+          onSettled: (run) => {
             if (run.status === "succeeded" && this.deps.config.retention === "delete-on-success") {
               store.apply({ type: "run.patch", runId, patch: { cleanup: "pending" } })
               void this.deps.journal.update(store.get(runId)!)
@@ -458,7 +460,12 @@ export class WorkflowService {
     for (const unit of run.units) {
       units.set(unit.ordinal, { prompt: unit.prompt, status: unit.status, ...(unit.output !== undefined ? { output: unit.output } : {}), schema: unit.schema, subagent: unit.subagent })
     }
-    const answers = run.resolved.filter((record) => record.origin === "script" && record.answers.length > 0).map((record) => record.answers)
+    // One entry per `ctx.ask` the script got past, in order. An ask released because the Run stopped is not a
+    // decision (skip it: ask again); a person handing one back chose the fallback (null replays the fallback).
+    const answers = run.resolved
+      .filter((record) => record.origin === "script" && !(record.by === "automation" && record.outcome === "cancelled"))
+      .sort((a, b) => a.raisedAt - b.raisedAt)
+      .map((record) => (record.answers.length > 0 ? record.answers : null))
     const replay: ReplayPlan = { units, answers, rerunFailed, diverged: false }
     // The journaled script, not the file on disk: a resume replays the Run that happened, even if the durable
     // file was edited since (a changed script diverges and runs live from the first changed Unit).

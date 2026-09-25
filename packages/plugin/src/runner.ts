@@ -41,6 +41,9 @@ const MAX_RESTARTS = 5
 /** Rules every Unit session carries after the author's: typed results always work, recursion never does. */
 export const ENGINE_UNIT_RULES: HostPermissionRule[] = [
   { action: "workflow_result", resource: "*", effect: "allow" },
+  // Subagents lack `question` by default (observed on 2.0.16). In a Unit the engine's wrapper answers it: the
+  // Run's person when one is attached, else "nobody available" — so it never blocks a headless Run.
+  { action: "question", resource: "*", effect: "allow" },
   { action: "workflow", resource: "*", effect: "deny" },
   { action: "workflow_inline", resource: "*", effect: "deny" },
 ]

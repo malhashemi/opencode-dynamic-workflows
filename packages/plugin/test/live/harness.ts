@@ -25,6 +25,8 @@ export interface LiveServer {
   workflow: ReturnType<ReturnType<typeof OpenCode.make>["rpc"]>
   gatewayPort: number
   logs: () => string
+  /** Kill the service (default SIGKILL: a crash) and start it again on the same project and database. */
+  restart(signal?: NodeJS.Signals): Promise<void>
   stop(): Promise<void>
 }
 
@@ -68,54 +70,66 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
     await mkdir(path.dirname(path.join(project, file)), { recursive: true })
     await writeFile(path.join(project, file), contents)
   }
-  const port = freePort()
   let output = ""
-  const child = Bun.spawn(["opencode", "serve", "--hostname", "127.0.0.1", "--port", String(port), "--print-logs"], {
-    cwd: project,
-    env: { ...process.env, OPENCODE_DB: path.join(root, "opencode.db"), XDG_CACHE_HOME: path.join(root, "cache"), XDG_STATE_HOME: path.join(root, "state") },
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const pump = async (stream: ReadableStream<Uint8Array>) => {
-    const decoder = new TextDecoder()
-    for await (const chunk of stream) output += decoder.decode(chunk)
-  }
-  void pump(child.stdout)
-  void pump(child.stderr)
-  const deadline = Date.now() + 30_000
-  let password = ""
-  while (Date.now() < deadline) {
-    const match = output.match(/server password (\S+)/)
-    if (match && output.includes("server listening")) {
-      password = match[1]!
-      break
+  const boot = async () => {
+    const port = freePort()
+    const child = Bun.spawn(["opencode", "serve", "--hostname", "127.0.0.1", "--port", String(port), "--print-logs"], {
+      cwd: project,
+      env: { ...process.env, OPENCODE_DB: path.join(root, "opencode.db"), XDG_CACHE_HOME: path.join(root, "cache"), XDG_STATE_HOME: path.join(root, "state") },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const pump = async (stream: ReadableStream<Uint8Array>) => {
+      const decoder = new TextDecoder()
+      for await (const chunk of stream) output += decoder.decode(chunk)
     }
-    await Bun.sleep(100)
+    const mark = output.length
+    void pump(child.stdout)
+    void pump(child.stderr)
+    const deadline = Date.now() + 30_000
+    let password = ""
+    while (Date.now() < deadline) {
+      const tail = output.slice(mark)
+      const match = tail.match(/server password (\S+)/)
+      if (match && tail.includes("server listening")) {
+        password = match[1]!
+        break
+      }
+      await Bun.sleep(100)
+    }
+    if (!password) {
+      child.kill()
+      throw new Error(`opencode serve did not start:\n${output.slice(-2000)}`)
+    }
+    const url = `http://127.0.0.1:${port}`
+    const client = OpenCode.make({
+      baseUrl: url,
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-opencode-directory": project },
+    })
+    return { child, url, password, client, workflow: client.rpc(WorkflowRpc as never) }
   }
-  if (!password) {
-    child.kill()
-    throw new Error(`opencode serve did not start:\n${output.slice(-2000)}`)
-  }
-  const url = `http://127.0.0.1:${port}`
-  const client = OpenCode.make({
-    baseUrl: url,
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-opencode-directory": project },
-  })
-  const workflow = client.rpc(WorkflowRpc as never)
-  return {
-    url,
-    password,
+  let current = await boot()
+  const server: LiveServer = {
+    url: current.url,
+    password: current.password,
     project,
-    client,
-    workflow,
+    client: current.client,
+    workflow: current.workflow,
     gatewayPort,
     logs: () => output,
+    async restart(kill = "SIGKILL") {
+      current.child.kill(kill)
+      await current.child.exited
+      current = await boot()
+      Object.assign(server, { url: current.url, password: current.password, client: current.client, workflow: current.workflow })
+    },
     async stop() {
-      child.kill()
-      await child.exited
+      current.child.kill()
+      await current.child.exited
       if (!process.env.WF_LIVE_KEEP) await rm(root, { recursive: true, force: true })
     },
   }
+  return server
 }
 
 /** `$TMPDIR/opencode` (the approved scratch area), resolved through symlinks so paths match the host's. */

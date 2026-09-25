@@ -89,6 +89,8 @@ export interface RunWorkflowInput {
   /** The Run exists; `stop` ends it. */
   onRegister?: (runId: string, stop: (reason?: string) => void) => void
   onUnitSession?: (runId: string, unitId: string, sessionID: string, stop: () => void) => void
+  /** The Run's result, handed over before `run.ended` is published. */
+  onResult?: (runId: string, result: unknown) => void
   /** Called when the Run is terminal (after the store and journal have it). */
   onSettled?: (run: Run, result: unknown) => void
   /** An existing store Run to continue (status `queued`, e.g. after an approval), instead of creating one. */
@@ -244,27 +246,26 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     throw error
   } finally {
     input.broker.releaseRun(input.runId)
-    const current = store.get(input.runId)
+    let current = store.get(input.runId)
     if (current && (current.status === "running" || current.status === "queued")) {
       if (failure && status !== "succeeded") store.apply({ type: "run.log", runId: input.runId, value: `run ${status}: ${failure}`, kind: "engine" })
       if (stopReason && status === "stopped") store.apply({ type: "run.log", runId: input.runId, value: `stopped: ${stopReason}`, kind: "engine" })
-      store.apply({
-        type: "run.ended",
-        runId: input.runId,
-        patch: {
-          status,
-          currentPhase: state.currentPhase ?? current.currentPhase,
-          errors: state.errors.map((error) => ({ ...error })),
-          tokensSpent: state.tokensSpent,
-          endedAt: Date.now(),
-          resultPreview: status === "succeeded" ? previewResult(result) : null,
-        },
-      })
+      current = store.get(input.runId)!
+      const patch: Partial<Run> = {
+        status,
+        currentPhase: state.currentPhase ?? current.currentPhase,
+        errors: state.errors.map((error) => ({ ...error })),
+        tokensSpent: state.tokensSpent,
+        endedAt: Date.now(),
+        resultPreview: status === "succeeded" ? previewResult(result) : null,
+      }
+      // Durable and fetchable BEFORE it is announced: a client that reacts to `run.ended` must find the result
+      // and a journal record that already says so.
+      input.onResult?.(input.runId, result)
+      await journalWrite(input.journal ? () => input.journal!.finish({ ...current!, ...patch, revision: current!.revision + 1 }, result) : undefined)
+      store.apply({ type: "run.ended", runId: input.runId, patch })
     }
     const terminal = store.get(input.runId)
-    if (terminal) {
-      await journalWrite(input.journal ? () => input.journal!.finish(terminal, result) : undefined)
-      input.onSettled?.(terminal, result)
-    }
+    if (terminal) input.onSettled?.(terminal, result)
   }
 }

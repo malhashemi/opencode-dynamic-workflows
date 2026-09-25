@@ -53,8 +53,8 @@ export const DEFAULT_LIMITS: RunLimits = { maxUnits: 1_000, maxItemsPerCall: 4_0
 /** What a previous Run recorded, for resume. Keyed by Unit ordinal (start order). */
 export interface ReplayPlan {
   units: Map<number, { prompt: string; status: Unit["status"]; output?: string; schema: boolean; subagent: string }>
-  /** Answers to `ctx.ask`, in the order they were asked. */
-  answers: string[][][]
+  /** Answers to `ctx.ask`, in the order they were asked; `null` means the author's fallback was used. */
+  answers: Array<string[][] | null>
   rerunFailed: boolean
   /** Set once the script diverges from the record; from then on everything runs live. */
   diverged: boolean
@@ -375,7 +375,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     if (plan && !plan.diverged && plan.answers.length > 0) {
       const recorded = plan.answers.shift()!
       const { coerceAnswers, toInteractionQuestions } = await import("./broker")
-      const coerced = coerceAnswers(toInteractionQuestions(questions), recorded)
+      const coerced = coerceAnswers(toInteractionQuestions(questions), recorded ?? options.fallback)
       if (coerced) return coerced
       plan.diverged = true
       plan.onDiverge?.("resume diverged at a ctx.ask: the recorded answer does not fit the question; asking live from here")
