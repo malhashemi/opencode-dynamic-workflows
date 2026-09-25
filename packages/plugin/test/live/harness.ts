@@ -1,0 +1,161 @@
+/**
+ * Live harness for OpenCode V2 (2.0.16+): a private `opencode serve` with its own database, a throwaway project
+ * that loads THIS plugin, and an authenticated client. No user configuration is touched.
+ *
+ * Environment:
+ * - `WF_LIVE_MODEL` — model for every agent (default `google/gemini-3.1-flash-lite`, cheap).
+ * - `WF_LIVE_PLUGIN` — plugin package spec (default: this package by path; set a `git+file://…#<sha>` spec to
+ *   test the installed-package path).
+ * - `WF_LIVE_KEEP=1` — keep the project and database after the run.
+ */
+import { OpenCode } from "@opencode/client"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { WorkflowRpc } from "../../src/service/rpc"
+
+export const LIVE_MODEL = process.env.WF_LIVE_MODEL ?? "google/gemini-3.1-flash-lite"
+export const PLUGIN_PATH = path.resolve(import.meta.dir, "..", "..")
+
+export interface LiveServer {
+  url: string
+  password: string
+  project: string
+  client: ReturnType<typeof OpenCode.make>
+  workflow: ReturnType<ReturnType<typeof OpenCode.make>["rpc"]>
+  gatewayPort: number
+  logs: () => string
+  stop(): Promise<void>
+}
+
+export interface LiveOptions {
+  /** Extra plugin options. */
+  pluginOptions?: Record<string, unknown>
+  /** Files to write into the project, relative path → contents. */
+  files?: Record<string, string>
+  agents?: string[]
+}
+
+function freePort(): number {
+  const server = Bun.serve({ port: 0, fetch: () => new Response("") })
+  const port = server.port!
+  server.stop(true)
+  return port
+}
+
+export async function startLive(options: LiveOptions = {}): Promise<LiveServer> {
+  const root = await mkdtemp(path.join(await realTmp(), "wf-live-"))
+  const project = path.join(root, "project")
+  await mkdir(project, { recursive: true })
+  await Bun.$`git init -q`.cwd(project).quiet()
+  const gatewayPort = freePort()
+  const agents = Object.fromEntries((options.agents ?? ["build", "general", "explore", "plan"]).map((agent) => [agent, { model: LIVE_MODEL }]))
+  const plugin = process.env.WF_LIVE_PLUGIN ?? PLUGIN_PATH
+  await writeFile(
+    path.join(project, "opencode.json"),
+    JSON.stringify(
+      {
+        $schema: "https://opencode.ai/config.json",
+        model: LIVE_MODEL,
+        agents,
+        plugins: [{ package: plugin, options: { gateway: { port: gatewayPort }, ...options.pluginOptions } }],
+      },
+      null,
+      2,
+    ),
+  )
+  for (const [file, contents] of Object.entries(options.files ?? {})) {
+    await mkdir(path.dirname(path.join(project, file)), { recursive: true })
+    await writeFile(path.join(project, file), contents)
+  }
+  const port = freePort()
+  let output = ""
+  const child = Bun.spawn(["opencode", "serve", "--hostname", "127.0.0.1", "--port", String(port), "--print-logs"], {
+    cwd: project,
+    env: { ...process.env, OPENCODE_DB: path.join(root, "opencode.db"), XDG_CACHE_HOME: path.join(root, "cache"), XDG_STATE_HOME: path.join(root, "state") },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    const decoder = new TextDecoder()
+    for await (const chunk of stream) output += decoder.decode(chunk)
+  }
+  void pump(child.stdout)
+  void pump(child.stderr)
+  const deadline = Date.now() + 30_000
+  let password = ""
+  while (Date.now() < deadline) {
+    const match = output.match(/server password (\S+)/)
+    if (match && output.includes("server listening")) {
+      password = match[1]!
+      break
+    }
+    await Bun.sleep(100)
+  }
+  if (!password) {
+    child.kill()
+    throw new Error(`opencode serve did not start:\n${output.slice(-2000)}`)
+  }
+  const url = `http://127.0.0.1:${port}`
+  const client = OpenCode.make({
+    baseUrl: url,
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-opencode-directory": project },
+  })
+  const workflow = client.rpc(WorkflowRpc as never)
+  return {
+    url,
+    password,
+    project,
+    client,
+    workflow,
+    gatewayPort,
+    logs: () => output,
+    async stop() {
+      child.kill()
+      await child.exited
+      if (!process.env.WF_LIVE_KEEP) await rm(root, { recursive: true, force: true })
+    },
+  }
+}
+
+/** `$TMPDIR/opencode` (the approved scratch area), resolved through symlinks so paths match the host's. */
+async function realTmp(): Promise<string> {
+  const { realpath } = await import("node:fs/promises")
+  const dir = path.join(await realpath(os.tmpdir()), "opencode")
+  await mkdir(dir, { recursive: true })
+  return dir
+}
+
+/** Create a driver session, prompt it, wait, and return its transcript. */
+export async function drive(server: LiveServer, text: string, title = "live driver"): Promise<{ sessionID: string; messages: any[] }> {
+  const [providerID, id] = LIVE_MODEL.split("/", 2) as [string, string]
+  const session = await server.client.session.create({ title, agent: "build", model: { providerID, id }, location: { directory: server.project } } as never)
+  await server.client.session.prompt({ sessionID: session.id, text } as never)
+  await server.client.session.wait({ sessionID: session.id })
+  const messages = await server.client.session.context({ sessionID: session.id })
+  return { sessionID: session.id, messages: messages as any[] }
+}
+
+/** The text of the last tool part with this name in a transcript. */
+export function toolOutput(messages: any[], name: string): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    for (const part of messages[i]?.content ?? []) {
+      if (part.type === "tool" && part.name === name) {
+        const content = part.state?.content
+        return Array.isArray(content) ? content.map((c: any) => c.text ?? "").join("") : String(content ?? part.state?.error?.message ?? "")
+      }
+    }
+  }
+  return undefined
+}
+
+/** Poll until `check` returns a value (or throw after `ms`). */
+export async function until<T>(check: () => Promise<T | undefined | null | false> | T | undefined | null | false, ms = 60_000, every = 250): Promise<T> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    const value = await check()
+    if (value) return value
+    await Bun.sleep(every)
+  }
+  throw new Error(`timed out after ${ms}ms`)
+}

@@ -1,76 +1,42 @@
 /**
- * Budget tests: `ctx.budget` is always present and ADVISORY (D10) — there is no engine hard-stop. `total` is
- * the caller's declared ceiling (or null when unset), `spent()` accumulates completed Units' output tokens,
- * and `remaining()` is `max(0, total - spent())` (or Infinity when no total). Output tokens are reported by the
- * client per prompt; the fake client returns a deterministic count so spent() is observable.
+ * `ctx.budget` is ADVISORY by default (D10): `total` is the declared ceiling (or null), `spent()` accumulates
+ * completed Units' output tokens, `remaining()` floors at 0. A hard budget stops the Run once spent.
  */
 import { describe, expect, test } from "bun:test"
-import { createEngineState, createWorkflowContext } from "../src/context"
-import { makeFakeClient } from "./fake-client"
+import { makeCtx } from "./helpers"
 
-describe("ctx.budget (advisory)", () => {
+describe("ctx.budget", () => {
   test("total is null and remaining() is Infinity when the caller declares no budget", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ outputTokens: 10 }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
+    const { ctx } = makeCtx({ outputTokens: 10 })
     expect(ctx.budget.total).toBeNull()
     expect(ctx.budget.remaining()).toBe(Infinity)
     await ctx.agent("go")
-    expect(ctx.budget.spent()).toBe(10) // spent still tracked even with no ceiling
+    expect(ctx.budget.spent()).toBe(10)
     expect(ctx.budget.remaining()).toBe(Infinity)
   })
 
   test("spent() accumulates completed Units' output tokens; remaining() = total - spent()", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ outputTokens: 30 }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      budget: 100,
-    })
+    const { ctx } = makeCtx({ outputTokens: 30 }, { budget: 100 })
     expect(ctx.budget.total).toBe(100)
-    expect(ctx.budget.spent()).toBe(0)
-    expect(ctx.budget.remaining()).toBe(100)
-
     await ctx.agent("a")
     await ctx.agent("b")
-    expect(ctx.budget.spent()).toBe(60) // 30 + 30
+    expect(ctx.budget.spent()).toBe(60)
     expect(ctx.budget.remaining()).toBe(40)
   })
 
-  test("a failed Unit contributes 0 to spent() (only completed Units count)", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ promptError: "down", outputTokens: 50 }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      budget: 100,
-    })
-    const out = await ctx.agent("x")
-    expect(out).toBeNull()
-    expect(ctx.budget.spent()).toBe(0) // the failed Unit did not move the meter
+  test("is advisory — remaining() floors at 0 and over-budget Units still run", async () => {
+    const { ctx } = makeCtx({ outputTokens: 80 }, { budget: 100 })
+    expect(await ctx.agent("a")).not.toBeNull()
+    expect(await ctx.agent("b")).not.toBeNull()
+    expect(ctx.budget.spent()).toBe(160)
+    expect(ctx.budget.remaining()).toBe(0)
   })
 
-  test("is advisory — remaining() floors at 0 and the engine never hard-stops over-budget Units", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ outputTokens: 80 }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      budget: 100,
-    })
-    const a = await ctx.agent("a")
-    const b = await ctx.agent("b") // pushes spent to 160 > 100 — must still run, not be refused
-    expect(a).not.toBeNull()
-    expect(b).not.toBeNull()
-    expect(ctx.budget.spent()).toBe(160)
-    expect(ctx.budget.remaining()).toBe(0) // floored, not negative
+  test("a hard budget reports the limit once spent", async () => {
+    const messages: string[] = []
+    const { ctx } = makeCtx({ outputTokens: 80 }, { budget: 100, hardBudget: true, onLimit: (m) => messages.push(m) })
+    await ctx.agent("a")
+    await ctx.agent("b")
+    expect(messages[0]).toContain("budget exhausted")
   })
 })

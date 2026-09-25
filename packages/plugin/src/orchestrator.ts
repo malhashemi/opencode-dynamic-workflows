@@ -1,189 +1,106 @@
 /**
- * The orchestrator — turns inline Workflow source into a Run.
+ * The orchestrator — turns a loaded Workflow into a Run.
  *
- * Ad-hoc Workflows run via **write-temp-`.ts` + dynamic `import()`** — never `eval` (ADR-0001). The temp
- * module must live inside THIS package's tree so its `import { defineWorkflow } from "@opencode-ai/workflow"`
- * resolves via our workspace `node_modules`, independent of the host project (verified gotcha). Bun caches
- * imports by URL, so each Run gets a unique filename.
+ * It validates `args` against `meta.args` before anything launches (D7), creates the Run in the store, opens its
+ * journal record, wires the Run's interactions to the broker, builds the context, calls `run`, and settles the
+ * Run with a terminal status and result. Host-independent: everything OpenCode-specific arrives as an
+ * {@link EngineHost} and an {@link UnitIndex}.
  */
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import path from "node:path"
-import { pathToFileURL } from "node:url"
-import type { DefineWorkflowConfig } from "@opencode-ai/workflow"
-import type { WorkflowClient } from "./client"
-import {
-  createAskRegistry,
-  createEngineState,
-  createWorkflowContext,
-  runOwnedRoots,
-  type EngineEvents,
-  type EngineState,
-} from "./context"
-import type { ControlRegistry } from "./control"
+import type { Broker } from "./broker"
+import { createEngineState, createWorkflowContext, type ReplayPlan, type RunLimits } from "./context"
+import type { EngineHost, HostPermissionRule } from "./host"
 import type { Journal } from "./journal"
-import { createRunStore, type RunSnapshot, type RunStore } from "./runs"
-import { DEFAULT_MAX_ESCALATION_HOPS, startWatcher, type QuestionResolutionPolicy, type Watcher } from "./watcher"
+import type { Run, WorkflowIdentity } from "./protocol"
+import { newRun, type RunStore } from "./runs"
+import type { UnitIndex } from "./units"
+import type { DefineWorkflowConfig, WorkflowMeta } from "./workflow"
 
-/** Temp modules live beside the engine so `@opencode-ai/workflow` resolves from our node_modules. */
-const DEFAULT_TMP_DIR = path.join(import.meta.dir, "..", ".wf-tmp")
-
-/**
- * There is deliberately NO default per-Unit timeout: a deadline is opt-in, set per-Workflow
- * (`meta.unitTimeout`), per-Run (`input.unitTimeout`), or per-Unit (`agent({ timeoutMs })`).
- *
- * This used to default to five minutes, on the reasoning that a hung subagent prompt should fail its Unit
- * rather than block the Run forever. Two things were wrong with it. The narrow one: five minutes is not a
- * generous ceiling for agent work — a fan-out of web researchers exceeds it routinely, and because a timeout
- * is fail-fast with no retry, the whole fan-out died together at the same wall-clock second, having done
- * nothing wrong but take the time the task takes. The broad one: this engine exists to run work that lasts
- * hours, waits on a human (`ctx.ask`), and survives process restarts, so a wall-clock deadline is the wrong
- * shape for its default — it caps the very thing the engine is for.
- *
- * The hang it was guarding against already has two precise defences, neither of which existed in this form
- * when the default was written: the watcher resolves owned permission asks and runs the tiered ladder for
- * nested questions (the exact scenario the old comment named), and `stop.run` / `stop.unit` give a human an
- * operable stop from the run browser. A blunt timer is not needed to cover a door with a lock on it.
- *
- * Exported so the rule is assertable rather than buried in a `??` chain: `undefined` here is a decision, and
- * one that has now been made twice.
- */
+/** No default per-Unit timeout: a deadline is opt-in (meta.unitTimeout, the Run, or agent({ timeoutMs })). */
 export function resolveUnitTimeout(fromRun: number | undefined, fromMeta: number | undefined): number | undefined {
   return fromRun ?? fromMeta
 }
 
-/**
- * There is deliberately NO default grace on a question: a deadline is opt-in, per Workflow
- * (`meta.interaction.graceMs`) or per ask (`ctx.ask({ graceMs })`). Absent both, a published question waits
- * until a human answers it or the run is stopped.
- *
- * This is the same decision `resolveUnitTimeout` above records, for the same reason, and it is the third time
- * this project has made it. A five-minute default was chosen so a question could not hold a run open forever;
- * what it actually did was hand a decision to automation while the person it was asked of was in another
- * window. Most questions worth interrupting someone for are worth waiting for — the user's own framing, and
- * the correct one: *"most questions are critical to be left unanswered or for automations"*.
- *
- * The thing a timeout was guarding against is already covered, and better: nothing is published at all unless a
- * surface is attached (a headless run resolves to its declared `fallback` immediately, which is the whole point
- * of `fallback` being required), `esc`'s successor `x` hands a question to automation on purpose, and
- * `stop.run` ends a run a person has abandoned. A timer is not needed to cover a door with a lock on it.
- *
- * Exported so "no default" is an assertable rule rather than a `??` buried in two call sites.
- */
+/** No default grace on a question: absent both a per-Workflow and a per-ask grace, a question waits. */
 export function resolveAskGrace(fromMeta: number | undefined): number | null {
   if (fromMeta === undefined || !Number.isFinite(fromMeta)) return null
-  // A negative grace is a typo, not a request to skip the human entirely.
   return Math.max(0, fromMeta)
 }
 
+export type PermissionPolicy = "ask" | "auto" | "deny"
+
+export function resolvePermissionPolicy(meta: Pick<WorkflowMeta, "interaction">): PermissionPolicy {
+  const value = meta.interaction?.permissions
+  if (value === "auto" || value === "deny") return value
+  return "ask"
+}
+
+export function resolveBudget(meta: Pick<WorkflowMeta, "budget">, override?: number): { total: number | null; hard: boolean } {
+  if (override !== undefined) return { total: override, hard: false }
+  const budget = meta.budget
+  if (budget === undefined) return { total: null, hard: false }
+  if (typeof budget === "number") return { total: budget, hard: false }
+  return { total: budget.tokens, hard: budget.hard === true }
+}
+
+export function formatArgsIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): string {
+  return error.issues.map((issue) => `${issue.path.map(String).join(".") || "(root)"}: ${issue.message}`).join("; ")
+}
+
+export class InvalidArgsError extends Error {
+  constructor(detail: string) {
+    super(`invalid args: ${detail}`)
+    this.name = "InvalidArgsError"
+  }
+}
+
+export function previewResult(result: unknown, max = 400): string | null {
+  if (result === undefined || result === null) return null
+  const text = typeof result === "string" ? result : JSON.stringify(result)
+  if (text === undefined) return null
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
 export interface RunWorkflowInput {
-  /** Inline Workflow source: a TS module that `export default defineWorkflow({ meta, run })`. */
+  config: DefineWorkflowConfig
   source: string
+  identity: WorkflowIdentity
   args?: unknown
-  client: WorkflowClient
+  host: EngineHost
+  index: UnitIndex
+  broker: Broker
+  store: RunStore
+  journal?: Journal | null
+  runId: string
   parentSessionID: string
-  tmpDir?: string
-  events?: EngineEvents
-  /** Advisory output-token ceiling override; falls back to `meta.budget`, then null (uncapped). */
-  budget?: number
-  /** The Run's abort signal (the adapter forwards opencode's tool-abort signal). */
+  location: string
+  /** Plugin instance id, recorded as the Run's owner in the journal. */
+  instance?: string
   signal?: AbortSignal
-  /** Default per-Unit prompt timeout (ms); falls back to `meta.unitTimeout`, then to no timeout at all. */
   unitTimeout?: number
-  /**
-   * Whether a human is reachable to answer an escalated depth-1 nested Question. Defaults false
-   * (headless-safe) per DR-005: when false, an unanswerable nested question is proxy-answered or rejected
-   * without a human-escalation dispatch.
-   *
-   * Superseded by {@link RunWorkflowInput.attached} when that is supplied: a live surface is a better answer to
-   * "is a human reachable?" than a flag set at launch, because surfaces come and go during a run.
-   */
-  humanReachable?: boolean
-  /**
-   * Live-surface probe: is anyone actually watching right now?
-   *
-   * Read per poll rather than once, because the answer changes mid-run — a user opens a terminal, a dashboard
-   * tab closes. Absent ⇒ the run is headless and behaves exactly as it did before Phase 4.
-   */
-  attached?: () => boolean
-  /** Unique id for the temp module filename (avoids Bun's import-by-URL cache colliding across Runs). */
-  runId?: string
-  /** Whether the source came from a durable registry entry or an inline tool argument. */
-  provenance?: RunSnapshot["provenance"]
-  /** Live run store shared by the plugin endpoint and progress mirrors. */
-  store?: RunStore
-  /**
-   * Lets an out-of-band surface stop this run or one of its units.
-   *
-   * Without it the tool's own abort signal IS the run signal, so nothing outside the invoking session can stop
-   * anything. Supplying a registry gives the run a controller of its own, linked to `input.signal` rather than
-   * replaced by it: the tool's abort still stops the run, and now so does a keypress in the run browser.
-   */
-  control?: ControlRegistry
-  /**
-   * Durable record sink. A throwing journal is reported and never fails the run.
-   *
-   * Only the two ends are written from here — `begin` once the run exists in the store, `finish` once it is
-   * terminal. Unit transitions arrive through `subscribeJournal`, so no engine path grows an `await` per unit
-   * for the sake of history.
-   */
-  journal?: Journal
+  budget?: number
+  background?: boolean
+  limits?: Partial<RunLimits>
+  replay?: ReplayPlan
+  resumeOf?: string | null
+  /** Rules applied to every Unit session in addition to `meta.permissions`. */
+  permissions?: HostPermissionRule[]
+  /** Extra context members (capabilities). */
+  extend?: Record<string, unknown>
+  /** The Run exists; `stop` ends it. */
+  onRegister?: (runId: string, stop: (reason?: string) => void) => void
+  onUnitSession?: (runId: string, unitId: string, sessionID: string, stop: () => void) => void
+  /** Called when the Run is terminal (after the store and journal have it). */
+  onSettled?: (run: Run, result: unknown) => void
+  /** An existing store Run to continue (status `queued`, e.g. after an approval), instead of creating one. */
+  existingRun?: boolean
 }
 
 export interface RunWorkflowOutput {
   result: unknown
+  run: Run
   meta: DefineWorkflowConfig["meta"]
-  state: EngineState
 }
 
-/**
- * The interaction policy a run actually runs under: `meta.interaction` read through whether anyone is watching.
- *
- * Exported and total so the routing rule is assertable rather than inferred from a nest of conditionals. Three
- * things decide it, in this order:
- *
- * 1. Nobody attached ⇒ the tiered ladder, byte-for-byte the pre-Phase-4 behaviour. A `human-first` policy with
- *    no surface would publish questions to an empty room and then wait out a grace nobody is spending.
- * 2. `questions: "proxy"` ⇒ the same ladder even when a surface IS attached, because the author said so.
- * 3. Otherwise `human-first`, wrapping the ladder as its fallback.
- *
- * `humanReachable` — whether the ladder may spend a unit escalating to a depth-1 dialog — is auto-detected from
- * attachment rather than hardcoded false, which is the thing Phase 4 was meant to fix.
- */
-export function resolveQuestionPolicy(
-  meta: DefineWorkflowConfig["meta"],
-  attached: (() => boolean) | undefined,
-  fallbackHumanReachable = false,
-): QuestionResolutionPolicy {
-  const interaction = meta.interaction ?? {}
-  const tiered: Extract<QuestionResolutionPolicy, { kind: "tiered" }> = {
-    kind: "tiered",
-    standInSubagent: "explore",
-    maxEscalationHops: DEFAULT_MAX_ESCALATION_HOPS,
-    // A GETTER, not a value. "Is a human reachable?" is a question about right now — a run lasting an hour will
-    // see terminals opened and closed — and the escalation rung reads it at the moment it would spend a unit.
-    get humanReachable() {
-      return attached ? attached() : fallbackHumanReachable
-    },
-  }
-  if (!attached) return tiered
-  if (interaction.questions === "proxy") return tiered
-  return {
-    kind: "human-first",
-    graceMs: resolveAskGrace(interaction.graceMs),
-    attached,
-    questions: interaction.questions === "proxy-then-human" ? "proxy-then-human" : "human",
-    permissions: interaction.permissions === "human" ? "human" : "auto",
-    fallback: tiered,
-  }
-}
-
-/**
- * Run a journal write without letting it near the run's own outcome.
- *
- * The journal is a record of what happened, so it can never be the reason something did not: a `begin` that
- * throws synchronously, rejects, or hangs must leave the run exactly as it would have been with no journal at
- * all. That is why nothing here is awaited by the caller and every path is caught.
- */
 function journalWrite(write: (() => Promise<void>) | undefined): Promise<void> {
   if (!write) return Promise.resolve()
   try {
@@ -193,304 +110,161 @@ function journalWrite(write: (() => Promise<void>) | undefined): Promise<void> {
   }
 }
 
-function isWorkflowConfig(value: unknown): value is DefineWorkflowConfig {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as DefineWorkflowConfig).run === "function" &&
-    typeof (value as DefineWorkflowConfig).meta === "object"
-  )
+/** Validate `args` against `meta.args`; returns the parsed value. Throws {@link InvalidArgsError}. */
+export function validateArgs(meta: WorkflowMeta, args: unknown): unknown {
+  const schema = meta.args
+  if (!schema) return args
+  const parsed = schema.safeParse(args)
+  if (!parsed.success) throw new InvalidArgsError(formatArgsIssues(parsed.error))
+  return parsed.data
 }
 
 /**
- * Materialize Workflow `source` as a unique temp `.ts` and `import()` it, returning the validated config plus
- * the temp file path (the caller owns cleanup). The unique `wf-${runId}.ts` filename is the cache-bust: Bun
- * keys its import cache by resolved real path, so a stable path would return the STALE module after an edit —
- * a fresh filename always loads fresh bytes (verified; see discovery-dispatcher-surface research). This is why
- * a durable file edited mid-session is picked up: {@link runWorkflowFromFile} re-reads its bytes each call and
- * routes them through here under a new filename.
- */
-async function materialize(source: string, tmpDir: string, runId: string): Promise<{ config: DefineWorkflowConfig; file: string }> {
-  await mkdir(tmpDir, { recursive: true })
-  const file = path.join(tmpDir, `wf-${runId}.ts`)
-  await writeFile(file, source, "utf8")
-  try {
-    const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>
-    const config = mod.default ?? mod.workflow
-    if (!isWorkflowConfig(config)) {
-      throw new Error("workflow source must `export default defineWorkflow({ meta, run })`")
-    }
-    return { config, file }
-  } catch (err) {
-    // Don't leak the temp file if the import itself threw (syntax error, bad export) — the caller's `finally`
-    // never runs because we never returned the path.
-    await rm(file, { force: true })
-    throw err
-  }
-}
-
-/**
- * Load a Workflow module's config from `source` WITHOUT running it — used by the registry to read `meta`
- * (name/description/args schema) for discovery + listing. The module is fully imported into memory before the
- * temp file is removed, so the returned config (incl. its live `run` + zod `meta.args`) stays valid.
- */
-export async function loadWorkflowConfig(source: string, opts: { tmpDir?: string; runId?: string } = {}): Promise<DefineWorkflowConfig> {
-  const tmpDir = opts.tmpDir ?? DEFAULT_TMP_DIR
-  const runId = opts.runId ?? crypto.randomUUID()
-  const { config, file } = await materialize(source, tmpDir, runId)
-  await rm(file, { force: true })
-  return config
-}
-
-/**
- * Load `source` as a Workflow module, build a live context, run it, and return the result plus the captured
- * engine state. The temp file is always cleaned up.
+ * Run a loaded Workflow. Resolves with the result once the Run is terminal; rejects only when the Run could not
+ * start (invalid args) or when the author's `run` threw — in both cases the Run is recorded as failed first.
  */
 export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowOutput> {
-  const tmpDir = input.tmpDir ?? DEFAULT_TMP_DIR
-  const runId = input.runId ?? crypto.randomUUID()
-  const provenance = input.provenance ?? "inline"
-  const store = input.store ?? createRunStore()
-  const { config, file } = await materialize(input.source, tmpDir, runId)
-  let watcher: Watcher | null = null
-  let state: EngineState | null = null
-  let startedAt: number | null = null
-  let registered = false
-  // The run's OWN controller, composed with (not replaced by) the caller's signal. Both can abort this run:
-  // the tool that started it, and any surface holding the control registry. `AbortSignal.any` keeps the
-  // linkage garbage-collectable, so a long-lived tool signal never accumulates listeners across runs.
+  const { config, store } = input
+  const meta = config.meta
   const stopController = new AbortController()
   const signal = input.signal ? AbortSignal.any([input.signal, stopController.signal]) : stopController.signal
-  let terminalStatus: Exclude<RunSnapshot["status"], "running"> = signal.aborted ? "aborted" : "failed"
-  let unregisterRun: (() => void) | null = null
-  /** The author's return value, kept so the terminal journal write records what the run produced. */
-  let runResult: unknown
-  /** Live per-unit cancel-handle disposers, so a settled unit stops being addressable. */
-  const unitHandles = new Map<string, () => void>()
-  /**
-   * Child session → unit, so an interaction raised inside a unit can name it.
-   *
-   * Filled the moment a child session exists rather than when the unit settles, because the whole point is to
-   * attribute a question that is blocking a unit RIGHT NOW.
-   */
-  const unitSessions = new Map<string, string>()
-  let unregisterInteractions: (() => void) | null = null
+  const budget = resolveBudget(meta, input.budget)
+  let stopReason: string | undefined
 
-  const finishRun = (status: Exclude<RunSnapshot["status"], "running">) => {
-    if (!registered || !state || startedAt === null) return
-    const current = store.get(runId)
-    if (!current || current.status !== "running") return
+  let args: unknown
+  const phases = (meta.phases ?? []).map((phase) => phase.title)
+  if (!input.existingRun) {
+    store.create(
+      newRun({
+        runId: input.runId,
+        workflow: input.identity,
+        location: input.location,
+        parentSessionID: input.parentSessionID,
+        phases,
+        budget: budget.total,
+        hardBudget: budget.hard,
+        background: input.background ?? false,
+        resumeOf: input.resumeOf ?? null,
+      }),
+    )
+  } else {
     store.apply({
-      type: "run.ended",
-      run: {
-        ...current,
-        status,
-        currentPhase: state.currentPhase,
-        logs: [...state.logs],
-        errors: state.errors.map((error) => ({ ...error })),
-        tokensSpent: state.tokensSpent,
-        // A terminal run has nobody waiting on it: whatever was pending has been answered, handed back, or
-        // orphaned by the run ending. Carrying it into the record would leave a question badge on a run that
-        // finished, which is the kind of thing a user only learns to distrust. `current.resolved` rides through
-        // the spread untouched — what was ASKED and ANSWERED is exactly the part worth keeping.
-        interactions: [],
-        endedAt: Date.now(),
-      },
+      type: "run.patch",
+      runId: input.runId,
+      patch: { status: "running", phases, phasesDeclared: phases.length > 0, budget: { total: budget.total, hard: budget.hard } },
     })
   }
+  input.onRegister?.(input.runId, (reason) => {
+    stopReason ??= reason
+    stopController.abort(new Error(reason ?? "stopped"))
+  })
+
+  const state = createEngineState()
+  let result: unknown
+  let status: Run["status"] = "failed"
+  let failure: string | undefined
 
   try {
-    // D7: validate the caller's args against the declared `meta.args` schema BEFORE building the context or
-    // launching any Unit. Invalid input fails the Run immediately, naming the offending field(s) — never a
-    // half-run. With no schema, args pass through untouched (typed `unknown` to the author).
-    let args = input.args
-    const argsSchema = config.meta.args
-    if (argsSchema) {
-      const parsed = argsSchema.safeParse(input.args)
-      if (!parsed.success) {
-        const detail = parsed.error.issues
-          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-          .join("; ")
-        throw new Error(`invalid args: ${detail}`)
-      }
-      args = parsed.data
+    try {
+      args = validateArgs(meta, input.args)
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error)
+      throw error
     }
-
-    state = createEngineState()
-    startedAt = Date.now()
-    const started = store.create({
-      runId,
-      workflow: config.meta.name,
-      provenance,
-      parentSessionID: input.parentSessionID,
-      status: "running",
-      phases: (config.meta.phases ?? []).map((phase) => phase.title),
-      phasesDeclared: (config.meta.phases ?? []).length > 0,
-      currentPhase: null,
-      units: [],
-      logs: [],
-      errors: [],
-      interactions: [],
-      resolved: [],
-      tokensSpent: 0,
-      startedAt,
-      endedAt: null,
-    })
-    registered = true
-    // Registered only once the run EXISTS in the store: a surface can never address a run it cannot see, so
-    // `stop.run` for an unregistered id is honestly `unknown-run` rather than a silent no-op.
-    unregisterRun = input.control?.registerRun(runId, stopController) ?? null
-    // The record opens with the ARGS THE RUN SAW — validated and defaulted — rather than the caller's raw
-    // input, so a replay in Phase 6 reproduces this run and not a similar one. Not awaited: the journal
-    // serializes its own writes, so unit transitions cannot overtake this one.
     void journalWrite(
-      input.journal && (() => input.journal!.begin(started, { source: input.source, args })),
+      input.journal ? () => input.journal!.begin(store.get(input.runId)!, { source: input.source, args, instance: input.instance ?? "" }) : undefined,
     )
-    const resolutionPolicy = resolveQuestionPolicy(config.meta, input.attached, input.humanReachable ?? false)
-    watcher = startWatcher({
-      client: input.client,
-      parentSessionID: input.parentSessionID,
-      runOwnedRoots: () => runOwnedRoots(state!, input.parentSessionID),
-      signal,
-      resolutionPolicy,
-      unitIdForSession: (sessionID) => unitSessions.get(sessionID) ?? null,
-      onInteraction: (event) => {
-        // The watcher observes; the store is where every surface reads. Bridging here keeps the watcher free of
-        // run identity, exactly as `onUnitCancelable` keeps the context free of it.
-        if (event.kind === "pending") {
-          store.apply({ type: "interaction.pending", runId, interaction: event.interaction })
-          return
-        }
-        if (event.kind === "resolved") {
-          // `answers` and `outcome` ride through untouched. They are the ladder's own account of what it did,
-          // and this bridge is the only thing between it and the record — dropping them here is exactly how
-          // every automated answer used to arrive at the run browser as "answer not recorded".
-          store.apply({
-            type: "interaction.resolved",
-            runId,
-            requestID: event.requestID,
-            by: event.by,
-            ...(event.answers ? { answers: event.answers } : {}),
-            ...(event.outcome ? { outcome: event.outcome } : {}),
-          })
-          return
-        }
-        // An auto-allowed permission is news, not a decision. It lands in the run log — the `Recent` panel —
-        // rather than in the pending list, so it is visible without asking anybody for anything.
-        store.apply({
-          type: "run.log",
-          runId,
-          value: `allowed \`${event.permission}\` for a unit at depth ${event.depth}`,
-        })
-      },
-    })
-    const askRegistry = createAskRegistry({
-      store,
-      attached: input.attached ?? (() => false),
-      signal,
-      defaultGraceMs: resolveAskGrace(config.meta.interaction?.graceMs),
-    })
-    // One sink for both origins, so `POST /control` never has to know which kind it is settling. `handOff`
-    // tries the script side first (its fallback is the author's own), then the watcher's published grace.
-    unregisterInteractions =
-      input.control?.registerInteractions(runId, {
-        answer: (requestID, answers) => askRegistry.resolve(requestID, answers),
-        handOff: (requestID) => askRegistry.reject(requestID) || (watcher?.handOff(requestID) ?? false),
-      }) ?? null
-    const events: EngineEvents = {
-      onLog: (message) => {
-        store.apply({ type: "run.log", runId, value: message })
-        input.events?.onLog?.(message)
-      },
-      onPhase: (title) => {
-        store.apply({ type: "run.phase", runId, value: title })
-        input.events?.onPhase?.(title)
-      },
-      onUnitQueued: (unit) => {
-        store.apply({ type: "unit.queued", runId, unit })
-        input.events?.onUnitQueued?.({ ...unit })
-      },
-      onUnitStart: (unit) => {
-        store.apply({ type: "unit.started", runId, unit })
-        input.events?.onUnitStart?.({ ...unit })
-      },
-      onUnitSettled: (unit) => {
-        // Drop the cancel handle FIRST: once a unit is settled, `stop.unit` must report `unknown-unit` rather
-        // than abort a child session the engine has already moved past.
-        unitHandles.get(unit.unitId)?.()
-        unitHandles.delete(unit.unitId)
-        store.apply({ type: "unit.settled", runId, unit })
-        input.events?.onUnitSettled?.({ ...unit })
-      },
-      // Wired only when someone can actually use a handle. The runner builds a per-attempt AbortController the
-      // moment this exists, so leaving it undefined keeps a plain `runWorkflow()` on its original prompt path.
-      // Also wired under `human-first`, which needs the child-session mapping even when nothing can stop a unit:
-      // an interaction raised three sessions below a unit is attributable only through this handle.
-      ...(input.control || input.events?.onUnitCancelable || resolutionPolicy.kind === "human-first"
-        ? {
-            onUnitCancelable: (unitId: string, cancel: () => void, childSessionID: string) => {
-              // A retry attempt supersedes its predecessor's handle — the previous child is already abandoned.
-              unitHandles.get(unitId)?.()
-              unitSessions.set(childSessionID, unitId)
-              const dispose = input.control?.registerUnit(runId, unitId, cancel)
-              if (dispose) unitHandles.set(unitId, dispose)
-              input.events?.onUnitCancelable?.(unitId, cancel, childSessionID)
-            },
-          }
-        : {}),
-    }
+
     const ctx = createWorkflowContext({
-      client: input.client,
+      host: input.host,
+      index: input.index,
+      runId: input.runId,
+      workflow: meta.name,
+      location: input.location,
       parentSessionID: input.parentSessionID,
       args,
       state,
-      events,
-      concurrency: config.meta.concurrency,
-      budget: input.budget ?? config.meta.budget ?? null,
+      concurrency: meta.concurrency,
+      budget: budget.total,
+      hardBudget: budget.hard,
       signal,
-      unitTimeout: resolveUnitTimeout(input.unitTimeout, config.meta.unitTimeout),
-      ask: askRegistry,
-      runId,
+      unitTimeout: resolveUnitTimeout(input.unitTimeout, meta.unitTimeout),
+      limits: { ...meta.limits, ...input.limits },
+      permissions: [...(meta.permissions ?? []), ...(input.permissions ?? [])],
+      permissionPolicy: () => resolvePermissionPolicy(meta),
+      ask: (form, options) =>
+        input.broker.ask({
+          runId: input.runId,
+          sessionID: input.parentSessionID,
+          form,
+          options,
+          defaultGraceMs: resolveAskGrace(meta.interaction?.graceMs),
+          signal,
+        }),
+      askAgent: (unitId, sessionID) => (questions, unitSignal) =>
+        input.broker.askAgent({ runId: input.runId, unitId, sessionID, questions, signal: AbortSignal.any([signal, unitSignal]) }),
+      onLimit: (message) => {
+        stopReason ??= message
+        failure = message
+        stopController.abort(new Error(message))
+      },
+      ...(input.replay
+        ? {
+            replay: {
+              ...input.replay,
+              onDiverge: (message: string) => store.apply({ type: "run.log", runId: input.runId, value: message, kind: "engine" }),
+            },
+          }
+        : {}),
+      ...(input.extend ? { extend: input.extend } : {}),
+      events: {
+        onLog: (message) => store.apply({ type: "run.log", runId: input.runId, value: message }),
+        onPhase: (title) => store.apply({ type: "run.phase", runId: input.runId, value: title }),
+        onUnit: (unit) => {
+          store.apply({ type: "unit.upsert", runId: input.runId, unit })
+          if (unit.endedAt !== null) {
+            store.apply({
+              type: "run.patch",
+              runId: input.runId,
+              patch: { tokensSpent: state.tokensSpent, errors: state.errors.map((error) => ({ ...error })) },
+            })
+          }
+        },
+        onUnitSession: (unitId, sessionID, stop) => input.onUnitSession?.(input.runId, unitId, sessionID, stop),
+      },
     })
 
-    const result = await config.run(ctx)
-    runResult = result
-    terminalStatus = signal.aborted ? "aborted" : "done"
-    return { result, meta: config.meta, state }
+    result = await config.run(ctx)
+    status = signal.aborted ? (failure ? "failed" : "stopped") : "succeeded"
+    return { result, run: store.get(input.runId)!, meta }
   } catch (error) {
     const aborted = signal.aborted || (error instanceof Error && error.name === "AbortError")
-    terminalStatus = aborted ? "aborted" : "failed"
+    status = failure ? "failed" : aborted ? "stopped" : "failed"
+    failure ??= error instanceof Error ? error.message : String(error)
     throw error
   } finally {
-    // Stopped BEFORE the terminal snapshot, so its `interaction.resolved` events reach live subscribers while
-    // the run is still the run they are watching — a `run.ended` arriving first would leave every surface
-    // clearing a badge for a run it had already filed away.
-    watcher?.stop()
-    unregisterInteractions?.()
-    finishRun(terminalStatus)
-    // Awaited, unlike `begin`: `workflow({ result })` and Phase 6's resume both read this from ANOTHER process,
-    // so the record has to be on disk by the time the tool answers — including when the host is killed
-    // moments later, which is precisely the case the journal exists for.
-    const terminal = registered ? store.get(runId) : undefined
-    if (terminal) await journalWrite(input.journal && (() => input.journal!.finish(terminal, runResult)))
-    // Unregister before the temp file goes: a terminal run must stop being addressable immediately, or a
-    // surface still holding a stale row would get `ok: true` for a stop that can no longer do anything.
-    for (const dispose of unitHandles.values()) dispose()
-    unitHandles.clear()
-    unregisterRun?.()
-    await rm(file, { force: true })
+    input.broker.releaseRun(input.runId)
+    const current = store.get(input.runId)
+    if (current && (current.status === "running" || current.status === "queued")) {
+      if (failure && status !== "succeeded") store.apply({ type: "run.log", runId: input.runId, value: `run ${status}: ${failure}`, kind: "engine" })
+      if (stopReason && status === "stopped") store.apply({ type: "run.log", runId: input.runId, value: `stopped: ${stopReason}`, kind: "engine" })
+      store.apply({
+        type: "run.ended",
+        runId: input.runId,
+        patch: {
+          status,
+          currentPhase: state.currentPhase ?? current.currentPhase,
+          errors: state.errors.map((error) => ({ ...error })),
+          tokensSpent: state.tokensSpent,
+          endedAt: Date.now(),
+          resultPreview: status === "succeeded" ? previewResult(result) : null,
+        },
+      })
+    }
+    const terminal = store.get(input.runId)
+    if (terminal) {
+      await journalWrite(input.journal ? () => input.journal!.finish(terminal, result) : undefined)
+      input.onSettled?.(terminal, result)
+    }
   }
-}
-
-/**
- * Run a DURABLE Workflow from a file path: read its current bytes and route them through {@link runWorkflow}.
- * Reading fresh each call (rather than `import()`-ing the path directly) is what makes an in-session edit take
- * effect — the bytes go to a fresh temp filename, sidestepping Bun's path-keyed import cache.
- */
-export async function runWorkflowFromFile(
-  absPath: string,
-  input: Omit<RunWorkflowInput, "source">,
-): Promise<RunWorkflowOutput> {
-  const source = await readFile(absPath, "utf8")
-  return runWorkflow({ ...input, source })
 }

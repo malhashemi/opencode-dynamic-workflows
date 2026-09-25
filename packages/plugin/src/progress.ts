@@ -6,21 +6,22 @@
  * must never reach into `src/tui/*` — that would drag `solid-js` (a dev-only dependency, supplied to the TUI
  * target by the host's runtime-module layer) into the published server entrypoint.
  */
-import type { RunSnapshot } from "./runs"
+import type { Run } from "./protocol"
+import { settledUnitCount } from "./runs"
 
 /** Units that reached a terminal state — the numerator of every "n/m units" projection. */
-export function settledUnits(run: RunSnapshot): number {
-  return run.units.filter((unit) => unit.status === "ok" || unit.status === "failed").length
+export function settledUnits(run: Pick<Run, "units">): number {
+  return settledUnitCount(run)
 }
 
 /**
  * The phase-bearing subset of a run.
  *
- * Narrower than `RunSnapshot` so a journal `RunSummary` positions itself with the SAME function a live snapshot
+ * Narrower than `Run` so a journal `RunSummary` positions itself with the SAME function a live snapshot
  * does. A history row that computed its phase position differently would be a second implementation of the one
  * rule this project has already got wrong once (`phase 1/1` on the first of three undeclared phases).
  */
-export type PhaseSource = Pick<RunSnapshot, "phases" | "phasesDeclared" | "currentPhase">
+export type PhaseSource = Pick<Run, "phases" | "phasesDeclared" | "currentPhase">
 
 /** `2m10s` / `1h02m` / `9s` — stable at every width, never scientific, never negative. */
 export function formatElapsed(milliseconds: number): string {

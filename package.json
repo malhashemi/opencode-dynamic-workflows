@@ -1,8 +1,8 @@
 {
-  "name": "opencode-dynamic-workflows",
+  "name": "opencode-dynamic-workflows-monorepo",
   "version": "0.0.1",
   "private": true,
-  "description": "Deterministic multi-subagent Workflow orchestration for opencode, as a plugin (no core changes).",
+  "description": "Deterministic multi-subagent Workflow orchestration for OpenCode V2, as a plugin (no core changes).",
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -10,13 +10,10 @@
   "scripts": {
     "typecheck": "tsc --build",
     "test": "bun test",
-    "build:dashboard": "bun run --cwd packages/dashboard build && rm -rf packages/plugin/dashboard-dist && cp -R packages/dashboard/dist packages/plugin/dashboard-dist",
-    "dev:dashboard": "bun run --cwd packages/dashboard dev",
-    "verify:live": "bun test ./packages/plugin/test/live/phase-gate.live.ts ./packages/plugin/test/live/sidebar.tui.live.ts ./packages/plugin/test/live/route.tui.live.ts ./packages/plugin/test/live/journal.tui.live.ts ./packages/plugin/test/live/interactions.tui.live.ts ./packages/plugin/test/live/dashboard.live.ts"
+    "build": "bun run --cwd packages/plugin build",
+    "verify:live": "bun test ./packages/plugin/test/live"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.10",
-    "@opencode-ai/sdk": "1.18.10",
     "@types/bun": "latest",
     "typescript": "^5.9.3"
   }

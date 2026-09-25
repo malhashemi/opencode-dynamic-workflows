@@ -1,201 +1,129 @@
 import { describe, expect, it } from "bun:test"
-import { createRunStore, type RunEvent, type RunSnapshot, type UnitSnapshot } from "../src/runs"
+import { emptyUsage, type PendingInteraction, type ProtocolEvent, type Unit } from "../src/protocol"
+import { EVENT_WINDOW, createRunStore, elideEvent, newRun, toLibraryEntry } from "../src/runs"
 
-function run(): RunSnapshot {
-  return {
-    runId: "run-1",
-    workflow: "research",
-    provenance: "inline",
-    parentSessionID: "parent",
-    status: "running",
-    phases: [],
-    phasesDeclared: false,
-    currentPhase: null,
-    units: [],
-    logs: [],
-    errors: [],
-    interactions: [],
-    resolved: [],
-    tokensSpent: 0,
-    startedAt: 100,
-    endedAt: null,
-  }
-}
+const run = (runId = "r1") =>
+  newRun({
+    runId,
+    workflow: { key: "wf", name: "wf", description: "d", provenance: "durable" },
+    location: "/p",
+    parentSessionID: "ses_p",
+    phases: ["plan", "do"],
+  })
 
-function unit(status: UnitSnapshot["status"]): UnitSnapshot {
-  return {
-    unitId: "unit-1",
-    ordinal: 1,
-    label: "scan",
-    subagent: "explore",
-    phase: "Research",
-    status,
-    sessionID: status === "ok" ? "child-1" : null,
-    prompt: "scan the repository",
-    startedAt: status === "queued" ? null : 110,
-    endedAt: status === "ok" ? 120 : null,
-  }
-}
+const unit = (overrides: Partial<Unit> = {}): Unit => ({
+  unitId: "u1",
+  runId: "r1",
+  ordinal: 1,
+  label: null,
+  subagent: "general",
+  phase: null,
+  status: "queued",
+  sessionID: null,
+  location: null,
+  prompt: "p",
+  model: { requested: null, resolved: null },
+  schema: false,
+  resultPath: null,
+  attempts: [],
+  usage: emptyUsage(),
+  startedAt: null,
+  endedAt: null,
+  ...overrides,
+})
 
-describe("createRunStore", () => {
-  it("applies run, phase, log, and stable unit lifecycle transitions", () => {
-    const store = createRunStore()
+const question = (id = "i1"): PendingInteraction => ({
+  interactionId: id,
+  runId: "r1",
+  unitId: null,
+  kind: "question",
+  origin: "script",
+  sessionID: "ses_p",
+  phase: null,
+  questions: [{ header: "h", prompt: "p", options: [{ label: "A", description: "" }], multiple: false, custom: false }],
+  raisedAt: 1,
+  graceEndsAt: null,
+})
+
+describe("run store", () => {
+  it("creates a Run, bumps revision per change, and emits protocol events with increasing seq", () => {
+    const store = createRunStore("/p")
+    const events: ProtocolEvent[] = []
+    store.subscribe((event) => events.push(event))
     store.create(run())
-    store.apply({ type: "run.phase", runId: "run-1", value: "Research" })
-    store.apply({ type: "run.log", runId: "run-1", value: "looking" })
-    store.apply({ type: "unit.queued", runId: "run-1", unit: unit("queued") })
-    store.apply({ type: "unit.started", runId: "run-1", unit: unit("running") })
-    store.apply({ type: "unit.settled", runId: "run-1", unit: unit("ok") })
-
-    const current = store.get("run-1")
-    expect(current?.currentPhase).toBe("Research")
-    expect(current?.phases).toEqual(["Research"])
-    expect(current?.logs).toEqual(["looking"])
-    expect(current?.units).toHaveLength(1)
-    expect(current?.units[0]).toMatchObject({ unitId: "unit-1", status: "ok", sessionID: "child-1" })
+    store.apply({ type: "run.phase", runId: "r1", value: "plan" })
+    store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ status: "running" }) })
+    store.apply({ type: "run.log", runId: "r1", value: "hi" })
+    expect(events.map((e) => e.type)).toEqual([
+      "run.started",
+      "library.changed",
+      "run.updated",
+      "activity.appended",
+      "unit.updated",
+      "activity.appended",
+    ])
+    expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(events.every((e) => e.protocol === 1 && e.location === "/p")).toBe(true)
+    const current = store.get("r1")!
+    expect(current.revision).toBe(4)
+    expect(current.currentPhase).toBe("plan")
+    expect(current.logs).toEqual(["hi"])
   })
 
-  it("preserves declared phase order without duplicating observed phases", () => {
-    const store = createRunStore()
-    store.create({ ...run(), phases: ["Research", "Synthesize"] })
-    store.apply({ type: "run.phase", runId: "run-1", value: "Research" })
-    store.apply({ type: "run.phase", runId: "run-1", value: "Synthesize" })
-
-    expect(store.get("run-1")?.phases).toEqual(["Research", "Synthesize"])
-    expect(store.get("run-1")?.currentPhase).toBe("Synthesize")
-  })
-
-  it("fans events out in subscription order and unsubscribe is idempotent", () => {
-    const store = createRunStore()
-    const seen: string[] = []
-    const stopFirst = store.subscribe((event) => seen.push(`first:${event.type}`))
-    store.subscribe((event) => seen.push(`second:${event.type}`))
-    expect(store.subscribers()).toBe(2)
-
+  it("upserts Units by id in ordinal order and sums usage", () => {
+    const store = createRunStore("/p")
     store.create(run())
-    stopFirst()
-    stopFirst()
-    store.apply({ type: "run.log", runId: "run-1", value: "next" })
-
-    expect(seen).toEqual(["first:run.started", "second:run.started", "second:run.log"])
-    expect(store.subscribers()).toBe(1)
+    const usage = { tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0.1 }
+    store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ unitId: "b", ordinal: 2, usage }) })
+    store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ unitId: "a", ordinal: 1, usage }) })
+    store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ unitId: "a", ordinal: 1, status: "succeeded", usage }) })
+    const current = store.get("r1")!
+    expect(current.units.map((u) => `${u.unitId}:${u.status}`)).toEqual(["a:succeeded", "b:queued"])
+    expect(current.usage.tokens.output).toBe(4)
+    expect(current.usage.cost).toBeCloseTo(0.2)
   })
 
-  it("never exposes mutable internal snapshots or shared event objects", () => {
-    const store = createRunStore()
-    const second: RunEvent[] = []
-    store.subscribe((event) => {
-      if (event.type === "run.started") event.run.logs.push("subscriber mutation")
-      if (event.type === "run.log") event.value = "subscriber mutation"
-    })
-    store.subscribe((event) => second.push(event))
-    const input = run()
-    store.create(input)
-    input.logs.push("input mutation")
-    store.apply({ type: "run.log", runId: "run-1", value: "stored" })
-
-    const firstRead = store.get("run-1")!
-    firstRead.logs.push("read mutation")
-    firstRead.units.push(unit("queued"))
-    expect(store.get("run-1")?.logs).toEqual(["stored"])
-    expect(store.get("run-1")?.units).toEqual([])
-    expect(second[0]).toMatchObject({ type: "run.started", run: { logs: [] } })
-    expect(second[1]).toEqual({ type: "run.log", runId: "run-1", value: "stored" })
-  })
-
-  /**
-   * A resolved interaction is FOLDED, not deleted.
-   *
-   * Before this the store simply filtered the pending row out, so the question, the options it offered, and the
-   * answer a person gave all ceased to exist the moment they gave it.
-   */
-  describe("interactions", () => {
-    const pending = (requestID: string) => ({
-      requestID,
-      kind: "question" as const,
-      origin: "script" as const,
-      sessionID: "parent",
-      unitId: null,
-      depth: 1,
-      phase: null,
-      questions: [
-        {
-          header: "Focus",
-          prompt: "which area?",
-          options: [
-            { label: "alpha", description: "" },
-            { label: "beta", description: "" },
-          ],
-          multiple: false,
-          custom: false,
-        },
-      ],
-      raisedAt: 1_000,
-      graceEndsAt: null,
-    })
-
-    it("stamps the phase the run was in when the question was raised", () => {
-      const store = createRunStore()
-      store.create(run())
-      store.apply({ type: "run.phase", runId: "run-1", value: "plan" })
-      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
-      // The publisher does not know what a phase is; the store does, and an answer filed under no phase is an
-      // answer nobody finds again.
-      expect(store.get("run-1")?.interactions[0]?.phase).toBe("plan")
-    })
-
-    it("keeps the question, the options, the answer, and who gave it", () => {
-      const store = createRunStore()
-      store.create(run())
-      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
-      store.apply({
-        type: "interaction.resolved",
-        runId: "run-1",
-        requestID: "req-1",
-        by: "human",
-        answers: [["beta"]],
-      })
-
-      const current = store.get("run-1")!
-      expect(current.interactions).toEqual([])
-      expect(current.resolved).toHaveLength(1)
-      expect(current.resolved[0]).toMatchObject({
-        requestID: "req-1",
-        origin: "script",
-        by: "human",
-        answers: [["beta"]],
-      })
-      expect(current.resolved[0]?.questions[0]?.options.map((option) => option.label)).toEqual(["alpha", "beta"])
-      expect(current.resolved[0]?.resolvedAt).toBeGreaterThanOrEqual(current.resolved[0]!.raisedAt)
-    })
-
-    it("records a resolution with no known answer as exactly that", () => {
-      const store = createRunStore()
-      store.create(run())
-      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
-      // The watcher observing a question leave the host's list knows THAT it went, not what was said.
-      store.apply({ type: "interaction.resolved", runId: "run-1", requestID: "req-1", by: "automation" })
-      expect(store.get("run-1")?.resolved[0]).toMatchObject({ by: "automation", answers: [] })
-    })
-
-    it("files one record however many parties observe the same resolution", () => {
-      const store = createRunStore()
-      store.create(run())
-      store.apply({ type: "interaction.pending", runId: "run-1", interaction: pending("req-1") })
-      store.apply({ type: "interaction.resolved", runId: "run-1", requestID: "req-1", by: "human", answers: [["alpha"]] })
-      // The surface that answered and the watcher noticing it left both report it; neither should have to check.
-      store.apply({ type: "interaction.resolved", runId: "run-1", requestID: "req-1", by: "automation" })
-      expect(store.get("run-1")?.resolved).toHaveLength(1)
-      expect(store.get("run-1")?.resolved[0]).toMatchObject({ by: "human", answers: [["alpha"]] })
-    })
-  })
-
-  it("rejects duplicate and unknown run transitions", () => {
-    const store = createRunStore()
+  it("interactions set waiting, resolve idempotently, and keep the record", () => {
+    const store = createRunStore("/p")
     store.create(run())
-    expect(() => store.create(run())).toThrow(/already exists/)
-    expect(() => store.apply({ type: "run.started", run: run() })).toThrow(/already exists/)
-    expect(() => store.apply({ type: "run.log", runId: "missing", value: "x" })).toThrow(/unknown run/)
-    expect(() => store.apply({ type: "run.ended", run: { ...run(), runId: "missing", status: "done" } })).toThrow(/unknown run/)
+    store.apply({ type: "interaction.pending", runId: "r1", interaction: question() })
+    expect(store.get("r1")!.waiting).toBe(true)
+    store.apply({ type: "interaction.resolved", runId: "r1", interactionId: "i1", by: "human", answers: [["A"]] })
+    store.apply({ type: "interaction.resolved", runId: "r1", interactionId: "i1", by: "automation" })
+    const current = store.get("r1")!
+    expect(current.waiting).toBe(false)
+    expect(current.resolved).toHaveLength(1)
+    expect(current.resolved[0]).toMatchObject({ by: "human", answers: [["A"]], outcome: "answered" })
+  })
+
+  it("eventsSince returns what a client missed and reports an incomplete window", () => {
+    const store = createRunStore("/p")
+    store.create(run())
+    for (let i = 0; i < 10; i++) store.apply({ type: "run.log", runId: "r1", value: `l${i}` })
+    const tail = store.eventsSince(5)
+    expect(tail.complete).toBe(true)
+    expect(tail.events[0]!.seq).toBe(6)
+    expect(tail.latest).toBe(store.latestSeq())
+    for (let i = 0; i < EVENT_WINDOW; i++) store.apply({ type: "run.log", runId: "r1", value: "x" })
+    expect(store.eventsSince(5).complete).toBe(false)
+  })
+
+  it("elides large outputs for transports but keeps them in the store", () => {
+    const store = createRunStore("/p")
+    store.create(run())
+    let last: ProtocolEvent | undefined
+    store.subscribe((event) => (last = event))
+    store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ output: "x".repeat(10_000) }) })
+    const elided = elideEvent(last!)
+    expect((elided.data as Unit).output).toBeUndefined()
+    expect((elided.data as Unit).outputElided).toBe(true)
+    expect(store.get("r1")!.units[0]!.output).toHaveLength(10_000)
+  })
+
+  it("library entries summarise a Run", () => {
+    const current = run()
+    current.units.push(unit({ status: "succeeded" }), unit({ unitId: "u2", status: "failed" }))
+    const entry = toLibraryEntry(current, true)
+    expect(entry).toMatchObject({ units: 2, settledUnits: 2, failedUnits: 1, live: true, phasesDeclared: true })
   })
 })

@@ -9,6 +9,10 @@
     "jsx": "preserve",
     "jsxImportSource": "@opentui/solid"
   },
-  "references": [{ "path": "../workflow" }],
-  "include": ["src", "test"]
+  "include": [
+    "src",
+    "test",
+    "server.ts",
+    "rpc.ts"
+  ]
 }

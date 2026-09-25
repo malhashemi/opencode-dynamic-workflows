@@ -1,876 +1,141 @@
-import { describe, expect, it } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { afterAll, describe, expect, it } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
-import type { SessionMessage } from "../src/client"
-import type { Journal } from "../src/journal"
-import { createControlRegistry } from "../src/control"
+import path from "node:path"
+import { createBroker } from "../src/broker"
+import { createJournal, journalRoot, subscribeJournal } from "../src/journal"
+import { loadWorkflow } from "../src/loader"
 import {
-  loadWorkflowConfig,
+  InvalidArgsError,
+  previewResult,
   resolveAskGrace,
-  resolveQuestionPolicy,
+  resolveBudget,
+  resolvePermissionPolicy,
   resolveUnitTimeout,
   runWorkflow,
-  runWorkflowFromFile,
 } from "../src/orchestrator"
-import { createRunStore, type RunSnapshot } from "../src/runs"
-import { makeFakeClient } from "./fake-client"
+import type { ProtocolEvent } from "../src/protocol"
+import { createRunStore } from "../src/runs"
+import { createUnitIndex } from "../src/units"
+import { createFakeHost, type FakeHostOptions } from "./fake-host"
 
-const ECHO_WORKFLOW = `
-import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "echo", description: "run one unit and echo it" },
-  async run({ agent, args, log }) {
-    log("starting")
-    const out = await agent(\`say: \${args.word}\`, { subagent: "general" })
-    return { out, word: args.word }
-  },
+const cacheDir = await mkdtemp(path.join(os.tmpdir(), "wf-orch-"))
+const project = await mkdtemp(path.join(os.tmpdir(), "wf-orch-project-"))
+afterAll(async () => {
+  await rm(cacheDir, { recursive: true, force: true })
+  await rm(project, { recursive: true, force: true })
 })
-`
 
-const TYPED_WORKFLOW = `
-import { defineWorkflow, z } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "typed", description: "needs a numeric count", args: z.object({ count: z.number() }) },
-  async run({ agent, args }) {
-    return await agent(\`n=\${args.count}\`)
-  },
-})
-`
+async function start(source: string, options: { args?: unknown; host?: FakeHostOptions; journal?: boolean; attached?: boolean } = {}) {
+  const index = createUnitIndex()
+  const host = createFakeHost(index, options.host)
+  const store = createRunStore(project)
+  const journal = options.journal ? createJournal(journalRoot(project), { onError: () => {} }) : null
+  if (journal) subscribeJournal(store, journal)
+  const broker = createBroker({ store, attached: () => options.attached ?? false })
+  const events: ProtocolEvent[] = []
+  store.subscribe((event) => events.push(event))
+  const { config } = await loadWorkflow(source, { cacheDir })
+  const runId = crypto.randomUUID()
+  let stop: ((reason?: string) => void) | undefined
+  const promise = runWorkflow({
+    config,
+    source,
+    identity: { key: null, name: config.meta.name, description: config.meta.description, provenance: "inline" },
+    args: options.args,
+    host,
+    index,
+    broker,
+    store,
+    journal,
+    runId,
+    parentSessionID: "ses_parent",
+    location: project,
+    instance: "test",
+    onRegister: (_id, s) => (stop = s),
+  })
+  return { promise, store, runId, host, events, journal, stop: () => stop?.("stopped by test") }
+}
 
-// The capstone demo: typed args → a no-barrier pipeline of per-item Subagent chains → a deliberately-failing
-// item drops to null without aborting the rest → collect the survivors → one synthesis Unit emits the result.
-// Exercises phase()/log() observability too. The fake client echoes each prompt, so outputs are predictable.
-const DEMO_WORKFLOW = `
-import { defineWorkflow, z } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "review-each", description: "review + verify each file", args: z.object({ files: z.array(z.string()) }) },
-  async run({ agent, pipeline, collect, log, phase, args }) {
-    phase("Review")
-    const reviewed = await pipeline(
-      args.files,
-      (file) => { if (file === "bad") throw new Error("cannot review " + file); return agent("review:" + file) },
-      (review) => agent("verify:" + review),
-    )
-    const survivors = collect(reviewed)
-    if (reviewed.length !== survivors.length) log(\`dropped \${reviewed.length - survivors.length} file(s) from the pipeline\`)
-    phase("Synthesize")
-    const final = await agent("synthesize:" + survivors.join("|"))
-    return { final, survivors: survivors.length }
-  },
-})
-`
+const wf = (body: string, meta = "") =>
+  `import { defineWorkflow, z } from "@opencode-ai/workflow"\nexport default defineWorkflow({ meta: { name: "t", description: "d"${meta} }, async run(ctx) { ${body} } })\n`
 
-describe("runWorkflow (inline source → run → result)", () => {
-  it("imports inline source, runs the workflow, and returns its result", async () => {
-    const client = makeFakeClient({ reply: "HELLO" })
-    const out = await runWorkflow({
-      source: ECHO_WORKFLOW,
-      args: { word: "hi" },
-      client,
-      parentSessionID: "parent-xyz",
-    })
-
-    expect(out.meta.name).toBe("echo")
-    expect(out.result).toEqual({ out: "HELLO", word: "hi" })
-    expect(out.state.logs).toEqual(["starting"])
-    expect(out.state.unitCount).toBe(1)
-
-    // the Unit ran as a child of the invoking session, under `general`
-    expect(client.createCalls[0]).toEqual({ parentID: "parent-xyz", title: "wf:general" })
-    expect(client.promptCalls[0]?.agent).toBe("general")
-    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "say: hi" }])
+describe("runWorkflow", () => {
+  it("runs, records Units, ends succeeded with a result preview", async () => {
+    const { promise, store, runId, events } = await start(wf(`const a = await ctx.agent("one"); ctx.log("did one"); return { a }`))
+    const out = await promise
+    expect(out.result).toEqual({ a: "one" })
+    const run = store.get(runId)!
+    expect(run.status).toBe("succeeded")
+    expect(run.units).toHaveLength(1)
+    expect(run.resultPreview).toBe('{"a":"one"}')
+    expect(run.logs).toEqual(["did one"])
+    expect(events.map((e) => e.type)).toContain("run.ended")
   })
 
-  it("registers before execution and records ordered lifecycle plus done terminal state", async () => {
-    const store = createRunStore()
-    const events: string[] = []
-    const unitIds: string[] = []
-    store.subscribe((event) => {
-      events.push(event.type)
-      if (event.type === "unit.queued" || event.type === "unit.started" || event.type === "unit.settled") {
-        unitIds.push(event.unit.unitId)
-      }
-    })
-    await runWorkflow({
-      source: ECHO_WORKFLOW,
-      args: { word: "tracked" },
-      client: makeFakeClient({ reply: "ok" }),
-      parentSessionID: "parent-tracked",
-      runId: "run-tracked",
-      provenance: "durable",
-      store,
-    })
-
-    expect(events).toEqual(["run.started", "run.log", "unit.queued", "unit.started", "unit.settled", "run.ended"])
-    expect(new Set(unitIds).size).toBe(1)
-    expect(store.get("run-tracked")).toMatchObject({
-      workflow: "echo",
-      provenance: "durable",
-      parentSessionID: "parent-tracked",
-      status: "done",
-      endedAt: expect.any(Number),
-      units: [{ status: "ok", sessionID: "child-1" }],
-    })
+  it("validates args before any Unit launches", async () => {
+    const { promise, store, runId, host } = await start(wf(`return ctx.agent("x")`, `, args: z.object({ n: z.number() })`), { args: { n: "no" } })
+    await expect(promise).rejects.toBeInstanceOf(InvalidArgsError)
+    expect(host.creates).toHaveLength(0)
+    expect(store.get(runId)!.status).toBe("failed")
+    expect(store.get(runId)!.logs.at(-1)).toContain("invalid args: n:")
   })
 
-  it("keeps declared phases ordered while recording the current phase", async () => {
-    const store = createRunStore()
-    await runWorkflow({
-      source: `import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "phased", description: "phased", phases: [{ title: "Research" }, { title: "Synthesize" }] },
-  async run({ phase }) { phase("Research"); phase("Synthesize"); return "done" },
-})`,
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      runId: "run-phased",
-      store,
-    })
-
-    expect(store.get("run-phased")).toMatchObject({
-      status: "done",
-      phases: ["Research", "Synthesize"],
-      currentPhase: "Synthesize",
-    })
+  it("a throwing run fails the Run and rethrows", async () => {
+    const { promise, store, runId } = await start(wf(`throw new Error("author bug")`))
+    await expect(promise).rejects.toThrow("author bug")
+    expect(store.get(runId)!.status).toBe("failed")
   })
 
-  it("marks a registered run failed when workflow author code throws", async () => {
-    const store = createRunStore()
-    await expect(
-      runWorkflow({
-        source: `import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({ meta: { name: "throws", description: "throws" }, async run() { throw new Error("author failure") } })`,
-        client: makeFakeClient(),
-        parentSessionID: "p",
-        runId: "run-failed",
-        store,
-      }),
-    ).rejects.toThrow("author failure")
-    expect(store.get("run-failed")).toMatchObject({ status: "failed", endedAt: expect.any(Number) })
+  it("stop ends the Run as stopped and interrupts in-flight Units", async () => {
+    const { promise, store, runId, host, stop } = await start(wf(`return ctx.agent("hang")`), { host: { reply: { hang: true } } })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    stop()
+    await promise
+    expect(store.get(runId)!.status).toBe("stopped")
+    expect(host.interrupts).toHaveLength(1)
+    expect(store.get(runId)!.units[0]?.status).toBe("stopped")
   })
 
-  it("cleans up the temp module after running", async () => {
-    const before = await tmpFileCount()
-    await runWorkflow({
-      source: ECHO_WORKFLOW,
-      args: { word: "x" },
-      client: makeFakeClient({ reply: "y" }),
-      parentSessionID: "p",
-    })
-    const after = await tmpFileCount()
-    expect(after).toBe(before)
+  it("limits.maxUnits fails a runaway loop with a legible error", async () => {
+    const { promise, store, runId } = await start(wf(`for (let i = 0; i < 50; i++) await ctx.agent("x" + i); return "done"`, `, limits: { maxUnits: 3 }`))
+    await promise.catch(() => {})
+    const run = store.get(runId)!
+    expect(run.status).toBe("failed")
+    expect(run.logs.join("\n")).toContain("limit reached: this Run tried to start more than 3 Units")
+    expect(run.units.filter((u) => u.status === "succeeded")).toHaveLength(3)
   })
 
-  it("throws a clear error when source has no default defineWorkflow export", async () => {
-    await expect(
-      runWorkflow({
-        source: `export const nope = 1`,
-        client: makeFakeClient(),
-        parentSessionID: "p",
-      }),
-    ).rejects.toThrow(/defineWorkflow/)
-  })
-
-  it("surfaces a failed Unit via state.errors without throwing", async () => {
-    const out = await runWorkflow({
-      source: ECHO_WORKFLOW,
-      args: { word: "z" },
-      client: makeFakeClient({ promptError: "kaboom" }),
-      parentSessionID: "p",
-    })
-    expect(out.result).toEqual({ out: null, word: "z" })
-    expect(out.state.errors[0]?.error).toContain("kaboom")
-  })
-
-  it("validates args against meta.args BEFORE any Unit launches, naming the offending field (D7)", async () => {
-    const client = makeFakeClient({ reply: "ok" })
-    await expect(
-      runWorkflow({ source: TYPED_WORKFLOW, args: { count: "not-a-number" }, client, parentSessionID: "p" }),
-    ).rejects.toThrow(/count/) // the error names the offending field
-    expect(client.promptCalls).toHaveLength(0) // failed before launching any Unit
-  })
-
-  it("passes validated args through to a typed ctx.args when input satisfies the schema", async () => {
-    const client = makeFakeClient({ reply: "ok" })
-    const out = await runWorkflow({ source: TYPED_WORKFLOW, args: { count: 7 }, client, parentSessionID: "p" })
-    expect(out.result).toBe("ok")
-    expect(client.promptCalls[0]?.parts).toEqual([{ type: "text", text: "n=7" }])
-  })
-
-  it("runs the demo end-to-end: typed args, pipeline with a dropped item, collect, and a synthesis Unit", async () => {
-    const client = makeFakeClient()
-    const out = await runWorkflow({
-      source: DEMO_WORKFLOW,
-      args: { files: ["a", "bad", "b"] },
-      client,
-      parentSessionID: "p",
-    })
-
-    // The failing item ("bad") dropped without aborting the others; survivors flowed to a single synthesis Unit.
-    expect(out.result).toEqual({ final: "synthesize:verify:review:a|verify:review:b", survivors: 2 })
-    expect(out.state.errors).toHaveLength(1)
-    expect(out.state.errors[0]?.unit).toBe("pipeline#1") // "bad" was index 1
-    // Observable progress: both phase titles recorded, and a log line naming the dropped item (exact text).
-    expect(out.state.phases).toEqual(["Review", "Synthesize"])
-    expect(out.state.logs).toContain("dropped 1 file(s) from the pipeline")
-    // "bad" never reached a Subagent (its stage threw before agent()); the rest did.
-    const prompts = client.promptCalls.map((p) => p.parts[0]?.text)
-    expect(prompts).not.toContain("review:bad")
-    expect(prompts).toContain("review:a")
-    expect(prompts).toContain("review:b")
-  })
-
-  it("orchestrator starts watcher on run, stops on teardown", async () => {
-    const client = makeFakeClient({
-      sessions: [{ id: "nested-question-session", parentID: "p", title: "Nested question" }],
-      pendingQuestions: [
-        {
-          id: "question-run-owned-depth-2",
-          sessionID: "nested-question-session",
-          questions: [
-            {
-              question: "Should the nested question be rejected?",
-              header: "Nested question",
-              options: [{ label: "Reject", description: "Phase-1 watcher floor" }],
-            },
-          ],
-        },
-      ],
-    })
-    const originalPermissionList = client.permission.list.bind(client.permission)
-    const originalQuestionList = client.question.list.bind(client.question)
-    let permissionListCalls = 0
-    let questionListCalls = 0
-    client.permission.list = async () => {
-      permissionListCalls += 1
-      return originalPermissionList()
-    }
-    client.question.list = async () => {
-      questionListCalls += 1
-      return originalQuestionList()
-    }
-
-    const run = runWorkflow({
-      source: `import { defineWorkflow } from "@opencode-ai/workflow"
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-export default defineWorkflow({ meta: { name: "watcher-lifecycle", description: "waits for watcher poll" }, async run() { await sleep(650); return "done" } })`,
-      client,
-      parentSessionID: "p",
-    })
-
-    await waitFor(
-      () => permissionListCalls > 0 && questionListCalls > 0 && client.questionRejects.length === 1,
-      "watcher did not poll and reject the Run-owned nested question during the Run",
-      800,
-    )
-
-    await expect(run).resolves.toMatchObject({ result: "done" })
-    const callsAfterTeardown = { permissionListCalls, questionListCalls }
-    await new Promise((resolve) => setTimeout(resolve, 350))
-
-    expect(client.questionRejects).toEqual([{ requestID: "question-run-owned-depth-2" }])
-    expect(permissionListCalls).toBe(callsAfterTeardown.permissionListCalls)
-    expect(questionListCalls).toBe(callsAfterTeardown.questionListCalls)
-  })
-
-  it("production runWorkflow proxy-answers a Run-owned depth>=2 question through the tiered watcher", async () => {
-    const client = makeFakeClient({
-      reply: (call) => (call.agent === "explore" ? "EU" : "UNANSWERABLE"),
-      sessions: [
-        { id: "p", title: "Privacy launch Workflow Run" },
-        { id: "launch-unit", parentID: "p", title: "Prepare deployment Unit" },
-        { id: "nested-question-session", parentID: "launch-unit", title: "Nested deploy chooser" },
-      ],
-      sessionMessages: {
-        p: firstUserMessage("Run the Workflow for the privacy-sensitive EU launch."),
-        "launch-unit": firstUserMessage("Prepare launch using EU data residency because customers are in Germany."),
-        "nested-question-session": firstUserMessage("The nested Subagent needs deployment region; the launch context says EU."),
-      },
-      pendingQuestions: [
-        {
-          id: "question-production-tiered-proxy",
-          sessionID: "nested-question-session",
-          questions: [
-            {
-              question: "Which deployment region should this launch use?",
-              header: "Deployment region",
-              options: [
-                { label: "US", description: "Deploy in the United States" },
-                { label: "EU", description: "Deploy in Europe" },
-              ],
-            },
-          ],
-        },
-      ],
-    })
-
-    const run = runWorkflow({
-      source: `import { defineWorkflow } from "@opencode-ai/workflow"
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-export default defineWorkflow({ meta: { name: "watcher-tiered-production", description: "waits for watcher poll" }, async run() { await sleep(650); return "done" } })`,
-      client,
-      parentSessionID: "p",
-    })
-
-    await waitFor(
-      () => client.questionReplies.length + client.questionRejects.length >= 1,
-      "production watcher did not resolve the Run-owned nested question during the Run",
-      1_000,
-    )
-
-    await expect(run).resolves.toMatchObject({ result: "done" })
-    expect(client.promptCalls.some((call) => call.agent === "explore")).toBe(true)
-    expect(client.questionReplies).toEqual([{ requestID: "question-production-tiered-proxy", answers: [["EU"]] }])
-    expect(client.questionRejects).not.toContainEqual({ requestID: "question-production-tiered-proxy" })
-  })
-
-  it("production runWorkflow defaults nested-question escalation to headless-safe reject on proxy abstain", async () => {
-    const client = makeFakeClient({
-      responses: [{ text: "UNANSWERABLE" }, { text: "EU" }],
-      sessions: [
-        { id: "p", title: "Headless Workflow Run" },
-        { id: "launch-unit", parentID: "p", title: "Prepare deployment Unit" },
-        { id: "nested-question-session", parentID: "launch-unit", title: "Nested deploy chooser" },
-      ],
-      sessionMessages: {
-        p: firstUserMessage("Run the Workflow without an attached operator."),
-        "launch-unit": firstUserMessage("Prepare launch but no deployment region is known."),
-        "nested-question-session": firstUserMessage("The nested Subagent needs deployment region and no context answers it."),
-      },
-      pendingQuestions: [
-        {
-          id: "question-production-headless-default",
-          sessionID: "nested-question-session",
-          questions: [
-            {
-              question: "Which deployment region should this launch use?",
-              header: "Deployment region",
-              options: [
-                { label: "US", description: "Deploy in the United States" },
-                { label: "EU", description: "Deploy in Europe" },
-              ],
-            },
-          ],
-        },
-      ],
-    })
-
-    const run = runWorkflow({
-      source: `import { defineWorkflow } from "@opencode-ai/workflow"
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-export default defineWorkflow({ meta: { name: "watcher-tiered-headless-default", description: "waits for watcher poll" }, async run() { await sleep(650); return "done" } })`,
-      client,
-      parentSessionID: "p",
-    })
-
-    await waitFor(
-      () => client.questionReplies.length + client.questionRejects.length >= 1,
-      "production watcher did not resolve the headless Run-owned nested question during the Run",
-      1_000,
-    )
-
-    await expect(run).resolves.toMatchObject({ result: "done" })
-    expect(client.promptCalls.map((call) => call.agent)).toEqual(["explore"])
-    expect(client.createCalls.map((call) => call.title)).toEqual(["wf:explore"])
-    expect(client.questionReplies).toEqual([])
-    expect(client.questionRejects).toEqual([{ requestID: "question-production-headless-default" }])
+  it("journals the Run so it reads back after the process is gone", async () => {
+    const { promise, runId, journal } = await start(wf(`return ctx.agent("hi")`), { journal: true })
+    await promise
+    await journal!.flush()
+    const record = await journal!.read(runId)
+    expect(record?.run.status).toBe("succeeded")
+    expect(record?.result).toBe("hi")
+    expect(record?.run.units[0]?.output).toBe("hi")
   })
 })
 
-describe("durable file loading (runWorkflowFromFile / loadWorkflowConfig)", () => {
-  async function durableDir(): Promise<string> {
-    return mkdtemp(path.join(os.tmpdir(), "wf-durable-"))
-  }
-
-  it("runs a durable workflow file by path (read bytes → run)", async () => {
-    const dir = await durableDir()
-    try {
-      const file = path.join(dir, "echo.ts")
-      await writeFile(file, ECHO_WORKFLOW, "utf8")
-      const client = makeFakeClient({ reply: "HELLO" })
-      const out = await runWorkflowFromFile(file, { args: { word: "hi" }, client, parentSessionID: "p" })
-      expect(out.meta.name).toBe("echo")
-      expect(out.result).toEqual({ out: "HELLO", word: "hi" })
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
-  // The load-bearing in-session-edit behavior: a durable file edited between runs (SAME path) must run its NEW
-  // content. Bun caches imports by resolved real path, so this only works because runWorkflowFromFile re-reads
-  // the bytes and materialize() writes them to a fresh unique temp filename each call.
-  it("picks up an in-session EDIT to the same durable path (fresh bytes, not the stale module)", async () => {
-    const dir = await durableDir()
-    try {
-      const file = path.join(dir, "ver.ts")
-      const mk = (body: string) =>
-        `import { defineWorkflow } from "@opencode-ai/workflow"\n` +
-        `export default defineWorkflow({ meta: { name: "ver", description: "v" }, async run() { return ${JSON.stringify(body)} } })\n`
-      await writeFile(file, mk("V1"), "utf8")
-      const r1 = await runWorkflowFromFile(file, { client: makeFakeClient(), parentSessionID: "p" })
-      expect(r1.result).toBe("V1")
-
-      await writeFile(file, mk("V2"), "utf8") // edit the SAME path mid-session
-      const r2 = await runWorkflowFromFile(file, { client: makeFakeClient(), parentSessionID: "p" })
-      expect(r2.result).toBe("V2")
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("loadWorkflowConfig returns meta + run without executing (no prompts, temp cleaned)", async () => {
-    const before = await tmpFileCount()
-    const config = await loadWorkflowConfig(ECHO_WORKFLOW)
-    expect(config.meta.name).toBe("echo")
-    expect(typeof config.run).toBe("function")
-    expect(await tmpFileCount()).toBe(before) // module imported into memory, temp removed
-  })
-
-  it("does not leak a temp file when the source import throws", async () => {
-    const before = await tmpFileCount()
-    await expect(loadWorkflowConfig(`export const nope = 1`)).rejects.toThrow(/defineWorkflow/)
-    expect(await tmpFileCount()).toBe(before)
-  })
-})
-
-describe("resolveUnitTimeout — a deadline is opt-in", () => {
-  // Guarding a decision, not a computation. A Unit that runs for hours is this engine's normal case: it waits
-  // on models, on humans, and across restarts. Reintroducing a default here silently caps all of that, and the
-  // failure it produces (fail-fast, no retry, whole fan-out dying on the same second) looks like a model fault
-  // rather than a policy — which is exactly how the last one survived as long as it did.
-  it("is undefined when neither the Run nor the Workflow sets one", () => {
+describe("policy resolution", () => {
+  it("has no default Unit timeout or ask grace", () => {
     expect(resolveUnitTimeout(undefined, undefined)).toBeUndefined()
-  })
-
-  it("prefers the Run's override, then the Workflow's", () => {
-    expect(resolveUnitTimeout(10, 20)).toBe(10)
-    expect(resolveUnitTimeout(undefined, 20)).toBe(20)
-    expect(resolveUnitTimeout(10, undefined)).toBe(10)
-  })
-})
-
-describe("runWorkflow — hung Unit recovery (timeout + abort, no infinite hang)", () => {
-  it("times out a hung Unit (meta.unitTimeout) → null + recorded error; the Run still completes", async () => {
-    const client = makeFakeClient({ hang: true })
-    const out = await runWorkflow({
-      source: `import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({ meta: { name: "hang", description: "x", unitTimeout: 30 }, async run({ agent }) { return { r: await agent("this will hang") } } })`,
-      client,
-      parentSessionID: "p",
-    })
-    expect(out.result).toEqual({ r: null }) // the hung Unit resolved to null instead of blocking
-    expect(out.state.errors[0]?.error).toMatch(/exceeded its 30ms timeout/)
-    // The message reports what happened and names the knob; it must NOT diagnose a cause the engine cannot
-    // observe. Asserting the absence, because the old wording ("a subagent prompt hung") read as a finding and
-    // sent a real investigation after a session that was healthy.
-    expect(out.state.errors[0]?.error).toMatch(/meta\.unitTimeout/)
-    expect(out.state.errors[0]?.error).not.toMatch(/hung|unanswered permission/)
-    expect(client.abortCalls.length).toBeGreaterThan(0) // the child prompt was cancelled, not leaked
-  })
-
-  it("aborting the Run cancels an IN-FLIGHT hung Unit (not just queued ones)", async () => {
-    const client = makeFakeClient({ hang: true })
-    const ctrl = new AbortController()
-    const store = createRunStore()
-    const p = runWorkflow({
-      // no short unitTimeout — only the abort can end this hang within the test
-      source: `import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({ meta: { name: "hang2", description: "x" }, async run({ agent }) { return { r: await agent("hang") } } })`,
-      client,
-      parentSessionID: "p",
-      signal: ctrl.signal,
-      runId: "run-aborted",
-      store,
-    })
-    await new Promise((r) => setTimeout(r, 25)) // let the Unit launch + begin its (hanging) prompt
-    ctrl.abort()
-    const out = await p
-    expect(out.result).toEqual({ r: null })
-    expect(out.state.errors[0]?.error).toMatch(/aborted/)
-    expect(client.abortCalls.length).toBeGreaterThan(0)
-    expect(store.get("run-aborted")).toMatchObject({ status: "aborted", endedAt: expect.any(Number) })
-  })
-})
-
-/**
- * The two ends of a journaled run.
- *
- * The engine writes exactly two records itself — `begin` when the run exists, `finish` when it is terminal —
- * and the shape of both is what the retrieval modes and Phase 6's replay read back. The third property here is
- * the one that matters most: a journal that throws is a journal that gets ignored, not a run that fails.
- */
-describe("runWorkflow (journal)", () => {
-  interface Recorded {
-    begin: { run: RunSnapshot; source: string; args: unknown }[]
-    finish: { run: RunSnapshot; result: unknown }[]
-    appended: string[]
-  }
-
-  function recorder(overrides: Partial<Journal> = {}): Journal & { recorded: Recorded } {
-    const recorded: Recorded = { begin: [], finish: [], appended: [] }
-    return {
-      recorded,
-      root: "/tmp/journal",
-      async begin(run, input) {
-        recorded.begin.push({ run, source: input.source, args: input.args })
-      },
-      async append(event) {
-        recorded.appended.push(event.type)
-      },
-      async finish(run, result) {
-        recorded.finish.push({ run, result })
-      },
-      async read() {
-        return null
-      },
-      async list() {
-        return []
-      },
-      ...overrides,
-    }
-  }
-
-  it("opens the record with the run as registered and closes it with the terminal snapshot plus the result", async () => {
-    const journal = recorder()
-    const store = createRunStore()
-    await runWorkflow({
-      source: ECHO_WORKFLOW,
-      args: { word: "hi" },
-      client: makeFakeClient({ reply: "HELLO" }),
-      parentSessionID: "p",
-      runId: "run-journaled",
-      store,
-      journal,
-    })
-
-    expect(journal.recorded.begin).toHaveLength(1)
-    expect(journal.recorded.begin[0]?.source).toBe(ECHO_WORKFLOW)
-    expect(journal.recorded.begin[0]?.args).toEqual({ word: "hi" })
-    expect(journal.recorded.begin[0]?.run).toMatchObject({ runId: "run-journaled", status: "running", units: [] })
-
-    expect(journal.recorded.finish).toHaveLength(1)
-    const closed = journal.recorded.finish[0]
-    expect(closed?.result).toEqual({ out: "HELLO", word: "hi" })
-    // The terminal snapshot, not the one `begin` saw: status, timing, units, and logs are all settled by now.
-    expect(closed?.run).toMatchObject({ runId: "run-journaled", status: "done", logs: ["starting"] })
-    expect(closed?.run.units).toHaveLength(1)
-    expect(closed?.run.endedAt).toEqual(expect.any(Number))
-    // Unit transitions are the store subscriber's job; the engine writes only the two ends.
-    expect(journal.recorded.appended).toEqual([])
-  })
-
-  it("records the VALIDATED args, so a replay reproduces this run rather than a similar one", async () => {
-    const journal = recorder()
-    await runWorkflow({
-      source: TYPED_WORKFLOW,
-      args: { count: 3 },
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      journal,
-    })
-    expect(journal.recorded.begin[0]?.args).toEqual({ count: 3 })
-  })
-
-  it("records a failed run as failed, with no result", async () => {
-    const journal = recorder()
-    await expect(
-      runWorkflow({
-        source: `import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({ meta: { name: "boom", description: "x" }, async run() { throw new Error("nope") } })`,
-        client: makeFakeClient(),
-        parentSessionID: "p",
-        journal,
-      }),
-    ).rejects.toThrow("nope")
-    expect(journal.recorded.finish[0]?.run.status).toBe("failed")
-    expect(journal.recorded.finish[0]?.result).toBeUndefined()
-  })
-
-  it("never lets a throwing journal fail the run", async () => {
-    const journal = recorder({
-      begin() {
-        throw new Error("disk is on fire")
-      },
-      async finish() {
-        throw new Error("still on fire")
-      },
-    })
-    const out = await runWorkflow({
-      source: ECHO_WORKFLOW,
-      args: { word: "hi" },
-      client: makeFakeClient({ reply: "HELLO" }),
-      parentSessionID: "p",
-      journal,
-    })
-    expect(out.result).toEqual({ out: "HELLO", word: "hi" })
-  })
-
-  it("writes nothing for a run that never registered — a rejected args set is not a run", async () => {
-    const journal = recorder()
-    await expect(
-      runWorkflow({ source: TYPED_WORKFLOW, args: { count: "three" }, client: makeFakeClient(), parentSessionID: "p", journal }),
-    ).rejects.toThrow(/invalid args/)
-    expect(journal.recorded.begin).toEqual([])
-    expect(journal.recorded.finish).toEqual([])
-  })
-})
-
-import { readdir } from "node:fs/promises"
-import path from "node:path"
-
-async function tmpFileCount(): Promise<number> {
-  const dir = path.join(import.meta.dir, "..", ".wf-tmp")
-  try {
-    return (await readdir(dir)).length
-  } catch {
-    return 0
-  }
-}
-
-async function waitFor(predicate: () => boolean | Promise<boolean>, message: string, timeoutMs = 200): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (await predicate()) return
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-  throw new Error(message)
-}
-
-function firstUserMessage(text: string): SessionMessage[] {
-  return [{ info: { role: "user" }, parts: [{ type: "text", text }] }]
-}
-
-/**
- * The routing rule, stated once and asserted rather than inferred.
- *
- * Three inputs decide who answers a nested question — whether anyone is watching, what the workflow declared,
- * and the ladder underneath — and the failure this guards against is silent: a `human-first` policy resolved for
- * a headless run publishes questions to an empty room and then waits out a grace nobody is spending.
- */
-describe("resolveQuestionPolicy", () => {
-  const bare = { name: "w", description: "d" }
-
-  it("stays on the tiered ladder when nothing is attached — the pre-Phase-4 behaviour, unchanged", () => {
-    const policy = resolveQuestionPolicy(bare, undefined)
-    expect(policy).toMatchObject({ kind: "tiered", standInSubagent: "explore" })
-    expect(policy.kind === "tiered" && policy.humanReachable).toBe(false)
-  })
-
-  it("auto-detects `humanReachable` from attachment, live rather than at launch", () => {
-    let watching = false
-    const policy = resolveQuestionPolicy({ ...bare, interaction: { questions: "proxy" } }, () => watching)
-    expect(policy.kind).toBe("tiered")
-    // A run lasting an hour sees terminals opened and closed; the escalation rung reads this at the moment it
-    // would spend a unit, not at the moment the run started.
-    expect(policy.kind === "tiered" && policy.humanReachable).toBe(false)
-    watching = true
-    expect(policy.kind === "tiered" && policy.humanReachable).toBe(true)
-  })
-
-  it("gives a human first refusal when a surface is attached, wrapping the ladder as its fallback", () => {
-    const policy = resolveQuestionPolicy(bare, () => true)
-    expect(policy).toMatchObject({
-      kind: "human-first",
-      questions: "human",
-      permissions: "auto",
-      fallback: { kind: "tiered", standInSubagent: "explore" },
-    })
-    // No deadline unless the author asked for one — see `resolveAskGrace`.
-    expect(policy.kind === "human-first" && policy.graceMs).toBeNull()
-  })
-
-  it("honours every `meta.interaction` override", () => {
-    expect(
-      resolveQuestionPolicy(
-        { ...bare, interaction: { questions: "proxy-then-human", permissions: "human", graceMs: 42 } },
-        () => true,
-      ),
-    ).toMatchObject({ kind: "human-first", questions: "proxy-then-human", permissions: "human", graceMs: 42 })
-    // A negative grace is a typo, not a request to skip the human entirely.
-    expect(resolveQuestionPolicy({ ...bare, interaction: { graceMs: -1 } }, () => true)).toMatchObject({
-      graceMs: 0,
-    })
-  })
-})
-
-/**
- * The rule that a question has NO deadline unless someone asked for one.
- *
- * Asserted the way `resolveUnitTimeout` is, and for the same reason: a default expressed as a `??` in two call
- * sites is a default the next person reinstates by reflex. It was five minutes; a real user watched their run
- * hand a decision to automation while they were in another window, and the correct framing is theirs — most
- * questions are too important to be answered by a clock.
- */
-describe("resolveAskGrace", () => {
-  it("has no default: absent means the question waits", () => {
+    expect(resolveUnitTimeout(5, 9)).toBe(5)
     expect(resolveAskGrace(undefined)).toBeNull()
+    expect(resolveAskGrace(-5)).toBe(0)
   })
-
-  it("keeps a declared grace, floors a typo, and refuses a non-finite one", () => {
-    expect(resolveAskGrace(40_000)).toBe(40_000)
-    expect(resolveAskGrace(0)).toBe(0)
-    expect(resolveAskGrace(-1)).toBe(0)
-    expect(resolveAskGrace(Number.NaN)).toBeNull()
-    expect(resolveAskGrace(Number.POSITIVE_INFINITY)).toBeNull()
+  it("permission policy defaults to ask; `human` is a legacy alias", () => {
+    expect(resolvePermissionPolicy({})).toBe("ask")
+    expect(resolvePermissionPolicy({ interaction: { permissions: "human" } })).toBe("ask")
+    expect(resolvePermissionPolicy({ interaction: { permissions: "auto" } })).toBe("auto")
   })
-})
-
-describe("runWorkflow (interactions)", () => {
-  it("publishes a `ctx.ask` as run state, and resolves it from the control registry", async () => {
-    const store = createRunStore()
-    const control = createControlRegistry()
-    const source = `
-import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "asks", description: "asks the human" },
-  async run({ ask }) {
-    const [answer] = await ask(
-      { header: "Depth", prompt: "fast or thorough?", options: [
-        { label: "fast", description: "one unit per area" },
-        { label: "thorough", description: "two units per area" },
-      ] },
-      { fallback: [["fast"]], graceMs: 30000 },
-    )
-    return answer
-  },
-})`
-    const running = runWorkflow({
-      source,
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      runId: "run-ask",
-      store,
-      control,
-      attached: () => true,
-    })
-
-    // The question reaches run state, where every surface reads it.
-    let pending: RunSnapshot["interactions"] = []
-    for (let i = 0; i < 100 && pending.length === 0; i++) {
-      await Bun.sleep(5)
-      pending = store.get("run-ask")?.interactions ?? []
-    }
-    expect(pending).toHaveLength(1)
-    expect(pending[0]?.origin).toBe("script")
-
-    // …and one control action settles it, exactly as `POST /control` would.
-    const result = await control.dispatch({
-      action: "question.reply",
-      runId: "run-ask",
-      requestID: pending[0]!.requestID,
-      answers: [["thorough"]],
-    })
-    expect(result).toEqual({ ok: true })
-    expect((await running).result).toEqual(["thorough"])
-    expect(store.get("run-ask")?.interactions).toEqual([])
-
-    // …and the run KEEPS the record. The question, the options it offered, the answer, and who gave it — all of
-    // it survives on the run, because "what was I asked and what did I say?" is a question people ask thirty
-    // seconds later and the answer used to simply vanish.
-    const record = store.get("run-ask")?.resolved ?? []
-    expect(record).toHaveLength(1)
-    expect(record[0]).toMatchObject({ origin: "script", by: "human", answers: [["thorough"]] })
-    expect(record[0]?.questions[0]?.options.map((option) => option.label)).toEqual(["fast", "thorough"])
+  it("budget: numbers are advisory, objects may be hard", () => {
+    expect(resolveBudget({ budget: 10 })).toEqual({ total: 10, hard: false })
+    expect(resolveBudget({ budget: { tokens: 10, hard: true } })).toEqual({ total: 10, hard: true })
+    expect(resolveBudget({}, 7)).toEqual({ total: 7, hard: false })
   })
-
-  it("waits indefinitely for a human when no grace was declared", async () => {
-    const store = createRunStore()
-    const control = createControlRegistry()
-    // No `graceMs` anywhere: not on `meta.interaction`, not on the ask. The question is the human's until they
-    // answer it — the whole point of making the deadline opt-in.
-    const source = `
-import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "asks-patiently", description: "asks and waits" },
-  async run({ ask }) {
-    const [answer] = await ask(
-      { header: "Depth", prompt: "fast or thorough?", options: [
-        { label: "fast", description: "" }, { label: "thorough", description: "" },
-      ] },
-      { fallback: [["fast"]] },
-    )
-    return answer
-  },
-})`
-    const running = runWorkflow({
-      source,
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      runId: "run-patient",
-      store,
-      control,
-      attached: () => true,
-    })
-
-    let pending: RunSnapshot["interactions"] = []
-    for (let i = 0; i < 100 && pending.length === 0; i++) {
-      await Bun.sleep(5)
-      pending = store.get("run-patient")?.interactions ?? []
-    }
-    // No deadline: nothing to render a countdown from, and nothing to expire.
-    expect(pending[0]?.graceEndsAt).toBeNull()
-
-    // Long enough that the old five-minute default would not have fired either — the claim is that NO timer
-    // exists, so the only thing that can settle this is the answer below.
-    await Bun.sleep(120)
-    expect(store.get("run-patient")?.interactions).toHaveLength(1)
-
-    await control.dispatch({
-      action: "question.reply",
-      runId: "run-patient",
-      requestID: pending[0]!.requestID,
-      answers: [["thorough"]],
-    })
-    expect((await running).result).toEqual(["thorough"])
-  })
-
-  it("resolves `ctx.ask` to its fallback with nothing attached, without waiting", async () => {
-    const store = createRunStore()
-    const source = `
-import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "asks-headless", description: "asks nobody" },
-  async run({ ask }) {
-    return (await ask(
-      { header: "Depth", prompt: "fast or thorough?", options: [
-        { label: "fast", description: "" }, { label: "thorough", description: "" },
-      ] },
-      { fallback: [["thorough"]], graceMs: 600000 },
-    ))[0]
-  },
-})`
-    const started = Date.now()
-    const out = await runWorkflow({ source, client: makeFakeClient(), parentSessionID: "p", runId: "run-h", store })
-    // The whole point: a headless run does not stall on a question nobody will answer.
-    expect(Date.now() - started).toBeLessThan(5_000)
-    expect(out.result).toEqual(["thorough"])
-    expect(store.get("run-h")?.interactions).toEqual([])
-  })
-
-  it("leaves a terminal run carrying no pending interactions", async () => {
-    const store = createRunStore()
-    const source = `
-import { defineWorkflow } from "@opencode-ai/workflow"
-export default defineWorkflow({
-  meta: { name: "asks-then-ends", description: "asks and moves on" },
-  async run({ ask }) {
-    await ask(
-      { header: "Q", prompt: "?", options: [{ label: "a", description: "" }] },
-      { fallback: [["a"]], graceMs: 10 },
-    )
-    return "done"
-  },
-})`
-    await runWorkflow({
-      source,
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      runId: "run-t",
-      store,
-      attached: () => true,
-    })
-    // A question badge on a run that finished is the kind of thing a user only learns to distrust.
-    expect(store.get("run-t")?.interactions).toEqual([])
-    expect(store.get("run-t")?.status).toBe("done")
+  it("previews long results", () => {
+    expect(previewResult("x".repeat(500))).toHaveLength(400)
+    expect(previewResult(undefined)).toBeNull()
   })
 })

@@ -5,7 +5,7 @@
  * invalid (or merely zod-refinement-invalid) payload with a recorded error.
  */
 import { describe, expect, it } from "bun:test"
-import { z } from "@opencode-ai/workflow"
+import { z } from "../src/workflow"
 import { DEFAULT_RETRIES, parseStructured, toJsonSchema } from "../src/schema-bridge"
 
 describe("toJsonSchema", () => {

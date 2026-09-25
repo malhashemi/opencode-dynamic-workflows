@@ -18,9 +18,9 @@ import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { DefineWorkflowConfig, WorkflowMeta } from "@opencode-ai/workflow"
-import { loadWorkflowConfig } from "./orchestrator"
+import { loadWorkflowConfig } from "./loader"
 import { stringifyError } from "./runner"
+import type { DefineWorkflowConfig, WorkflowMeta } from "./workflow"
 
 /** Recursive glob for durable Workflow modules under either a `workflow/` or `workflows/` root in a scope. */
 const WORKFLOW_GLOB = "{workflow,workflows}/**/*.ts"
@@ -75,14 +75,14 @@ function unique(xs: string[]): string[] {
 }
 
 /**
- * The ordered config-dir scopes to scan, mirroring `ConfigPaths.directories(directory, worktree)`. The order
- * IS the load order; the registry applies LAST-WINS over it (project, listed after global, shadows global on a
- * key collision). Respects `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_CONFIG_DIR`.
+ * The ordered config-dir scopes to scan, mirroring OpenCode V2 discovery: the global config dir first (lowest
+ * precedence), then every existing `.opencode` from the filesystem root DOWN to `directory` (so the nearest one
+ * is scanned last and wins a key collision), then `$OPENCODE_CONFIG_DIR`. `worktree` is accepted for callers
+ * that pass it but no longer stops the walk: V2 searches every ancestor (opencode.ai/v2/docs/config).
  */
-export function configDirs(directory: string, worktree?: string): string[] {
+export function configDirs(directory: string, _worktree?: string): string[] {
   const dirs: string[] = [globalConfigDir()]
-  if (!envFlag("OPENCODE_DISABLE_PROJECT_CONFIG")) dirs.push(...upExisting(".opencode", directory, worktree))
-  dirs.push(...upExisting(".opencode", homeDir(), homeDir()))
+  if (!envFlag("OPENCODE_DISABLE_PROJECT_CONFIG")) dirs.push(...upExisting(".opencode", directory).reverse())
   const envDir = process.env.OPENCODE_CONFIG_DIR
   if (envDir && envDir.length > 0) dirs.push(envDir)
   return unique(dirs)
@@ -171,6 +171,8 @@ export interface BuildRegistryInput {
   dirs?: string[]
   /** Load a workflow module's config from its file path (tests). Defaults to read-bytes → {@link loadWorkflowConfig}. */
   loadConfig?: (absPath: string) => Promise<DefineWorkflowConfig>
+  /** Loader cache directory (tests). */
+  cacheDir?: string
 }
 
 /**
@@ -182,7 +184,9 @@ export interface BuildRegistryInput {
  */
 export async function buildRegistry(input: BuildRegistryInput): Promise<Registry> {
   const dirs = input.dirs ?? configDirs(input.directory, input.worktree)
-  const load = input.loadConfig ?? ((absPath: string) => readFile(absPath, "utf8").then((s) => loadWorkflowConfig(s)))
+  const load =
+    input.loadConfig ??
+    ((absPath: string) => readFile(absPath, "utf8").then((source) => loadWorkflowConfig(source, { sourcePath: absPath, ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}) })))
   const entries = new Map<string, RegistryEntry>()
   const collisions: Registry["collisions"] = []
   const failures: Registry["failures"] = []

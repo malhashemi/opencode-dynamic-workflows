@@ -1,583 +1,260 @@
-import { describe, expect, it } from "bun:test"
-import { z, type AskQuestion } from "@opencode-ai/workflow"
-import { createAskRegistry, createEngineState, createWorkflowContext } from "../src/context"
-import { createRunStore, type RunSnapshot } from "../src/runs"
-import { makeFakeClient } from "./fake-client"
-
-describe("createWorkflowContext", () => {
-  it("exposes args verbatim", () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: { topic: "auth" },
-      state,
-    })
-    expect(ctx.args).toEqual({ topic: "auth" })
-  })
-
-  it("agent() returns the Unit text and counts the Unit", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ reply: "DONE" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const out = await ctx.agent("go", { subagent: "general" })
-    expect(out).toBe("DONE")
-    expect(state.unitCount).toBe(1)
-    expect(state.errors).toHaveLength(0)
-  })
-
-  it("agent() returns null and records an error when the Unit fails", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ promptError: "boom" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const out = await ctx.agent("go", { subagent: "writer" })
-    expect(out).toBeNull()
-    expect(state.errors).toEqual([{ unit: "writer", prompt: "go", subagent: "writer", error: "boom" }])
-  })
-
-  it("records `unit` as the label when one is given, else the subagent", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ promptError: "x" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    await ctx.agent("a", { subagent: "writer", label: "draft-intro" })
-    await ctx.agent("b", { subagent: "writer" })
-    expect(state.errors.map((e) => e.unit)).toEqual(["draft-intro", "writer"])
-    expect(ctx.errors).toBe(state.errors) // live view, not a copy
-  })
-
-  it("log() and phase() accumulate into state and fire events", () => {
-    const state = createEngineState()
-    const logged: string[] = []
-    const phased: string[] = []
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      events: { onLog: (m) => logged.push(m), onPhase: (t) => phased.push(t) },
-    })
-    ctx.phase("Scan")
-    ctx.log("looking")
-    expect(state.phases).toEqual(["Scan"])
-    expect(state.currentPhase).toBe("Scan")
-    expect(state.logs).toEqual(["looking"])
-    expect(logged).toEqual(["looking"])
-    expect(phased).toEqual(["Scan"])
-  })
-
-  it("fires onUnitStart with the resolved subagent and current phase", async () => {
-    const state = createEngineState()
-    const starts: { subagent: string; phase: string | null }[] = []
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ reply: "x" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      events: { onUnitStart: (i) => starts.push({ subagent: i.subagent, phase: i.phase }) },
-    })
-    ctx.phase("Review")
-    await ctx.agent("y")
-    expect(starts).toEqual([{ subagent: "general", phase: "Review" }])
-  })
-})
-
-describe("ctx.agent — structured output", () => {
-  const Finding = z.object({ title: z.string(), score: z.number() })
-
-  it("resolves to the typed object and a downstream stage computes on its fields without re-parsing", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ structured: { title: "Race", score: 7 } }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const finding = await ctx.agent("rate it", { schema: Finding })
-    expect(finding).not.toBeNull()
-    // No re-parse: read the fields straight off the result (the typed-return AC).
-    expect(finding && finding.score * 2).toBe(14)
-    expect(finding?.title.toUpperCase()).toBe("RACE")
-    expect(state.unitCount).toBe(1)
-    expect(state.errors).toHaveLength(0)
-  })
-
-  it("drops to null + records ctx.errors when structured output never complies (after retries)", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ structuredError: "would not call the tool" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const out = await ctx.agent("rate it", { schema: Finding, label: "rater", retries: 1 })
-    expect(out).toBeNull()
-    expect(state.errors).toHaveLength(1)
-    expect(state.errors[0]).toMatchObject({ unit: "rater", prompt: "rate it" })
-    expect(state.errors[0]?.error).toContain("would not call the tool")
-    expect(state.units[0]).toMatchObject({ ok: false })
-  })
-
-  it("threads `retries` through to the engine retry loop", async () => {
-    const state = createEngineState()
-    const client = makeFakeClient({ structuredError: "nope" })
-    const ctx = createWorkflowContext({ client, parentSessionID: "p", args: undefined, state })
-    await ctx.agent("x", { schema: Finding, retries: 2 })
-    expect(client.promptCalls).toHaveLength(3) // 1 + 2 retries — proves the option reached runAgent
-  })
-})
-
-describe("ctx.parallel", () => {
-  it("runs thunks concurrently and returns results positionally aligned", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const out = await ctx.parallel([
-      async () => "a",
-      async () => "b",
-      async () => "c",
-    ])
-    expect(out).toEqual(["a", "b", "c"])
-  })
-
-  it("turns a failed agent() Unit into a null slot recorded with a rich ctx.errors entry", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ promptError: "down" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const out = await ctx.parallel([
-      () => ctx.agent("first", { label: "u1", subagent: "writer" }),
-      () => ctx.agent("second", { label: "u2", subagent: "writer" }),
-    ])
-    expect(out).toEqual([null, null])
-    expect(ctx.errors.map((e) => e.unit)).toEqual(["u1", "u2"])
-    expect(ctx.errors.every((e) => e.error.includes("down") && e.subagent === "writer")).toBe(true)
-  })
-
-  it("captures a thunk that THROWS as a null slot + a ctx.errors entry (fan-out not aborted)", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    const out = await ctx.parallel<string>([
-      async () => "ok",
-      async () => {
-        throw new Error("kaboom")
-      },
-    ])
-    expect(out[0]).toBe("ok")
-    expect(out[1]).toBeNull()
-    expect(ctx.errors).toHaveLength(1)
-    expect(ctx.errors[0]?.error).toContain("kaboom")
-    expect(ctx.errors[0]?.unit).toContain("parallel")
-  })
-
-  it("falls back to the default cap (never drops) when concurrency is non-finite", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      concurrency: Number.NaN,
-    })
-    const out = await ctx.parallel([async () => "a", async () => "b", async () => "c"])
-    expect(out).toEqual(["a", "b", "c"]) // not [null, null, null]
-    expect(ctx.errors).toHaveLength(0)
-  })
-
-  it("bounds in-flight Units (agent calls) to meta.concurrency via the shared limiter", async () => {
-    const state = createEngineState()
-    const client = makeFakeClient({ delayMs: 5 })
-    const ctx = createWorkflowContext({
-      client,
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      concurrency: 2,
-    })
-    // The cap lives on the Unit (every agent() draws from the one shared limiter), so a fan-out of six Units
-    // never runs more than two prompts at once — regardless of how the thunks are issued.
-    await ctx.parallel(Array.from({ length: 6 }, (_unused, i) => () => ctx.agent(`u${i}`)))
-    expect(client.meter.peak).toBe(2)
-  })
-})
-
-describe("ctx.collect", () => {
-  it("drops null slots from a parallel result", () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    expect(ctx.collect(["a", null, "b", null, "c"])).toEqual(["a", "b", "c"])
-    expect(ctx.collect<string>([])).toEqual([])
-  })
-})
-
-describe("ctx unit tracking (out-of-band visibility)", () => {
-  it("records each Unit's child session id, label, ok, and fires onUnitSettled", async () => {
-    const state = createEngineState()
-    const seen: { sessionID: string | null; ok: boolean }[] = []
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ reply: "x", idPrefix: "ses" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-      events: { onUnitSettled: (u) => seen.push({ sessionID: u.sessionID, ok: u.status === "ok" }) },
-    })
-    await ctx.agent("a", { subagent: "writer", label: "intro" })
-    expect(state.units).toEqual([{ sessionID: "ses-1", label: "intro", subagent: "writer", phase: null, ok: true }])
-    expect(seen).toEqual([{ sessionID: "ses-1", ok: true }])
-  })
-
-  it("records a failed Unit's session id with ok:false (created but prompt failed)", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ promptError: "boom", idPrefix: "ses" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    await ctx.agent("a", { subagent: "writer" })
-    expect(state.units[0]).toMatchObject({ sessionID: "ses-1", ok: false, subagent: "writer" })
-  })
-
-  it("accumulates units across a parallel fan-out", async () => {
-    const state = createEngineState()
-    const ctx = createWorkflowContext({
-      client: makeFakeClient({ reply: "ok", idPrefix: "ses" }),
-      parentSessionID: "p",
-      args: undefined,
-      state,
-    })
-    await ctx.parallel([() => ctx.agent("a"), () => ctx.agent("b"), () => ctx.agent("c")])
-    expect(state.units).toHaveLength(3)
-    expect(state.units.every((u) => u.ok && u.sessionID)).toBe(true)
-    expect(new Set(state.units.map((u) => u.sessionID)).size).toBe(3) // distinct child sessions
-  })
-})
-
 /**
- * `ctx.ask` — the script's own question, and the reason the primitive exists.
- *
- * `meta.args` is fixed before a run starts, so it can offer "fast or thorough?" but not *"planning found 6
- * areas — 12 units — fast or thorough?"*. These cover the four ways that question can end: a human answers it,
- * the grace runs out, nobody is attached, or the run is stopped. The last three all resolve to the fallback,
- * which is exactly what makes the primitive safe to put in a workflow that will also run in CI.
+ * `ctx.agent` end to end over the fake host: Unit sessions, typed results through `workflow_result`, the text and
+ * extract fallbacks, same-session repair, limits, stopping, and resume replay.
  */
-describe("ctx.ask", () => {
-  const FORM: AskQuestion[] = [
-    {
-      header: "Depth",
-      prompt: "Planning found 6 areas. Fast or thorough?",
-      options: [
-        { label: "fast", description: "One unit per area" },
-        { label: "thorough", description: "Two units per area" },
-      ],
-    },
-  ]
+import { describe, expect, test } from "bun:test"
+import { z } from "../src/workflow"
+import type { Unit } from "../src/protocol"
+import type { ReplayPlan } from "../src/context"
+import { makeCtx } from "./helpers"
 
-  function harness(options: { attached?: boolean; signal?: AbortSignal } = {}) {
-    const store = createRunStore()
-    const run: RunSnapshot = {
-      runId: "run-ask",
-      workflow: "planner",
-      provenance: "inline",
-      parentSessionID: "ses_parent",
-      status: "running",
-      phases: [],
-      phasesDeclared: false,
-      currentPhase: null,
-      units: [],
-      logs: [],
-      errors: [],
-      interactions: [],
-      resolved: [],
-      tokensSpent: 0,
-      startedAt: Date.now(),
-      endedAt: null,
-    }
-    store.create(run)
-    const registry = createAskRegistry({
-      store,
-      attached: () => options.attached ?? true,
-      signal: options.signal ?? new AbortController().signal,
-      defaultGraceMs: 50,
-    })
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "ses_parent",
-      args: undefined,
-      state: createEngineState(),
-      ask: registry,
-      runId: "run-ask",
-    })
-    const pending = () => store.get("run-ask")?.interactions ?? []
-    return { store, registry, ctx, pending }
-  }
-
-  it("publishes the question as run state, then resolves to the human's answer", async () => {
-    const { registry, ctx, pending } = harness()
-    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 10_000 })
-    await Bun.sleep(5)
-
-    expect(pending()).toHaveLength(1)
-    const interaction = pending()[0]!
-    // A script question is the SAME shape as an agent one — one pane renders both.
-    expect(interaction.origin).toBe("script")
-    expect(interaction.kind).toBe("question")
-    expect(interaction.unitId).toBeNull()
-    expect(interaction.depth).toBe(1)
-    expect(interaction.questions[0]?.prompt).toContain("6 areas")
-    expect(interaction.graceEndsAt).toBeGreaterThan(interaction.raisedAt)
-
-    expect(registry.resolve(interaction.requestID, [["thorough"]])).toBe(true)
-    expect(await answered).toEqual([["thorough"]])
-    // Answered means gone: no surface should keep offering a question nobody is waiting on.
-    expect(pending()).toHaveLength(0)
+describe("ctx.agent — text Units", () => {
+  test("creates one titled Unit session with create-time identity and engine rules, returns the final text", async () => {
+    const { ctx, host } = makeCtx({ reply: { text: "hello back" } })
+    const out = await ctx.agent("hello", { label: "greeter" })
+    expect(out).toBe("hello back")
+    expect(host.creates).toHaveLength(1)
+    const create = host.creates[0]!
+    expect(create.title).toBe("⟡ wf · test · greeter")
+    expect(create.agent).toBe("general")
+    expect(create.metadata).toMatchObject({ workflow: { protocol: 1, runId: "run-test", ordinal: 1, parentSessionID: "ses_parent" } })
+    expect(create.permissions.slice(-3).map((rule) => `${rule.action}:${rule.effect}`)).toEqual([
+      "workflow_result:allow",
+      "workflow:deny",
+      "workflow_inline:deny",
+    ])
+    expect(host.prompts).toEqual([{ sessionID: "ses_fake_1", text: "hello", turn: 0 }])
   })
 
-  it("matches an answer to the offered labels, and refuses one that is not among them", async () => {
-    const { registry, ctx, pending } = harness()
-    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 10_000 })
-    await Bun.sleep(5)
-    const requestID = pending()[0]!.requestID
-
-    expect(registry.resolve(requestID, [["sideways"]])).toBe(false)
-    expect(registry.resolve(requestID, [["fast", "thorough"]])).toBe(false) // not a multiple-choice question
-    expect(pending()).toHaveLength(1) // still the human's to answer
-
-    // Case-insensitive in, canonical out — the host's own reply contract.
-    expect(registry.resolve(requestID, [["THOROUGH"]])).toBe(true)
-    expect(await answered).toEqual([["thorough"]])
+  test("model strings, effort and agentType are aliases the host understands", async () => {
+    const { ctx, host } = makeCtx()
+    await ctx.agent("a", { model: "anthropic/claude-x#high" })
+    await ctx.agent("b", { model: { providerID: "openai", modelID: "gpt" }, effort: "low", agentType: "explore" })
+    expect(host.creates[0]!.model).toEqual({ providerID: "anthropic", id: "claude-x", variant: "high" })
+    expect(host.creates[1]!.model).toEqual({ providerID: "openai", id: "gpt", variant: "low" })
+    expect(host.creates[1]!.agent).toBe("explore")
   })
 
-  /**
-   * The validation half of multi-select.
-   *
-   * A pane that can now send several labels is only half the feature: the registry is what decides whether the
-   * script gets them. It already read `multiple` — this pins that it does, because a validator that admitted one
-   * label per question would have turned the new pane into a silent truncation rather than a visible failure.
-   */
-  it("admits as many labels as a `multiple` question offered, and still refuses one it did not", async () => {
-    const { registry, ctx, pending } = harness()
-    const form: AskQuestion[] = [
+  test("Workflow and Unit permission rules precede the engine rules", async () => {
+    const { ctx, host } = makeCtx({}, { permissions: [{ action: "edit", resource: "*", effect: "allow" }] })
+    await ctx.agent("x", { permissions: [{ action: "shell", resource: "*", effect: "deny" }] })
+    expect(host.creates[0]!.permissions.map((rule) => rule.action)).toEqual(["edit", "shell", "workflow_result", "workflow", "workflow_inline"])
+  })
+
+  test("a provider failure resolves to null and is recorded", async () => {
+    const { ctx, state } = makeCtx({ reply: { error: "rate limited" } })
+    expect(await ctx.agent("x", { label: "L" })).toBeNull()
+    expect(state.errors).toEqual([{ unit: "L", prompt: "x", subagent: "general", error: "rate limited" }])
+  })
+
+  test("a create failure resolves to null with the reason", async () => {
+    const { ctx, state } = makeCtx({ createError: "nope" })
+    expect(await ctx.agent("x")).toBeNull()
+    expect(state.errors[0]?.error).toContain("could not create the Unit session: nope")
+  })
+
+  test("usage is read from the Unit session and summed", async () => {
+    const { ctx, state } = makeCtx({ outputTokens: 7, cost: 0.5 })
+    await ctx.agent("a")
+    await ctx.agent("b")
+    expect(state.usage.tokens.output).toBe(14)
+    expect(state.usage.cost).toBe(1)
+  })
+
+  test("emits queued → running → succeeded with the session and resolved model", async () => {
+    const units: Unit[] = []
+    const { ctx } = makeCtx({ model: { providerID: "p", id: "m" } }, { events: { onUnit: (unit) => units.push(unit) } })
+    await ctx.agent("go")
+    expect(units.map((unit) => unit.status)).toEqual(["queued", "running", "running", "succeeded"])
+    const done = units.at(-1)!
+    expect(done.sessionID).toBe("ses_fake_1")
+    expect(done.model.resolved).toBe("p/m")
+    expect(done.output).toBe("go")
+    expect(done.resultPath).toBe("text")
+  })
+})
+
+describe("ctx.agent — typed Units", () => {
+  const Rating = z.object({ score: z.number().int().min(0).max(10), reason: z.string() })
+
+  test("a valid workflow_result call resolves to the parsed value", async () => {
+    const units: Unit[] = []
+    const { ctx } = makeCtx({ reply: { result: { score: 7, reason: "ok" } } }, { events: { onUnit: (u) => units.push(u) } })
+    const out = await ctx.agent("rate", { schema: Rating })
+    expect(out).toEqual({ score: 7, reason: "ok" })
+    expect(units.at(-1)?.resultPath).toBe("tool")
+    expect(units.at(-1)?.schema).toBe(true)
+  })
+
+  test("an invalid call followed by a valid one in the same turn succeeds without a repair turn", async () => {
+    const { ctx, host } = makeCtx({ reply: { results: [{ score: 99, reason: "x" }, { score: 9, reason: "fixed" }] } })
+    expect(await ctx.agent("rate", { schema: Rating })).toEqual({ score: 9, reason: "fixed" })
+    expect(host.prompts).toHaveLength(1)
+  })
+
+  test("no tool call → a repair turn in the SAME session", async () => {
+    const units: Unit[] = []
+    const { ctx, host } = makeCtx(
+      { replies: [{ text: "I think it is a 7." }, { result: { score: 7, reason: "late" } }] },
+      { events: { onUnit: (u) => units.push(u) } },
+    )
+    expect(await ctx.agent("rate", { schema: Rating })).toEqual({ score: 7, reason: "late" })
+    expect(host.creates).toHaveLength(1)
+    expect(host.prompts.map((p) => p.sessionID)).toEqual(["ses_fake_1", "ses_fake_1"])
+    expect(host.prompts[1]!.text).toContain("workflow_result")
+    expect(units.map((u) => u.status)).toContain("repairing")
+    expect(units.at(-1)?.attempts.map((a) => `${a.path}:${a.ok}`)).toEqual(["tool:false", "tool:true"])
+  })
+
+  test("JSON in the reply text is accepted when it validates (text-json path)", async () => {
+    const units: Unit[] = []
+    const { ctx } = makeCtx({ reply: { text: 'Here:\n```json\n{"score": 4, "reason": "meh"}\n```' } }, { events: { onUnit: (u) => units.push(u) } })
+    expect(await ctx.agent("rate", { schema: Rating })).toEqual({ score: 4, reason: "meh" })
+    expect(units.at(-1)?.resultPath).toBe("text-json")
+  })
+
+  test("after the repairs, extraction is the last resort", async () => {
+    const units: Unit[] = []
+    const { ctx, host } = makeCtx(
+      { reply: { text: "score four, because meh" }, generate: () => '{"score": 4, "reason": "meh"}' },
+      { events: { onUnit: (u) => units.push(u) } },
+    )
+    expect(await ctx.agent("rate", { schema: Rating, retries: 1 })).toEqual({ score: 4, reason: "meh" })
+    expect(host.prompts).toHaveLength(2)
+    expect(host.generates[0]).toContain("score four")
+    expect(units.at(-1)?.resultPath).toBe("extract")
+  })
+
+  test("every path failing resolves to null with a legible error", async () => {
+    const { ctx, state } = makeCtx({ reply: { text: "no idea" } })
+    expect(await ctx.agent("rate", { schema: Rating, retries: 1 })).toBeNull()
+    expect(state.errors[0]?.error).toContain("structured output failed after 1 repair turn(s)")
+  })
+
+  test("a plain JSON Schema works as `schema` (D7 alias)", async () => {
+    const { ctx, index } = makeCtx({ reply: { results: [{ n: "x" }, { n: 3 }] } })
+    const out = await ctx.agent("count", {
+      schema: { type: "object", properties: { n: { type: "integer", minimum: 0 } }, required: ["n"], additionalProperties: false },
+    })
+    expect(out).toEqual({ n: 3 })
+    expect(index.size()).toBe(0) // bindings are released when the Unit settles
+  })
+
+  test("a schema that is neither zod nor JSON Schema fails the Unit, not the Run", async () => {
+    const { ctx, state } = makeCtx()
+    expect(await ctx.agent("x", { schema: "nope" as never })).toBeNull()
+    expect(state.errors[0]?.error).toContain("not a zod schema or a JSON Schema")
+  })
+})
+
+describe("ctx.agent — stopping and limits", () => {
+  test("a Unit timeout interrupts the session and fails the Unit", async () => {
+    const { ctx, host, state } = makeCtx({ reply: { hang: true } })
+    expect(await ctx.agent("slow", { timeoutMs: 20 })).toBeNull()
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+    expect(state.errors[0]?.error).toContain("20ms timeout")
+  })
+
+  test("the per-Unit stop handle stops only that Unit", async () => {
+    const units: Unit[] = []
+    const stops = new Map<string, () => void>()
+    const { ctx } = makeCtx(
+      { reply: (call) => (call.text === "hang" ? { hang: true } : { text: "fine" }) },
+      { events: { onUnit: (u) => units.push(u), onUnitSession: (unitId, _sid, stop) => stops.set(unitId, stop) } },
+    )
+    const hanging = ctx.agent("hang", { label: "H" })
+    const fine = ctx.agent("ok")
+    await new Promise((r) => setTimeout(r, 5))
+    const hangId = units.find((u) => u.label === "H")!.unitId
+    stops.get(hangId)!()
+    expect(await hanging).toBeNull()
+    expect(await fine).toBe("fine")
+    expect(units.filter((u) => u.unitId === hangId).at(-1)?.status).toBe("stopped")
+  })
+
+  test("the step guard stops a runaway Unit", async () => {
+    const { ctx, state } = makeCtx({ stepsPerPrompt: 5, reply: { hang: true } }, { limits: { maxUnitSteps: 3 } })
+    expect(await ctx.agent("loop")).toBeNull()
+    expect(state.errors[0]?.error).toContain("step limit (3 model requests)")
+  })
+
+  test("limits.maxUnits reports the limit so the orchestrator can stop the Run", async () => {
+    const limits: string[] = []
+    const { ctx } = makeCtx({}, { limits: { maxUnits: 2 }, onLimit: (m) => limits.push(m) })
+    await ctx.agent("1")
+    await ctx.agent("2")
+    await ctx.agent("3")
+    expect(limits).toEqual(["limit reached: this Run tried to start more than 2 Units (limits.maxUnits)"])
+  })
+})
+
+describe("ctx.agent — resume replay", () => {
+  const plan = (overrides: Partial<ReplayPlan> = {}): ReplayPlan => ({
+    units: new Map([
+      [1, { prompt: "first", status: "succeeded", output: "one", schema: false, subagent: "general" }],
+      [2, { prompt: "second", status: "succeeded", output: '{"n": 2}', schema: true, subagent: "general" }],
+      [3, { prompt: "third", status: "failed", schema: false, subagent: "general" }],
+    ]),
+    answers: [],
+    rerunFailed: true,
+    diverged: false,
+    ...overrides,
+  })
+
+  test("finished Units come back from the record without a session; failed ones re-run", async () => {
+    const units: Unit[] = []
+    const { ctx, host } = makeCtx({ reply: { text: "live" } }, { replay: plan(), events: { onUnit: (u) => units.push(u) } })
+    expect(await ctx.agent("first")).toBe("one")
+    expect(await ctx.agent("second", { schema: z.object({ n: z.number() }) })).toEqual({ n: 2 })
+    expect(await ctx.agent("third")).toBe("live")
+    expect(host.prompts.map((p) => p.text)).toEqual(["third"])
+    expect(units.filter((u) => u.status === "replayed")).toHaveLength(2)
+  })
+
+  test("a different prompt at a recorded ordinal diverges and everything after runs live", async () => {
+    const diverged: string[] = []
+    const { ctx, host } = makeCtx({ reply: { text: "live" } }, { replay: plan({ onDiverge: (m) => diverged.push(m) }) })
+    expect(await ctx.agent("CHANGED")).toBe("live")
+    expect(await ctx.agent("second")).toBe("live")
+    expect(diverged[0]).toContain("resume diverged at Unit 1")
+    expect(host.prompts.map((p) => p.text)).toEqual(["CHANGED", "second"])
+  })
+
+  test("recorded ctx.ask answers replay in order", async () => {
+    const { ctx } = makeCtx({}, { replay: plan({ answers: [[["Thorough"]]] }) })
+    const answer = await ctx.ask(
+      { header: "Depth", prompt: "How deep?", options: [{ label: "Fast", description: "" }, { label: "Thorough", description: "" }] },
+      { fallback: [["Fast"]] },
+    )
+    expect(answer).toEqual([["Thorough"]])
+  })
+})
+
+describe("ctx.ask and Unit questions", () => {
+  const form = { header: "Region", prompt: "Where?", options: [{ label: "EU", description: "" }, { label: "US", description: "" }] }
+
+  test("with no broker the fallback answers at once (headless contract)", async () => {
+    const { ctx } = makeCtx()
+    expect(await ctx.ask(form, { fallback: [["us"]] })).toEqual([["US"]])
+  })
+
+  test("a fallback outside the offered labels is an authoring error", async () => {
+    const { ctx } = makeCtx()
+    await expect(ctx.ask(form, { fallback: [["Mars"]] })).rejects.toThrow("fallback")
+  })
+
+  test("a Unit's own question tool call is routed to askAgent", async () => {
+    const asked: string[] = []
+    const { ctx } = makeCtx(
+      { reply: { question: { header: "Color", prompt: "red or blue?", options: ["red", "blue"] } } },
       {
-        header: "Regions",
-        prompt: "Which regions should the report cover?",
-        options: [
-          { label: "EU", description: "European Union" },
-          { label: "US", description: "United States" },
-          { label: "APAC", description: "Asia-Pacific" },
-        ],
-        multiple: true,
+        askAgent: (unitId, sessionID) => async (questions) => {
+          asked.push(`${unitId.length > 0}:${sessionID}:${questions[0]?.prompt}`)
+          return { answers: [["blue"]], by: "human" }
+        },
       },
-    ]
-    const answered = ctx.ask(form, { fallback: [["EU"]], graceMs: 10_000 })
-    await Bun.sleep(5)
-    const requestID = pending()[0]!.requestID
-    // The pane renders from this, so the field has to survive the trip into run state as well.
-    expect(pending()[0]?.questions[0]?.multiple).toBe(true)
-
-    // Still a closed set: more labels does not mean any label.
-    expect(registry.resolve(requestID, [["EU", "Mars"]])).toBe(false)
-    expect(pending()).toHaveLength(1)
-
-    expect(registry.resolve(requestID, [["eu", "APAC"]])).toBe(true)
-    // Canonical labels, in the order they were sent — the order the user ticked them in.
-    expect(await answered).toEqual([["EU", "APAC"]])
-  })
-
-  it("takes a multi-label fallback for a multi-select question, and refuses one for a single-choice one", async () => {
-    const { ctx } = harness({ attached: false })
-    const many: AskQuestion[] = [
-      {
-        header: "Regions",
-        prompt: "Which regions?",
-        options: [
-          { label: "EU", description: "" },
-          { label: "US", description: "" },
-        ],
-        multiple: true,
-      },
-    ]
-    expect(await ctx.ask(many, { fallback: [["EU", "US"]] })).toEqual([["EU", "US"]])
-    // The same fallback against a question that only takes one is an authoring bug, caught before the run.
-    await expect(ctx.ask(FORM, { fallback: [["fast", "thorough"]] })).rejects.toThrow(/offered labels/)
-  })
-
-  it("publishes with no deadline when no grace was declared anywhere", async () => {
-    const store = createRunStore()
-    const run: RunSnapshot = {
-      runId: "run-ask",
-      workflow: "planner",
-      provenance: "inline",
-      parentSessionID: "ses_parent",
-      status: "running",
-      phases: ["plan"],
-      phasesDeclared: true,
-      currentPhase: "plan",
-      units: [],
-      logs: [],
-      errors: [],
-      interactions: [],
-      resolved: [],
-      tokensSpent: 0,
-      startedAt: Date.now(),
-      endedAt: null,
-    }
-    store.create(run)
-    const registry = createAskRegistry({
-      store,
-      attached: () => true,
-      signal: new AbortController().signal,
-      // The run declared none, so the ask has none — see `resolveAskGrace`.
-      defaultGraceMs: null,
-    })
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "ses_parent",
-      args: undefined,
-      state: createEngineState(),
-      ask: registry,
-      runId: "run-ask",
-    })
-
-    const answered = ctx.ask(FORM, { fallback: [["fast"]] })
-    await Bun.sleep(5)
-    const pending = store.get("run-ask")?.interactions ?? []
-    expect(pending[0]?.graceEndsAt).toBeNull()
-    // The phase it was raised in, so the answer has somewhere to be filed once it is given.
-    expect(pending[0]?.phase).toBe("plan")
-
-    // No timer exists to settle it. Only an answer can.
-    await Bun.sleep(60)
-    expect(store.get("run-ask")?.interactions).toHaveLength(1)
-    expect(registry.resolve(pending[0]!.requestID, [["thorough"]])).toBe(true)
-    expect(await answered).toEqual([["thorough"]])
-  })
-
-  it("falls back when the grace expires, without failing the run", async () => {
-    const { ctx, pending } = harness()
-    const answered = await ctx.ask(FORM, { fallback: [["fast"]], graceMs: 20 })
-    expect(answered).toEqual([["fast"]])
-    expect(pending()).toHaveLength(0)
-  })
-
-  /**
-   * The grace BOUNDARY — the one thing three human passes were each asked to check by hand.
-   *
-   * A person answering at the last second and a timer firing at the same second are a genuine race, and the
-   * failure it threatens is not a lost answer but a DOUBLE one: the fallback resolves the promise, the human's
-   * reply arrives, and something replies twice to a host that has already moved on. Driven here by resolving
-   * the registry directly after expiry, which is the same call the control action makes and needs no clock
-   * faking to be exact.
-   */
-  it("refuses an answer that arrives after the grace has already expired", async () => {
-    const { registry, ctx, pending } = harness()
-    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 20 })
-    await Bun.sleep(5)
-    const requestID = pending()[0]!.requestID
-
-    // The grace runs out and the fallback settles it.
-    expect(await answered).toEqual([["fast"]])
-    expect(pending()).toHaveLength(0)
-
-    // The human's answer lands a moment too late. It must be REFUSED, not applied on top.
-    expect(registry.resolve(requestID, [["thorough"]])).toBe(false)
-    // …and the answer the workflow already received does not change underneath it.
-    expect(await answered).toEqual([["fast"]])
-  })
-
-  it("takes the answer, not the fallback, when it arrives before the grace ends", async () => {
-    const { registry, ctx, pending } = harness()
-    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 5_000 })
-    await Bun.sleep(5)
-    // The other side of the same boundary: still inside the window, so the person wins.
-    expect(registry.resolve(pending()[0]!.requestID, [["thorough"]])).toBe(true)
-    expect(await answered).toEqual([["thorough"]])
-    // And a second press of ⏎ on a question already answered changes nothing.
-    expect(registry.resolve(pending()[0]?.requestID ?? "gone", [["fast"]])).toBe(false)
-  })
-
-  it("falls back immediately when nothing is attached, and publishes nothing", async () => {
-    const { ctx, pending } = harness({ attached: false })
-    // No wait at all: a background run, `opencode serve`, and CI all have nobody to ask, and a workflow that
-    // hangs waiting for an answer nobody will give is worse than one that proceeds on a stated default.
-    expect(await ctx.ask(FORM, { fallback: [["thorough"]], graceMs: 60_000 })).toEqual([["thorough"]])
-    expect(pending()).toHaveLength(0)
-  })
-
-  it("falls back when the run is aborted mid-question", async () => {
-    const controller = new AbortController()
-    const { ctx, pending } = harness({ signal: controller.signal })
-    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 60_000 })
-    await Bun.sleep(5)
-    expect(pending()).toHaveLength(1)
-    controller.abort()
-    expect(await answered).toEqual([["fast"]])
-    expect(pending()).toHaveLength(0)
-  })
-
-  it("hands a question back to its declared fallback on `reject`", async () => {
-    const { registry, ctx, pending } = harness()
-    const answered = ctx.ask(FORM, { fallback: [["fast"]], graceMs: 60_000 })
-    await Bun.sleep(5)
-    expect(registry.reject(pending()[0]!.requestID)).toBe(true)
-    expect(await answered).toEqual([["fast"]])
-  })
-
-  it("rejects a fallback that is not itself a valid answer", async () => {
-    const { ctx } = harness()
-    // An authoring bug, and one that would otherwise only surface headlessly — i.e. in production.
-    await expect(ctx.ask(FORM, { fallback: [["maybe"]] })).rejects.toThrow(/offered labels/)
-    await expect(ctx.ask(FORM, { fallback: [] })).rejects.toThrow(/offered labels/)
-  })
-
-  it("returns one entry per question, in order, for a multi-part form", async () => {
-    const { registry, ctx, pending } = harness()
-    const form: AskQuestion[] = [
-      { header: "A", prompt: "first?", options: [{ label: "a1", description: "" }] },
-      { header: "B", prompt: "second?", options: [{ label: "b1", description: "" }] },
-    ]
-    const answered = ctx.ask(form, { fallback: [["a1"], ["b1"]], graceMs: 10_000 })
-    await Bun.sleep(5)
-    expect(pending()[0]?.questions).toHaveLength(2)
-    expect(registry.resolve(pending()[0]!.requestID, [["a1"], ["b1"]])).toBe(true)
-    expect(await answered).toEqual([["a1"], ["b1"]])
-  })
-
-  it("resolves to the fallback with no registry at all — the headless contract, stated once", async () => {
-    const ctx = createWorkflowContext({
-      client: makeFakeClient(),
-      parentSessionID: "p",
-      args: undefined,
-      state: createEngineState(),
-    })
-    expect(await ctx.ask(FORM[0] as AskQuestion, { fallback: [["fast"]] })).toEqual([["fast"]])
+    )
+    expect(await ctx.agent("ask something")).toBe("ANSWER: blue")
+    expect(asked).toEqual(["true:ses_fake_1:red or blue?"])
   })
 })

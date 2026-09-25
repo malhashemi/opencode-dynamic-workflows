@@ -1,34 +1,45 @@
 {
   "name": "opencode-dynamic-workflows",
-  "version": "0.0.1",
-  "description": "opencode plugin: register the `workflow` orchestrator tool that runs deterministic multi-subagent Workflows.",
+  "version": "0.1.0",
+  "description": "OpenCode V2 plugin: deterministic multi-subagent Workflows with typed results, a live TUI panel, a web app and a versioned protocol.",
   "type": "module",
+  "license": "MIT",
   "main": "./src/index.ts",
-  "module": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/index.ts",
-    "./tui": "./src/tui/index.tsx"
+    "./workflow": "./src/workflow/index.ts",
+    "./protocol": "./src/protocol/index.ts",
+    "./rpc": "./src/service/rpc.ts",
+    "./tui": "./dist/tui.js"
   },
   "files": [
+    "server.ts",
+    "rpc.ts",
     "src",
-    "dashboard-dist"
+    "dist",
+    "docs",
+    "README.md"
   ],
   "scripts": {
-    "prepack": "bun run --cwd ../.. build:dashboard"
+    "build": "bun run script/build-tui.ts",
+    "prepack": "bun run build"
   },
   "dependencies": {
-    "@opencode-ai/workflow": "workspace:*",
-    "@opentui/core": "0.4.5",
-    "@opentui/solid": "0.4.5"
+    "@opencode/plugin": "2.0.16",
+    "zod": "^4.1.8"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "1.18.x",
-    "@opencode-ai/sdk": "1.18.x"
+    "@opentui/core": ">=0.5.10",
+    "@opentui/solid": ">=0.5.10",
+    "solid-js": ">=1.9.0"
   },
   "devDependencies": {
-    "@opentui/keymap": "0.4.5",
+    "@opencode/client": "2.0.16",
+    "@opencode/theme": "2.0.16",
+    "@opentui/core": "0.5.12",
+    "@opentui/solid": "0.5.12",
     "solid-js": "1.9.12"
   }
 }
