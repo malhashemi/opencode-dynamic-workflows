@@ -499,7 +499,8 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       guard(c.error as never, async () => (await service.cancelInteraction(input.runId, input.interactionId), { ok: true as const })),
     saveRun: (input, c) => guard(c.error as never, () => service.saveRun(input.runId, input.name)),
     cleanupRun: (input, c) => guard(c.error as never, () => service.cleanupRun(input.runId, input.deleted ?? [])),
-    attach: (input, c) => guard(c.error as never, () => (service.attach(input.surface, input.ttlMs), { ok: true as const })),
+    attach: (input, c) => guard(c.error as never, () => (service.attach(input.surface, input.ttlMs, input.sessionID), { ok: true as const })),
+    detach: (input, c) => guard(c.error as never, () => (service.detach(input.surface), { ok: true as const })),
     eventsSince: (input, c) => guard(c.error as never, () => service.eventsSince(input.after ?? 0)),
     pair: (_input, c) =>
       guard(c.error as never, () => {

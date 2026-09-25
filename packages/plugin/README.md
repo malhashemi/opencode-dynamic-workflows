@@ -44,8 +44,9 @@ Add the package to `plugins` in `opencode.json` (project) or your global config:
 }
 ```
 
-A git or local checkout works too: `"git+https://…/opencode-dynamic-workflows.git#<ref>"`, or the absolute
-path of `packages/plugin` in this repository. The TUI part loads automatically with the server part.
+From a checkout of this repository, run `bun install && bun run build` and use the absolute path of
+`packages/plugin` instead. A git spec (`git+https://…#<ref>`) works for a repository whose root is the packed
+package (`bun run pack` output). The TUI part loads automatically with the server part.
 
 ## Options
 
@@ -151,7 +152,8 @@ Gateway (HTTP + SSE): [docs/protocol/README.md](./docs/protocol/README.md), with
 bun install
 bun run typecheck
 bun test                                                 # engine, protocol, TUI models (no OpenCode needed)
-bun run build                                            # dist/tui.js and dist/web
+bun run build                                            # dist/tui.js, dist/web, schema check
+bun run pack                                             # build, then the publishable tarball
 bun test ./packages/plugin/test/live --timeout 300000    # real OpenCode on a private server (cheap model)
 ```
 

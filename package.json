@@ -10,9 +10,10 @@
   "scripts": {
     "typecheck": "tsc --build",
     "test": "bun test",
-    "build": "bun run --cwd packages/plugin build",
+    "build": "bun run packages/plugin/script/build-tui.ts && bun run --cwd packages/web build && bun run packages/plugin/script/protocol-schemas.ts --check",
     "build:web": "bun run --cwd packages/web build",
-    "verify:live": "bun test ./packages/plugin/test/live"
+    "verify:live": "bun test ./packages/plugin/test/live",
+    "pack": "bun run build && cd packages/plugin && bun pm pack"
   },
   "devDependencies": {
     "@types/bun": "latest",

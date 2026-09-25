@@ -391,7 +391,7 @@ export function createRunStore(location: string): RunStore {
 
     for (const [type, data] of out) publish(event(run, type, data()))
     if (change.type === "run.started" || change.type === "run.ended") {
-      publish(event(null, "library.changed", toLibraryEntry(run, true)))
+      publish(event(null, "library.changed", toLibraryEntry(run, !isTerminal(run.status))))
     }
     return cloneRun(run)
   }

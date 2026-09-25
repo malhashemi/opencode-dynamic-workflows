@@ -17,15 +17,12 @@
   "files": [
     "server.ts",
     "rpc.ts",
+    "tui.js",
     "src",
     "dist",
     "docs",
     "README.md"
   ],
-  "scripts": {
-    "build": "bun run script/build-tui.ts",
-    "prepack": "bun run build"
-  },
   "dependencies": {
     "@opencode/plugin": "2.0.16",
     "zod": "^4.1.8"

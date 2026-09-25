@@ -77,7 +77,8 @@ script question back to its fallback, dismisses a Unit's question, and rejects a
 | `cancelInteraction` | `POST /v1/runs/:runId/interactions/:id/cancel` | `{ ok }` |
 | `saveRun` | `POST /v1/runs/:runId/save` `{ name? }` | `{ key, path }` of the new durable Workflow |
 | `cleanupRun` | `POST /v1/runs/:runId/cleanup` `{ deleted? }` | `{ deleted, pending }` |
-| `attach` | – | `{ ok }`: "a person is watching" for `ttlMs` (TUI heartbeat) |
+| `attach` | – | `{ ok }`: "a person is watching" for `ttlMs` (TUI heartbeat), optionally with the `sessionID` in view |
+| `detach` | – | `{ ok }`: that surface closed |
 | `eventsSince` | `GET /v1/events` with `Last-Event-ID` | missed events, or `complete: false` |
 | `pair` | – (Gateway: `POST /v1/pair`) | a one-use pairing code for a remote browser |
 

@@ -68,6 +68,8 @@ export const WorkflowRpc = Rpc.define({
       errors,
     },
     attach: { input: AttachInput, output: OkOutput, errors },
+    /** The surface closed: stop treating it as a person watching. */
+    detach: { input: z.object({ surface: z.string() }), output: OkOutput, errors },
     eventsSince: { input: EventsSinceInput, output: EventsSinceOutput, errors },
     /** A one-use pairing code for a remote browser (the Gateway's `POST /v1/pair`). */
     pair: {

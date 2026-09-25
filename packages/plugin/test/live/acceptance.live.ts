@@ -34,6 +34,9 @@ let scratch: string
 
 beforeAll(async () => {
   scratch = await mkdtemp(path.join(await realpath(os.tmpdir()), "opencode", "wf-accept-"))
+  // The published manifest has no build scripts (a git install would try to "prepare" it), so build first.
+  const build = Bun.spawnSync(["bun", "run", "build"], { cwd: path.join(PLUGIN_PATH, "..", "..") })
+  if (build.exitCode !== 0) throw new Error(`bun run build failed:\n${build.stderr.toString()}`)
   const pack = Bun.spawnSync(["bun", "pm", "pack", "--destination", scratch], { cwd: PLUGIN_PATH })
   if (pack.exitCode !== 0) throw new Error(`bun pm pack failed:\n${pack.stderr.toString()}${pack.stdout.toString()}`)
   const tarball = (await readdir(scratch)).find((file) => file.endsWith(".tgz"))!
@@ -51,15 +54,6 @@ afterAll(async () => {
 })
 
 describe("acceptance: installed package", () => {
-  test("the installed package carries the built TUI and web app", async () => {
-    const found = await Array.fromAsync(new Bun.Glob("**/opencode-dynamic-workflows/package.json").scan({ cwd: path.join(server.root, "cache"), dot: true, absolute: true }))
-    expect(found.length).toBeGreaterThan(0)
-    const pkg = path.dirname(found[0]!)
-    expect(existsSync(path.join(pkg, "dist", "tui.js"))).toBe(true)
-    expect(existsSync(path.join(pkg, "dist", "web", "index.html"))).toBe(true)
-    expect(existsSync(path.join(pkg, "docs", "protocol", "README.md"))).toBe(true)
-  })
-
   test("server and RPC answer; the registry sees the project Workflow", async () => {
     const info = (await server.workflow.info({})) as any
     expect(info.protocol).toBe(1)
@@ -89,4 +83,13 @@ describe("acceptance: installed package", () => {
     expect(page.status).toBe(200)
     expect(await page.text()).toContain("<script")
   }, 240_000)
+  test("the installed package (installed when the location booted) carries the built TUI and web app", async () => {
+    const found = await Array.fromAsync(new Bun.Glob("**/opencode-dynamic-workflows/package.json").scan({ cwd: path.join(server.root, "cache"), dot: true, absolute: true }))
+    expect(found.length).toBeGreaterThan(0)
+    const pkg = path.dirname(found[0]!)
+    expect(existsSync(path.join(pkg, "dist", "tui.js"))).toBe(true)
+    expect(existsSync(path.join(pkg, "dist", "web", "index.html"))).toBe(true)
+    expect(existsSync(path.join(pkg, "docs", "protocol", "README.md"))).toBe(true)
+  })
+
 })

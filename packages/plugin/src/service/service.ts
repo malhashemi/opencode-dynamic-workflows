@@ -106,7 +106,7 @@ export class WorkflowService {
   private readonly live = new Map<string, LiveRun>()
   private readonly results = new Map<string, unknown>()
   private readonly activity = new Map<string, ActivityEntry[]>()
-  private readonly surfaces = new Map<string, number>()
+  private readonly surfaces = new Map<string, { expires: number; sessionID: string | null }>()
   private readonly started = new Map<string, string>()
 
   constructor(deps: ServiceDeps) {
@@ -136,8 +136,13 @@ export class WorkflowService {
   // ------------------------------------------------------------------------------------------------------------
 
   /** A surface says "I am watching" for `ttlMs`. Surfaces re-attach periodically. */
-  attach(surface: string, ttlMs = 45_000): void {
-    this.surfaces.set(surface, Date.now() + ttlMs)
+  attach(surface: string, ttlMs = 45_000, sessionID?: string): void {
+    this.surfaces.set(surface, { expires: Date.now() + ttlMs, sessionID: sessionID ?? null })
+  }
+
+  /** Sessions currently in view on an attached surface. */
+  watchedSessions(): string[] {
+    return this.attached() ? [...this.surfaces.values()].map((entry) => entry.sessionID).filter((id): id is string => !!id) : []
   }
 
   detach(surface: string): void {
@@ -146,11 +151,15 @@ export class WorkflowService {
 
   attached(): boolean {
     const now = Date.now()
-    for (const [surface, expires] of this.surfaces) {
-      if (expires > now) return true
+    let any = false
+    for (const [surface, entry] of this.surfaces) {
+      if (entry.expires > now) {
+        any = true
+        continue
+      }
       this.surfaces.delete(surface)
     }
-    return false
+    return any
   }
 
   // ------------------------------------------------------------------------------------------------------------
