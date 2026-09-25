@@ -120,8 +120,13 @@ export function validateArgs(meta: WorkflowMeta, args: unknown): unknown {
   const schema = meta.args
   if (!schema) return args
   const parsed = schema.safeParse(args)
-  if (!parsed.success) throw new InvalidArgsError(formatArgsIssues(parsed.error))
-  return parsed.data
+  if (parsed.success) return parsed.data
+  // No args at all (a bare `/name` command): an object whose fields all have defaults should still run.
+  if (args === undefined || args === null) {
+    const empty = schema.safeParse({})
+    if (empty.success) return empty.data
+  }
+  throw new InvalidArgsError(formatArgsIssues(parsed.error))
 }
 
 /**

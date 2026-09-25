@@ -82,6 +82,11 @@ describe("runWorkflow", () => {
     expect(store.get(runId)!.logs.at(-1)).toContain("invalid args: n:")
   })
 
+  it("no args runs a Workflow whose args all have defaults", async () => {
+    const { promise } = await start(wf(`return ctx.args`, `, args: z.object({ n: z.number().default(3) })`))
+    expect((await promise).result).toEqual({ n: 3 })
+  })
+
   it("a throwing run fails the Run and rethrows", async () => {
     const { promise, store, runId } = await start(wf(`throw new Error("author bug")`))
     await expect(promise).rejects.toThrow("author bug")

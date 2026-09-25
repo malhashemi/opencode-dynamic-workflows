@@ -164,7 +164,7 @@ export type AskFn = (form: AskQuestion | AskQuestion[], options: AskOptions) => 
  * Options for a single {@link AgentFn} call — one Unit of a Run. Generic over the optional `schema`: when a
  * zod schema is supplied, the Unit returns its inferred type instead of text (see {@link AgentFn}).
  */
-export interface AgentOpts<S extends z.ZodType | undefined = undefined> {
+export interface AgentOpts<S extends z.ZodType | JsonSchemaInput | undefined = undefined> {
   /** Registered subagent name to run this Unit as. Defaults to `"general"`. */
   subagent?: string
   /** Alias of `subagent` (Claude Code naming). */
@@ -217,14 +217,16 @@ export interface AgentOpts<S extends z.ZodType | undefined = undefined> {
  * Unit's final assistant text. Either way `null` on failure/skip (the drop is recorded in
  * {@link WorkflowContext.errors}).
  */
-export interface AgentFn {
-  /** A JSON Schema `schema` returns an untyped value (validated at run time). */
-  (prompt: string, opts: Omit<AgentOpts, "schema"> & { schema: JsonSchemaInput }): Promise<unknown>
-  <S extends z.ZodType | undefined = undefined>(
-    prompt: string,
-    opts?: AgentOpts<S>,
-  ): Promise<(S extends z.ZodType ? z.infer<S> : string) | null>
-}
+/**
+ * A zod schema types the result; a JSON Schema returns `unknown` (validated at run time); none returns text.
+ *
+ * In a refinement loop (`draft = await agent(\`…${draft}\`)`), declare the loop variable as `string`, not
+ * `string | null`: TypeScript otherwise reports circular inference for the values computed inside the loop.
+ */
+export type AgentFn = <S extends z.ZodType | JsonSchemaInput | undefined = undefined>(
+  prompt: string,
+  opts?: AgentOpts<S>,
+) => Promise<(S extends z.ZodType ? z.infer<S> : S extends undefined ? string : unknown) | null>
 
 /** A dropped Unit, surfaced via {@link WorkflowContext.errors} (error model D9 — no silent drops). */
 export interface WorkflowError {
