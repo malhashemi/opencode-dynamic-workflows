@@ -1,84 +1,66 @@
 /**
- * What the model reads about the tools. Kept accurate to the engine (G14): every context member, working
- * examples, and the modes that retrieve Runs later.
+ * What the model reads about the tools. Scope: how to write and run a Workflow. The full authoring guide is the
+ * `dynamic-workflows` skill (`skill/dynamic-workflows/SKILL.md`); these descriptions stay short and point to it.
  */
 
-const CONTEXT_REFERENCE = `The \`run\` function receives a context:
-  - agent(prompt, opts?) → Promise<T | null>
-    One Unit: a fresh OpenCode session running a subagent (default "general"). Resolves to the subagent's final
-    text, or — with \`schema\` (a zod schema from \`z\`, or a plain JSON Schema object) — to a VALIDATED object the
-    Unit submitted through its \`workflow_result\` tool (invalid submissions are corrected in the same session).
-    A failed Unit resolves to null and is recorded in ctx.errors; it never throws.
-    opts: subagent (alias agentType), label, phase, model ("provider/model#variant" or {providerID, modelID}),
-          effort (model variant, e.g. "high"), schema, retries (repair turns, default 2), timeoutMs (no default),
-          permissions ([{ action, resource, effect }], applied to that Unit's session), location (a worktree dir)
-  - parallel(thunks) → Promise<Array<T | null>>   concurrent barrier; failures become null slots
-  - pipeline(items, ...stages) → Promise<Array<last | null>>   per-item stage chains, NO barrier between items;
-    each stage gets (runningValue, originalItem, index); a throwing stage drops that item to null
-  - collect(xs) → T[]   drop the nulls and narrow the type
-  - errors   every dropped Unit so far: { unit, prompt, subagent, error }
-  - args     the tool's \`args\`, validated against meta.args (zod) before anything runs
-  - log(message), phase(title)   progress shown in the TUI panel and the web app
-  - ask(question | questions, { fallback, graceMs? }) → Promise<string[][]>
-    Ask the person a question mid-run (labels are a closed set; \`custom: true\` allows free text). \`fallback\` is
-    REQUIRED and answers at once when nobody is attached (headless), so a Run never hangs.
-  - budget   { total, spent(), remaining() } in output tokens. Advisory unless meta.budget = { tokens, hard: true }.
-  - signal   the Run's AbortSignal (stopping the Run interrupts every Unit).
-  - $(command) or $\`cmd \${value}\` → { stdout, stderr, exitCode }   shell in the project (values quoted)
-  - file.read/write/exists/list/stat(path)   project files only
-  - fetch(url, init?)   aborted with the Run
-    Capability calls are confined to the project and recorded in the Run's activity.
+const SKILL_POINTER = "Before writing a Workflow, load the `dynamic-workflows` skill: the full API, pipeline vs parallel, typed Units, questions, resume, quality patterns and worked examples."
 
-meta: { name, description, whenToUse?, phases?: [{ title, detail? }], args?: zod schema, concurrency?, unitTimeout?,
-        budget?: number | { tokens, hard? }, permissions?: rules for every Unit, limits?: { maxUnits, maxItemsPerCall,
-        maxUnitSteps }, interaction?: { permissions?: "ask" | "auto" | "deny", graceMs? } }
+const CONTEXT_REFERENCE = `A Workflow is a TypeScript module: export default defineWorkflow({ meta, run }), imported from
+"opencode-dynamic-workflows/workflow". meta: { name, description, whenToUse?, phases?: [{ title }], args?: zod schema,
+concurrency?, budget?, permissions?, limits? }. run(ctx) returns the result. ctx:
+  - agent(prompt, opts?) → one Unit (a fresh session with NONE of your context — make the prompt self-contained).
+    Resolves to its final text, or with \`schema\` (zod \`z\` or JSON Schema, object at the root) to the validated value.
+    A failed Unit resolves to null (recorded in ctx.errors); it never throws.
+    opts: label, phase, subagent ("general" default, "explore" read-only), model ("provider/model#variant"), effort,
+          schema, retries, timeoutMs, permissions, location
+  - pipeline(items, ...stages) — per-item stage chains, NO barrier between items. The default for multi-stage work.
+  - parallel(thunks) — a barrier; use only when a stage needs all results of the previous one.
+  - collect(xs) drops nulls · phase(title) · log(message) · args · budget · signal · errors
+  - ask(question, { fallback }) — ask the person; the fallback answers when nobody is watching.
+  - $\\\`cmd \\\${value}\\\` / file.read|write / fetch — shell, files, HTTP confined to the project.`
 
-One shared limiter (meta.concurrency, default ~CPU-based) caps Units in flight across the whole Run. Hard limits
-(default 1000 Units, 4096 items per call, 250 model steps per Unit) stop runaway scripts with a clear error.`
-
-const EXAMPLE = `Example:
+const EXAMPLE = `Example — review each file, verify each finding as soon as its review is done:
   import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+  const Findings = z.object({ findings: z.array(z.object({ line: z.number().int().nullable(), claim: z.string() })) })
+  const Verdict = z.object({ holds: z.boolean(), evidence: z.string() })
   export default defineWorkflow({
-    meta: { name: "review-files", description: "review each file, then summarise", args: z.object({ files: z.array(z.string()) }) },
-    async run({ agent, pipeline, collect, phase, args }) {
-      phase("review")
-      const Finding = z.object({ file: z.string(), severity: z.enum(["low", "medium", "high"]), summary: z.string() })
-      const findings = collect(await pipeline(args.files, (file) => agent(\`Review \${file} for bugs.\`, { label: file, schema: Finding })))
-      phase("summary")
-      return agent(\`Summarise these findings for a reviewer:\\n\${JSON.stringify(findings)}\`)
+    meta: { name: "review-files", description: "Review files, verify each finding", phases: [{ title: "review" }, { title: "verify" }],
+      args: z.object({ files: z.array(z.string()).min(1) }) },
+    async run({ agent, pipeline, parallel, collect, args }) {
+      const results = await pipeline(
+        args.files,
+        (file) => agent(\`Review \${file} for bugs. Report concrete findings with line numbers only.\`, { label: file, phase: "review", subagent: "explore", schema: Findings }),
+        (review, file) => review && parallel(review.findings.map((f) => () =>
+          agent(\`In \${file}, does this hold? Check the code. \${f.claim}\`, { label: \`verify:\${file}\`, phase: "verify", subagent: "explore", schema: Verdict })
+            .then((v) => ({ file, ...f, holds: v?.holds ?? false })))),
+      )
+      return collect(results).flat().filter((f) => f.holds)
     },
   })`
 
-export const WORKFLOW_TOOL_DESCRIPTION = `Run and inspect deterministic multi-subagent Workflows (durable ones, saved under .opencode/workflows/).
+export const WORKFLOW_TOOL_DESCRIPTION = `Run and inspect Workflows: deterministic scripts that fan work out to subagents.
 
 MODES (pick one):
-  - list: true — list durable Workflows: key, description, when to use, args JSON Schema.
-  - name: "<key>" (+ args) — run a durable Workflow by key. Keys are "<folder>:…:<meta.name>". Add
-    background: true to return at once with the runId; otherwise the call waits for the result.
-  - status: "<runId>" — where a Run is (phase, Units, failures). Works across sessions and restarts.
-  - result: "<runId>" — a finished Run's result (its status if still running).
-  - stop: "<runId>" — stop a running Run.
-  - resume: "<runId>" (alias resumeFromRunId) — re-run an interrupted/failed Run, replaying the Units it
-    already finished.
-  - save_run: "<runId>" — promote an inline Run's script to a durable Workflow.
-To run inline Workflow source, use the \`workflow_inline\` tool.
+  - list: true — the saved (durable) Workflows: key, description, args JSON Schema.
+  - name: "<key>" (+ args) — run a saved Workflow. background: true returns at once with a runId.
+  - status / result / stop / resume (alias resumeFromRunId): "<runId>" — inspect, fetch, stop or resume a Run.
+    Resume replays the Units a Run already finished (matched by start order and prompt) and runs the rest live.
+  - save_run: "<runId>" — keep an inline Run's script as a saved Workflow.
+To run a script you write yourself, use \`workflow_inline\`. Pass args as JSON values, not JSON strings.
 
-Every Unit runs in its own OpenCode session ("⟡ wf · …" in the session list). Users watch and steer Runs in the
-TUI panel (/workflows) and the web app (the link in the result). Relay the result's summary line and link.
+${SKILL_POINTER}
 
 ${CONTEXT_REFERENCE}
 
 ${EXAMPLE}`
 
-export const WORKFLOW_INLINE_DESCRIPTION = `Run an INLINE (ad-hoc) Workflow: a TypeScript module you write, that default-exports
-defineWorkflow({ meta, run }) imported from "opencode-dynamic-workflows/workflow".
+export const WORKFLOW_INLINE_DESCRIPTION = `Run a Workflow script you write now (inline). The person approves inline code before it runs.
 
-Inline Workflows run with the user's permissions inside OpenCode, so the user approves each one (or approves inline
-Workflows for the project) before it starts. Headless (no TUI or web app attached) it is refused unless the
-project allows inline Workflows. Prefer a durable Workflow (the \`workflow\` tool) when one fits.
+Arguments: source (the module), or scriptPath (a project file holding it); args (validated against meta.args);
+background (return at once with a runId); save: "<folder/name>" — save it under .opencode/workflows/ instead of
+running it, after which workflow({ name }) runs it by key.
 
-Arguments: source (or scriptPath: a project file holding the module), args (validated against meta.args), background (return at once with the runId),
-save: "<name>" (instead of running: save the source as .opencode/workflows/<name>.ts; "/" makes a namespace).
+${SKILL_POINTER}
 
 ${CONTEXT_REFERENCE}
 

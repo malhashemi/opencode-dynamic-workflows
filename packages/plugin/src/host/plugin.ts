@@ -41,6 +41,7 @@ import {
   WORKFLOW_TOOL_DESCRIPTION,
 } from "./description"
 import { finishedRunText, listText, runLink, startedRunText, statusText } from "./format"
+import { loadAuthoringSkill } from "./skill"
 
 export const PLUGIN_ID = "opencode-dynamic-workflows"
 
@@ -349,6 +350,14 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       }
     })
   })
+
+  // The authoring guide the tool descriptions point to.
+  const skill = loadAuthoringSkill()
+  if (skill) {
+    await ctx.skill.transform((editor) => {
+      if (!editor.get(skill.id)) editor.add(skill as never)
+    })
+  }
 
   // If OpenCode ever rejects the wrapper's output shape, fall back to native forms instead of failing Units.
   await ctx.tool.hook("execute.after", (event) => {

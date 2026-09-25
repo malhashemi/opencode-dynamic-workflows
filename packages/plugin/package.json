@@ -18,6 +18,7 @@
     "server.ts",
     "rpc.ts",
     "tui.js",
+    "skill",
     "src",
     "dist",
     "docs",

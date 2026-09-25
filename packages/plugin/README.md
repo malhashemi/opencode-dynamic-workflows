@@ -67,6 +67,9 @@ package (`bun run pack` output). The TUI part loads automatically with the serve
 - `workflow_inline` — run model-written `source` (or a project file via `scriptPath`) after approval;
   `save` it as a durable Workflow instead.
 - Inside Units only: `workflow_result` (typed results) and the engine-answered `question` tool.
+- The `dynamic-workflows` skill: the full authoring guide (API, pipeline vs parallel, typed Units, questions,
+  resume, quality patterns, examples). The plugin registers it; the tool descriptions tell the model to load it
+  before writing a Workflow. Source: [`skill/dynamic-workflows/SKILL.md`](./skill/dynamic-workflows/SKILL.md).
 
 **Commands**
 
