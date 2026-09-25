@@ -270,6 +270,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         tokensSpent: state.tokensSpent,
         endedAt: Date.now(),
         resultPreview: status === "succeeded" ? previewResult(result) : null,
+        error: status === "succeeded" ? null : (failure ?? (stopReason ? `stopped: ${stopReason}` : null)),
       }
       // Durable and fetchable BEFORE it is announced: a client that reacts to `run.ended` must find the result
       // and a journal record that already says so.

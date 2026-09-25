@@ -18,6 +18,8 @@ export const LIVE_MODEL = process.env.WF_LIVE_MODEL ?? "google/gemini-3.1-flash-
 export const PLUGIN_PATH = path.resolve(import.meta.dir, "..", "..")
 
 export interface LiveServer {
+  /** The scratch root: project, database, cache (`XDG_CACHE_HOME`) and state. */
+  root: string
   url: string
   password: string
   project: string
@@ -36,6 +38,8 @@ export interface LiveOptions {
   /** Files to write into the project, relative path → contents. */
   files?: Record<string, string>
   agents?: string[]
+  /** Plugin spec to configure (default: `WF_LIVE_PLUGIN`, else this package by path). */
+  plugin?: string
 }
 
 function freePort(): number {
@@ -52,7 +56,7 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
   await Bun.$`git init -q`.cwd(project).quiet()
   const gatewayPort = freePort()
   const agents = Object.fromEntries((options.agents ?? ["build", "general", "explore", "plan"]).map((agent) => [agent, { model: LIVE_MODEL }]))
-  const plugin = process.env.WF_LIVE_PLUGIN ?? PLUGIN_PATH
+  const plugin = options.plugin ?? process.env.WF_LIVE_PLUGIN ?? PLUGIN_PATH
   await writeFile(
     path.join(project, "opencode.json"),
     JSON.stringify(
@@ -110,6 +114,7 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
   }
   let current = await boot()
   const server: LiveServer = {
+    root,
     url: current.url,
     password: current.password,
     project,

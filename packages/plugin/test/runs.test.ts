@@ -108,6 +108,13 @@ describe("run store", () => {
     expect(store.eventsSince(5).complete).toBe(false)
   })
 
+  it("a client ahead of the store (the service restarted) is told to resync", () => {
+    const store = createRunStore("/p")
+    store.create(run())
+    expect(store.eventsSince(store.latestSeq()).complete).toBe(true)
+    expect(store.eventsSince(store.latestSeq() + 100).complete).toBe(false)
+  })
+
   it("elides large outputs for transports but keeps them in the store", () => {
     const store = createRunStore("/p")
     store.create(run())

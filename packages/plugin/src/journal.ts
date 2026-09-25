@@ -161,6 +161,7 @@ function parseRunDocument(value: unknown): RunDocument | null {
       budget: (run.budget as Run["budget"]) ?? base.budget,
       endedAt: typeof run.endedAt === "number" ? run.endedAt : null,
       resultPreview: typeof run.resultPreview === "string" ? run.resultPreview : null,
+      error: typeof run.error === "string" ? run.error : null,
       resumeOf: typeof run.resumeOf === "string" ? run.resumeOf : null,
       cleanup: run.cleanup === "pending" || run.cleanup === "done" ? run.cleanup : "none",
       revision: typeof run.revision === "number" ? run.revision : 0,

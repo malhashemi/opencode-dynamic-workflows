@@ -870,6 +870,16 @@
         }
       ]
     },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "cleanup": {
       "type": "string",
       "enum": [

@@ -397,7 +397,7 @@ export class WorkflowService {
     const run = this.deps.store.get(runId)
     if (!run || isTerminal(run.status)) return
     this.deps.store.apply({ type: "run.log", runId, value: reason, kind: "engine" })
-    this.deps.store.apply({ type: "run.ended", runId, patch: { status, endedAt: Date.now() } })
+    this.deps.store.apply({ type: "run.ended", runId, patch: { status, endedAt: Date.now(), error: reason } })
     void this.deps.journal.finish(this.deps.store.get(runId)!, null)
   }
 
@@ -559,7 +559,12 @@ export class WorkflowService {
       const owner = record.owner
       if (owner && owner.pid !== process.pid && processAlive(owner.pid)) continue
       if (owner && owner.pid === process.pid && owner.instance === this.deps.instance) continue
-      await this.deps.journal.update({ ...record.run, status: "interrupted", endedAt: record.run.endedAt ?? Date.now() })
+      await this.deps.journal.update({
+        ...record.run,
+        status: "interrupted",
+        endedAt: record.run.endedAt ?? Date.now(),
+        error: "the OpenCode service stopped while this Run was running; resume it",
+      })
       marked += 1
     }
     if (marked > 0) this.deps.store.emit("resync.required", { reason: `${marked} interrupted Run(s) found in the journal` })

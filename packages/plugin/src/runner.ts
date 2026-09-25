@@ -79,8 +79,8 @@ export interface UnitSpec {
   permissions?: HostPermissionRule[]
   ask: UnitBinding["ask"]
   permissionPolicy: UnitBinding["permissionPolicy"]
-  /** Called once the session exists, with a handle that stops this Unit. */
-  onSession?: (sessionID: string, stop: () => void) => void
+  /** Called once the session exists, with a handle that stops this Unit and the model the session resolved. */
+  onSession?: (sessionID: string, stop: () => void, model: HostModelRef | undefined) => void
   /** Called when the Unit moves into repair turns. */
   onRepairing?: () => void
 }
@@ -242,7 +242,8 @@ export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec
     permissionPolicy: spec.permissionPolicy,
   }
   const unbind = index.bind(binding)
-  spec.onSession?.(sessionID, () => stop.abort())
+  model = info.model ?? model
+  spec.onSession?.(sessionID, () => stop.abort(), model)
 
   const timeout = spec.timeoutMs && Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0 ? AbortSignal.timeout(spec.timeoutMs) : undefined
   const guards = [spec.signal, stop.signal, stepLimit.signal, timeout].filter((signal): signal is AbortSignal => !!signal)

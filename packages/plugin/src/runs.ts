@@ -256,6 +256,7 @@ export function newRun(input: {
     endedAt: null,
     resultPreview: null,
     resumeOf: input.resumeOf ?? null,
+    error: null,
     cleanup: "none",
     revision: 0,
   }
@@ -424,7 +425,8 @@ export function createRunStore(location: string): RunStore {
     },
     eventsSince(after) {
       const first = window[0]
-      const complete = after >= seq || (first !== undefined && after >= first.seq - 1) || (first === undefined && after >= seq)
+      // A client ahead of us saw another epoch (the service restarted and seq started again): not complete.
+      const complete = after <= seq && (after === seq || (first !== undefined && after >= first.seq - 1))
       return {
         events: window.filter((entry) => entry.seq > after).map((entry) => structuredClone(entry)),
         complete,

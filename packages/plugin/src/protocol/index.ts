@@ -257,6 +257,8 @@ export const Run = z.object({
   resultPreview: z.string().nullable(),
   /** The Run this one resumed, if any. */
   resumeOf: z.string().nullable(),
+  /** Why the Run failed or stopped (null while running and on success). Unit failures are in `errors`. */
+  error: z.string().nullable().optional(),
   /** Retention bookkeeping for the Unit sessions. */
   cleanup: z.enum(["none", "pending", "done"]),
   revision: z.number(),

@@ -3,6 +3,9 @@
   "references": [
     {
       "path": "./packages/plugin"
+    },
+    {
+      "path": "./packages/web"
     }
   ]
 }

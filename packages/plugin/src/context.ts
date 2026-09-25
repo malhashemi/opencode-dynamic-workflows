@@ -256,8 +256,13 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           permissions: [...(input.permissions ?? []), ...(opts.permissions ?? [])],
           ask: noAgentQuestions,
           permissionPolicy: input.permissionPolicy ?? (() => "deny"),
-          onSession: (sessionID, stop) => {
-            current = { ...current, sessionID, location: opts.location ?? input.location }
+          onSession: (sessionID, stop, resolved) => {
+            current = {
+              ...current,
+              sessionID,
+              location: opts.location ?? input.location,
+              model: { requested: current.model.requested, resolved: formatModel(resolved) },
+            }
             const binding = input.index.get(sessionID)
             if (binding && input.askAgent) binding.ask = input.askAgent(unitId, sessionID)
             emit(current)

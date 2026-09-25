@@ -152,7 +152,7 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
   const port = server.port!
   const publicHost = hostname === "0.0.0.0" ? "127.0.0.1" : hostname
   const url = `http://${publicHost.includes(":") ? `[${publicHost}]` : publicHost}:${port}`
-  const ownOrigins = new Set([url, `http://localhost:${port}`, `http://127.0.0.1:${port}`])
+  const ownOrigins = new Set([url, `http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`])
   const allowedOrigins = new Set([...ownOrigins, ...config.allowedOrigins])
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, `${publicHost}:${port}`, ...config.allowedOrigins.map((origin) => { try { return new URL(origin).host } catch { return "" } }).filter(Boolean)])
   if (hostname === "0.0.0.0") {

@@ -67,6 +67,7 @@ describe("runWorkflow", () => {
     expect(out.result).toEqual({ a: "one" })
     const run = store.get(runId)!
     expect(run.status).toBe("succeeded")
+    expect(run.error).toBeNull()
     expect(run.units).toHaveLength(1)
     expect(run.resultPreview).toBe('{"a":"one"}')
     expect(run.logs).toEqual(["did one"])
@@ -85,6 +86,7 @@ describe("runWorkflow", () => {
     const { promise, store, runId } = await start(wf(`throw new Error("author bug")`))
     await expect(promise).rejects.toThrow("author bug")
     expect(store.get(runId)!.status).toBe("failed")
+    expect(store.get(runId)!.error).toBe("author bug")
   })
 
   it("stop ends the Run as stopped and interrupts in-flight Units", async () => {
