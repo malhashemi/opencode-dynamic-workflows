@@ -380,7 +380,12 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
 
   const readUsage = async (): Promise<Usage> => {
     try {
-      const current = await host.session.get({ sessionID: sessionID! })
+      const current = await Promise.race([
+        Promise.resolve(host.session.get({ sessionID: sessionID! })),
+        Bun.sleep(DRAIN_MS).then(() => {
+          throw new Error("session.get timed out")
+        }),
+      ])
       model = current.model ?? model
       return addUsage(usageFromSession(current), extra)
     } catch {

@@ -160,3 +160,19 @@ describe("audit round 3 — a Run owns every Unit it started", () => {
     expect(run.logs.join("\n")).toContain("stopping 1 Unit(s) the script did not await")
   })
 })
+
+describe("audit round 5 — nothing outlives the Run", () => {
+  it("an agent() call made after run returned fails fast (the Run's signal is aborted)", async () => {
+    let late: Promise<unknown> | undefined
+    const index = createUnitIndex()
+    const host = createFakeHost(index)
+    const store = createRunStore(project)
+    const broker = createBroker({ store, attached: () => false })
+    const { config } = await loadWorkflow(wf(`setTimeout(() => { (globalThis as any).__late = ctx.agent("late") }, 20); return "done"`), { cacheDir })
+    await runWorkflow({ config, source: "", identity: { key: null, name: "t", description: "", provenance: "inline" }, host, index, broker, store, runId: "late-run", parentSessionID: "p", location: project })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    late = (globalThis as any).__late
+    expect(await late).toBeNull()
+    expect(host.creates).toHaveLength(0)
+  })
+})

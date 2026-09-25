@@ -22,7 +22,7 @@ import type {
   PermissionDetail,
   ResolvedInteraction,
 } from "./protocol"
-import type { RunStore } from "./runs"
+import { isTerminal, type RunStore } from "./runs"
 
 export type PermissionDecision = "once" | "always" | "reject"
 
@@ -140,6 +140,9 @@ export function createBroker(options: BrokerOptions): Broker {
   const forms = new Map<string, { runId: string; unitId: string | null; interactionId: string }>()
 
   const publish = (runId: string, interaction: PendingInteraction): boolean => {
+    // A finished Run cannot wait on anyone: the asker gets its fallback at once instead of a waiter that never settles.
+    const status = options.store.get(runId)?.status
+    if (!status || isTerminal(status)) return false
     try {
       options.store.apply({ type: "interaction.pending", runId, interaction })
       return true

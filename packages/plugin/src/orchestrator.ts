@@ -299,6 +299,8 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       await journalWrite(input.journal ? () => input.journal!.finish({ ...current!, ...patch, revision: current!.revision + 1 }, result) : undefined)
       store.apply({ type: "run.ended", runId: input.runId, patch })
     }
+    // Anything the script left running (a late agent() or ask()) ends now instead of outliving the Run.
+    if (!stopController.signal.aborted) stopController.abort(new Error("the Run ended"))
     const terminal = store.get(input.runId)
     if (terminal) input.onSettled?.(terminal, result)
   }

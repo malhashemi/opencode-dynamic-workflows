@@ -233,3 +233,13 @@ describe("audit round 2 — nothing answerable outlives its Unit", () => {
     expect(coerceAnswers(questions, [["A", "a", "A"]])).toEqual([["A"]])
   })
 })
+
+describe("audit round 5 — a finished Run waits on nobody", () => {
+  it("an ask after the Run ended answers with the fallback at once", async () => {
+    const { broker, store } = setup()
+    store.apply({ type: "run.ended", runId: "r1", patch: { status: "succeeded", endedAt: 1 } })
+    const answer = await broker.ask({ runId: "r1", sessionID: "s", form, options: { fallback: [["Fast"]] }, defaultGraceMs: null, signal: new AbortController().signal })
+    expect(answer).toEqual([["Fast"]])
+    expect(broker.pending()).toBe(0)
+  })
+})
