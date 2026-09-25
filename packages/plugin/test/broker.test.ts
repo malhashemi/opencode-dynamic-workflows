@@ -185,3 +185,51 @@ describe("audit regressions — permission decisions and native forms", () => {
     expect(store.get("r1")!.interactions).toHaveLength(1)
   })
 })
+
+describe("audit round 2 — nothing answerable outlives its Unit", () => {
+  const setup = () => {
+    const store = createRunStore("/p")
+    store.create(newRun({ runId: "r1", workflow: { key: null, name: "wf", description: "", provenance: "inline" }, location: "/p", parentSessionID: "ses_p" }))
+    const replies: Array<{ requestID: string; decision: PermissionDecision }> = []
+    let release!: () => void
+    let gate: Promise<void> = Promise.resolve()
+    const broker = createBroker({
+      store,
+      attached: () => true,
+      replyPermission: async (input) => {
+        replies.push({ requestID: input.requestID, decision: input.decision })
+        await gate
+      },
+    })
+    return { store, broker, replies, hold: () => (gate = new Promise<void>((resolve) => (release = resolve))), open: () => release() }
+  }
+  const detail = (requestID: string) => ({ action: "read", resources: ["x"], save: [], requestID })
+
+  it("releaseUnit rejects that Unit's permission requests and leaves other Units alone", async () => {
+    const { store, broker, replies } = setup()
+    broker.permission({ runId: "r1", unitId: "u1", sessionID: "s1", detail: detail("p1") })
+    broker.permission({ runId: "r1", unitId: "u2", sessionID: "s2", detail: detail("p2") })
+    broker.releaseUnit("r1", "u1")
+    await Promise.resolve()
+    expect(replies).toEqual([{ requestID: "p1", decision: "reject" }])
+    expect(store.get("r1")!.interactions.map((i) => i.permission?.requestID)).toEqual(["p2"])
+  })
+
+  it("an allow still in flight when the Unit ends is taken back with a reject", async () => {
+    const { store, broker, replies, hold, open } = setup()
+    broker.permission({ runId: "r1", unitId: "u1", sessionID: "s1", detail: detail("p1") })
+    const id = store.get("r1")!.interactions[0]!.interactionId
+    hold()
+    const reply = broker.reply("r1", id, [["Allow once"]])
+    broker.releaseUnit("r1", "u1")
+    open()
+    expect(await reply).toBe(true)
+    await Promise.resolve()
+    expect(replies.map((r) => r.decision)).toEqual(["once", "reject"])
+  })
+
+  it("coerceAnswers drops duplicate labels", () => {
+    const questions = [{ header: "h", prompt: "p", options: [{ label: "A", description: "" }], multiple: true, custom: false }]
+    expect(coerceAnswers(questions, [["A", "a", "A"]])).toEqual([["A"]])
+  })
+})

@@ -73,6 +73,8 @@ export interface Broker {
   cancel(runId: string, interactionId: string): Promise<boolean>
   /** Release everything a Run is waiting on (the Run ended or stopped). */
   releaseRun(runId: string): void
+  /** Release what one Unit is waiting on (it ended, was stopped or timed out): no late answer may reach it. */
+  releaseUnit(runId: string, unitId: string): void
   pending(): number
 }
 
@@ -87,9 +89,9 @@ export function coerceAnswers(form: readonly InteractionQuestion[], answers: rea
     const labels: string[] = []
     for (const candidate of requested) {
       const option = question.options.find((entry) => entry.label.toLowerCase() === candidate.toLowerCase())
-      if (option) labels.push(option.label)
-      else if (question.custom && candidate.trim().length > 0) labels.push(candidate)
-      else return null
+      const label = option ? option.label : question.custom && candidate.trim().length > 0 ? candidate : null
+      if (label === null) return null
+      if (!labels.includes(label)) labels.push(label)
     }
     coerced.push(labels)
   }
@@ -127,13 +129,15 @@ interface Waiter {
   timer: ReturnType<typeof setTimeout> | null
   /** A permission decision is on its way to the host: no second decision may start. */
   sending?: boolean
+  /** Its Unit or Run ended while a decision was on its way: make sure the request ends up rejected. */
+  released?: boolean
 }
 
 export function createBroker(options: BrokerOptions): Broker {
   const waiters = new Map<string, Waiter>()
   /** Native permission requestID → interactionId, so a host-side resolution files the record once. */
-  const permissions = new Map<string, { runId: string; interactionId: string; sessionID: string }>()
-  const forms = new Map<string, { runId: string; interactionId: string }>()
+  const permissions = new Map<string, { runId: string; unitId: string | null; interactionId: string; sessionID: string }>()
+  const forms = new Map<string, { runId: string; unitId: string | null; interactionId: string }>()
 
   const publish = (runId: string, interaction: PendingInteraction): boolean => {
     try {
@@ -171,6 +175,30 @@ export function createBroker(options: BrokerOptions): Broker {
     return true
   }
 
+  const rejectNative = (sessionID: string, requestID: string, message: string) => {
+    if (!options.replyPermission) return
+    void options.replyPermission({ sessionID, requestID, decision: "reject", message }).catch((error: unknown) => {
+      // The request may already be settled (answered, or its session interrupted): nothing is left to close.
+      console.warn(`[workflow] could not reject permission ${requestID}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /** Close what matches: reject native permission requests (or flag in-flight ones), settle the waiters. */
+  const release = (matches: (entry: { runId: string; unitId: string | null }) => boolean, message: string) => {
+    for (const [requestID, entry] of [...permissions]) {
+      if (!matches(entry)) continue
+      permissions.delete(requestID)
+      const waiter = waiters.get(entry.interactionId)
+      if (waiter?.sending) waiter.released = true
+      else rejectNative(entry.sessionID, requestID, message)
+    }
+    for (const [interactionId, waiter] of [...waiters]) {
+      if (!matches({ runId: waiter.runId, unitId: waiter.interaction.unitId })) continue
+      finish(interactionId, { answers: null, by: "automation", outcome: "cancelled" })
+    }
+    for (const [formID, entry] of [...forms]) if (matches(entry)) forms.delete(formID)
+  }
+
   /**
    * Send one permission decision to the host. The waiter is reserved first, so a concurrent reply or cancel cannot
    * send a second, conflicting decision. Once the host has it, the call succeeds even if the host's own
@@ -185,17 +213,18 @@ export function createBroker(options: BrokerOptions): Broker {
   ): Promise<boolean> => {
     if (!options.replyPermission || !waiter.interaction.permission) return false
     waiter.sending = true
+    const request = { sessionID: waiter.interaction.sessionID, requestID: waiter.interaction.permission.requestID }
     try {
-      await options.replyPermission({
-        sessionID: waiter.interaction.sessionID,
-        requestID: waiter.interaction.permission.requestID,
-        decision,
-        ...(message ? { message } : {}),
-      })
-    } catch {
+      await options.replyPermission({ ...request, decision, ...(message ? { message } : {}) })
+    } catch (error) {
       waiter.sending = false
+      // Released while this failed: nobody will answer it now, so close it with a reject.
+      if (waiter.released) rejectNative(request.sessionID, request.requestID, "The workflow Unit ended.")
+      console.warn(`[workflow] permission reply failed: ${error instanceof Error ? error.message : String(error)}`)
       return false
     }
+    // Released while an allow was on its way: the Unit is gone, so take the permission back.
+    if (waiter.released && decision !== "reject") rejectNative(request.sessionID, request.requestID, "The workflow Unit ended.")
     permissions.delete(waiter.interaction.permission.requestID)
     finish(interactionId, { answers, by: "human", outcome: decision === "reject" ? "rejected" : "answered" })
     return true
@@ -296,7 +325,7 @@ export function createBroker(options: BrokerOptions): Broker {
         permission: { ...input.detail, resources: [...input.detail.resources], save: [...input.detail.save] },
         graceEndsAt: null,
       }
-      permissions.set(input.detail.requestID, { runId: input.runId, interactionId: interaction.interactionId, sessionID: input.sessionID })
+      permissions.set(input.detail.requestID, { runId: input.runId, unitId: input.unitId, interactionId: interaction.interactionId, sessionID: input.sessionID })
       // Not awaited: the waiter exists only so `reply` has somewhere to land. The native request is the source
       // of truth and settles itself through the host.
       void wait({
@@ -331,7 +360,7 @@ export function createBroker(options: BrokerOptions): Broker {
         form: { formID: input.formID },
         graceEndsAt: null,
       }
-      forms.set(input.formID, { runId: input.runId, interactionId: interaction.interactionId })
+      forms.set(input.formID, { runId: input.runId, unitId: input.unitId, interactionId: interaction.interactionId })
       void wait({
         runId: input.runId,
         interaction,
@@ -412,20 +441,11 @@ export function createBroker(options: BrokerOptions): Broker {
 
     releaseRun(runId) {
       // The Run is over: refuse what its Units were still asking for, so no native request outlives it.
-      for (const [requestID, entry] of [...permissions]) {
-        if (entry.runId !== runId) continue
-        permissions.delete(requestID)
-        const waiter = waiters.get(entry.interactionId)
-        if (waiter?.sending || !options.replyPermission) continue
-        void options
-          .replyPermission({ sessionID: entry.sessionID, requestID, decision: "reject", message: "The workflow Run ended." })
-          .catch(() => {})
-      }
-      for (const [interactionId, waiter] of [...waiters]) {
-        if (waiter.runId !== runId) continue
-        finish(interactionId, { answers: null, by: "automation", outcome: "cancelled" })
-      }
-      for (const [formID, entry] of [...forms]) if (entry.runId === runId) forms.delete(formID)
+      release((entry) => entry.runId === runId, "The workflow Run ended.")
+    },
+
+    releaseUnit(runId, unitId) {
+      release((entry) => entry.runId === runId && entry.unitId === unitId, "The workflow Unit ended.")
     },
 
     pending() {

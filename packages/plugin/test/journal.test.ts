@@ -152,3 +152,16 @@ describe("audit regressions — journal", () => {
     expect(Math.abs((record?.owner?.startedAt ?? 0) - (processStartedAt(process.pid) ?? 0))).toBeLessThan(3_000)
   })
 })
+
+describe("audit round 2 — replay recomputes totals", () => {
+  it("usage and revision follow the replayed Units", async () => {
+    await journal.begin(baseRun(), { source: SOURCE, args: null, instance: "i" })
+    const usage = { tokens: { input: 1, output: 7, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0.5 }
+    await journal.append({ protocol: 1, seq: 3, time: 1, location: dir, runId: "r1", type: "unit.updated", revision: 9, data: unit({ usage }) })
+    await journal.flush()
+    const record = await journal.read("r1")
+    expect(record?.run.usage.tokens.output).toBe(7)
+    expect(record?.run.revision).toBe(9)
+  })
+})
+

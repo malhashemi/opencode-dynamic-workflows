@@ -17,6 +17,7 @@ import type { EngineHost } from "../host"
 import { ownerAlive, type Journal } from "../journal"
 import { loadWorkflow, loadWorkflowConfig, sha256 } from "../loader"
 import { runWorkflow, type RunWorkflowOutput } from "../orchestrator"
+import { MAX_RESTARTS } from "../runner"
 import {
   PROTOCOL_VERSION,
   WorkflowProtocolError,
@@ -324,6 +325,9 @@ export class WorkflowService {
         status: "queued",
       }),
     )
+    // Journaled while still queued: a Run refused or stopped before it starts keeps its script (resumable) and a
+    // terminal record. The orchestrator's own `begin` later rewrites the same files.
+    await this.deps.journal.begin(store.get(runId)!, { source, args, instance: this.deps.instance })
     const live: LiveRun = { stop: () => {}, units: new Map() }
     const queuedStop = new AbortController()
     live.stop = (reason) => queuedStop.abort(new Error(reason ?? "stopped"))
@@ -335,12 +339,12 @@ export class WorkflowService {
         if (needsApproval) {
           const verdict = await this.approveInline(runId, source, parentSessionID, signal)
           if (verdict !== true) {
-            this.endQueued(runId, verdict)
+            await this.endQueued(runId, verdict)
             return { error: verdict, run: store.get(runId)! }
           }
         }
         if (signal.aborted) {
-          this.endQueued(runId, "stopped before it started", "stopped")
+          await this.endQueued(runId, "stopped before it started", "stopped")
           return { error: "stopped before it started", run: store.get(runId)! }
         }
         const output = await runWorkflow({
@@ -402,12 +406,15 @@ export class WorkflowService {
     return info.id
   }
 
-  private endQueued(runId: string, reason: string, status: Run["status"] = "failed"): void {
+  /** End a Run that never started running. Journaled first, announced second (the orchestrator's rule). */
+  private async endQueued(runId: string, reason: string, status: Run["status"] = "failed"): Promise<void> {
     const run = this.deps.store.get(runId)
     if (!run || isTerminal(run.status)) return
     this.deps.store.apply({ type: "run.log", runId, value: reason, kind: "engine" })
-    this.deps.store.apply({ type: "run.ended", runId, patch: { status, endedAt: Date.now(), error: reason } })
-    void this.deps.journal.finish(this.deps.store.get(runId)!, null)
+    const current = this.deps.store.get(runId)!
+    const patch: Partial<Run> = { status, endedAt: Date.now(), error: reason }
+    await this.deps.journal.finish({ ...current, ...patch, revision: current.revision + 1 }, null)
+    if (!isTerminal(this.deps.store.get(runId)?.status ?? "failed")) this.deps.store.apply({ type: "run.ended", runId, patch })
   }
 
   /** The inline-run gate (P0 S7): project approval, plugin policy, or a person — never silent. */
@@ -438,7 +445,7 @@ export class WorkflowService {
     if (!live) {
       const run = this.deps.store.get(runId)
       if (run && !isTerminal(run.status)) {
-        this.endQueued(runId, reason, "stopped")
+        void this.endQueued(runId, reason, "stopped")
         return
       }
       throw new WorkflowProtocolError("invalid_state", `Run "${runId}" is not running.`)
@@ -456,6 +463,8 @@ export class WorkflowService {
   async restartUnit(runId: string, unitId: string): Promise<void> {
     const binding = this.deps.index.all().find((candidate) => candidate.runId === runId && candidate.unitId === unitId)
     if (!binding || binding.settled) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is not running; resume the Run to re-run finished Units.`)
+    if (binding.restarts >= MAX_RESTARTS) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" was already restarted ${MAX_RESTARTS} times.`)
+    if (binding.restart) throw new WorkflowProtocolError("conflict", `Unit "${unitId}" is already restarting.`)
     binding.restart = true
     await this.deps.host.session.interrupt({ sessionID: binding.sessionID })
     this.deps.store.apply({ type: "run.log", runId, value: `restarted a Unit in its own session`, kind: "engine", unitId })

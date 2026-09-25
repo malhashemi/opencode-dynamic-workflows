@@ -123,6 +123,10 @@ describe("live: headless (no surface attached)", () => {
     const run = await settled(runId, 30_000)
     expect(run.status).toBe("failed")
     expect(run.logs.join("\n")).toContain("no one approved the inline Workflow")
+    // Journaled before it was announced, with its script: resumable once someone can approve it.
+    const dir = path.join(server.project, ".opencode/workflows/runs", runId)
+    expect(JSON.parse(await readFile(path.join(dir, "run.json"), "utf8")).run.status).toBe("failed")
+    expect(await readFile(path.join(dir, "script.ts"), "utf8")).toContain("inline-x")
   })
 })
 

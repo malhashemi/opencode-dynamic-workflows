@@ -242,6 +242,8 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         onUnit: (unit) => {
           store.apply({ type: "unit.upsert", runId: input.runId, unit })
           if (unit.endedAt !== null) {
+            // An ended Unit (done, failed, stopped, timed out) can no longer be allowed or asked anything.
+            input.broker.releaseUnit(input.runId, unit.unitId)
             store.apply({
               type: "run.patch",
               runId: input.runId,

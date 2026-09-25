@@ -19,6 +19,7 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { LibraryEntry, ProtocolEvent, ResolvedInteraction, Run, Unit } from "./protocol"
+import { addUsage, emptyUsage } from "./protocol"
 import { newRun, toLibraryEntry, type RunStore } from "./runs"
 
 export interface JournalRecord {
@@ -192,10 +193,15 @@ function foldTransitions(run: Run, transitions: ProtocolEvent[]): Run {
       if (record && typeof record.interactionId === "string") resolved.set(record.interactionId, record)
     }
   }
+  const folded = [...units.values()].sort((a, b) => a.ordinal - b.ordinal)
+  const newest = transitions.reduce((max, event) => (typeof event.revision === "number" && event.revision > max ? event.revision : max), run.revision)
   return {
     ...run,
-    units: [...units.values()].sort((a, b) => a.ordinal - b.ordinal),
+    units: folded,
     resolved: [...resolved.values()].sort((a, b) => a.resolvedAt - b.resolvedAt),
+    // Totals follow the Units they are made of (after a crash `run.json` may predate the last Units).
+    usage: transitions.length > 0 ? folded.reduce((sum, unit) => addUsage(sum, unit.usage), emptyUsage()) : run.usage,
+    revision: newest,
   }
 }
 

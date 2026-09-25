@@ -36,7 +36,7 @@ export const DEFAULT_RETRIES = 2
 export const DEFAULT_MAX_UNIT_STEPS = 250
 
 /** How many times one Unit may be restarted from a surface. */
-const MAX_RESTARTS = 5
+export const MAX_RESTARTS = 5
 
 /** Rules every Unit session carries after the author's: typed results always work, recursion never does. */
 export const ENGINE_UNIT_RULES: HostPermissionRule[] = [
@@ -182,25 +182,45 @@ function repairText(binding: UnitBinding, lastError: string | undefined): string
 /**
  * Run one Unit to a result. Never throws.
  */
+/** What a Unit had set up, so the backstop can clean up and report it whatever point the failure came from. */
+interface UnitTrace {
+  sessionID: string | null
+  attempts: UnitAttempt[]
+  release: (() => void) | null
+}
+
 export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec): Promise<UnitRunResult> {
+  const trace: UnitTrace = { sessionID: null, attempts: [], release: null }
   try {
-    return await runUnitUnsafe(host, index, spec)
+    return await runUnitUnsafe(host, index, spec, trace)
   } catch (error) {
-    // The contract is "never throws": a failed Unit is a value (D9). This is the backstop for host surprises.
+    // The contract is "never throws": a failed Unit is a value (D9). This is the backstop for host surprises:
+    // unbind the Unit, stop its session, and report what is known about it.
+    trace.release?.()
+    let usage = emptyUsage()
+    if (trace.sessionID) {
+      const sessionID = trace.sessionID
+      await Promise.resolve()
+        .then(() => host.session.interrupt({ sessionID }))
+        .catch(() => {})
+      usage = await Promise.resolve()
+        .then(() => host.session.get({ sessionID }))
+        .then(usageFromSession, () => emptyUsage())
+    }
     return {
       ok: false,
       error: `the Unit failed unexpectedly: ${stringifyError(error)}`,
       stopped: false,
-      sessionID: null,
-      usage: emptyUsage(),
+      sessionID: trace.sessionID,
+      usage,
       model: spec.model,
-      attempts: [],
+      attempts: trace.attempts,
     }
   }
 }
 
-async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec): Promise<UnitRunResult> {
-  const attempts: UnitAttempt[] = []
+async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec, trace: UnitTrace): Promise<UnitRunResult> {
+  const attempts = trace.attempts
   let sessionID: string | null = null
   let model: HostModelRef | undefined = spec.model
   const fail = (error: string, stopped = false, usage: Usage = emptyUsage()): UnitRunResult => ({
@@ -250,6 +270,7 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec)
   }
   sessionID = info.id
   if (!sessionID) return fail("session.create returned no session id")
+  trace.sessionID = sessionID
 
   const stop = new AbortController()
   const stepLimit = new AbortController()
@@ -267,11 +288,16 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec)
     repairing: false,
     settled: false,
     restart: false,
+    restarts: 0,
     onStepLimit: () => stepLimit.abort(),
     ask: spec.ask,
     permissionPolicy: spec.permissionPolicy,
   }
   const unbind = index.bind(binding)
+  trace.release = () => {
+    binding.settled = true
+    unbind()
+  }
   model = info.model ?? model
   spec.onSession?.(sessionID, () => stop.abort(), model)
 
@@ -354,7 +380,6 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec)
     let text = spec.prompt
     let lastText: string | undefined
     let lastError: string | undefined
-    let restarts = 0
 
     const overBudget = async (): Promise<Usage | null> => {
       if (!spec.mayContinue) return null
@@ -372,11 +397,16 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec)
         return fail(interruptedMessage(admitted), admitted === "stopped" || admitted === "aborted", await readUsage())
       }
       const outcome = await settle(sessionID)
-      if (outcome === "settled" && binding.restart && restarts < MAX_RESTARTS) {
+      if (outcome === "settled" && binding.restart && binding.restarts >= MAX_RESTARTS) {
+        // Never read an interrupted turn as a finished one.
+        binding.restart = false
+        return fail(`the Unit was restarted more than ${MAX_RESTARTS} times`, true, await readUsage())
+      }
+      if (outcome === "settled" && binding.restart) {
         binding.restart = false
         binding.result = undefined
         binding.lastError = undefined
-        restarts += 1
+        binding.restarts += 1
         text = `The workflow operator restarted this task. Start again from the beginning:\n\n${spec.prompt}`
         turn -= 1
         continue

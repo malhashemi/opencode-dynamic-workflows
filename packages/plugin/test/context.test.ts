@@ -338,3 +338,31 @@ describe("audit regressions — hard budget covers repairs and extraction", () =
     expect(state.tokensSpent).toBe(done.usage.tokens.output)
   })
 })
+
+describe("audit round 2 — runner setup and restarts", () => {
+  test("a throw after the Unit is bound still unbinds it, stops its session and reports it", async () => {
+    const { ctx, host, index, state } = makeCtx({}, {
+      events: {
+        onUnitSession: () => {
+          throw new Error("surface bug")
+        },
+      },
+    })
+    expect(await ctx.agent("x")).toBeNull()
+    expect(index.size()).toBe(0)
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+    expect(state.errors[0]?.error).toContain("the Unit failed unexpectedly: surface bug")
+  })
+
+  test("an interrupt beyond the restart limit fails the Unit instead of reading the cut-off turn as done", async () => {
+    const { ctx, host, index, state } = makeCtx({ reply: { hang: true } })
+    const pending = ctx.agent("x")
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const binding = index.get("ses_fake_1")!
+    binding.restarts = 5
+    binding.restart = true
+    await host.session.interrupt({ sessionID: "ses_fake_1" })
+    expect(await pending).toBeNull()
+    expect(state.errors[0]?.error).toContain("restarted more than 5 times")
+  })
+})
