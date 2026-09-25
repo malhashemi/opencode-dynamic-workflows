@@ -40,6 +40,8 @@ export interface FakeHostOptions {
   promptError?: string
   /** `wait` rejects with this message. */
   waitError?: string
+  /** `interrupt` never resolves (and does not stop the session). */
+  interruptHang?: boolean
   /** Steps (model requests) each prompt takes — drives the step guard via the index. */
   stepsPerPrompt?: number
   /** Extraction reply for `generateText`; absent ⇒ no extraction support. */
@@ -215,6 +217,7 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
       },
       async interrupt(input) {
         interrupts.push(input.sessionID)
+        if (options.interruptHang) return new Promise(() => {})
         const session = sessions.get(input.sessionID)
         session?.interrupt?.()
         return { interrupted: true }

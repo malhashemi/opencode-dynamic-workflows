@@ -479,6 +479,10 @@ export class WorkflowService {
     if (live && !isTerminal(live.status)) throw new WorkflowProtocolError("invalid_state", `Run "${runId}" is still running.`)
     const record = await this.deps.journal.read(runId)
     if (!record || !record.source) throw new WorkflowProtocolError("not_found", `Run "${runId}" has no journaled script to resume.`)
+    // Another process (a second OpenCode, `opencode run`) may still be running it: never start a second copy.
+    if (!isTerminal(record.run.status) && record.owner && ownerAlive(record.owner) && !(record.owner.pid === process.pid)) {
+      throw new WorkflowProtocolError("invalid_state", `Run "${runId}" is still running in another OpenCode process (pid ${record.owner.pid}).`, { retryable: true })
+    }
     const run = record.run
     const units = new Map<number, { prompt: string; status: Unit["status"]; output?: string; schema: boolean; subagent: string }>()
     for (const unit of run.units) {

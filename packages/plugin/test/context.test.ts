@@ -391,3 +391,13 @@ describe("audit round 3 — deadlines cover every step", () => {
     await pending
   })
 })
+
+describe("audit round 4 — a hung interrupt cannot hold the Unit", () => {
+  test("stop with a host whose interrupt never returns still ends the Unit", async () => {
+    const { ctx, state } = makeCtx({ reply: { hang: true }, interruptHang: true })
+    const started = Date.now()
+    expect(await ctx.agent("x", { timeoutMs: 20 })).toBeNull()
+    expect(state.errors[0]?.error).toContain("20ms timeout")
+    expect(Date.now() - started).toBeLessThan(12_000)
+  }, 15_000)
+})

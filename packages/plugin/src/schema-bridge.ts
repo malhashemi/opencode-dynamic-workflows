@@ -72,9 +72,25 @@ export function resolveJsonSchema(schema: unknown): z.ZodType | undefined {
   return built
 }
 
-export function fromJsonSchema(node: JsonSchemaObject): z.ZodType {
+const JSON_TYPES: Record<string, (value: unknown) => boolean> = {
+  string: (v) => typeof v === "string",
+  number: (v) => typeof v === "number",
+  integer: (v) => typeof v === "number" && Number.isInteger(v),
+  boolean: (v) => typeof v === "boolean",
+  null: (v) => v === null,
+  array: (v) => Array.isArray(v),
+  object: (v) => typeof v === "object" && v !== null && !Array.isArray(v),
+}
+
+export function fromJsonSchema(node: JsonSchemaObject | boolean): z.ZodType {
+  // Boolean schemas: `true` accepts anything, `false` nothing (e.g. `items: false`).
+  if (node === true) return z.unknown()
+  if (node === false) return z.never()
   if (Array.isArray(node.enum)) {
-    const values = node.enum as unknown[]
+    // `type` still applies next to `enum`: keep only the values of an allowed type.
+    const types = node.type === undefined ? null : ([] as unknown[]).concat(node.type).map(String)
+    const values = (node.enum as unknown[]).filter((value) => !types || types.some((type) => JSON_TYPES[type]?.(value) ?? true))
+    if (values.length === 0) return z.never()
     if (values.length > 0 && values.every((value) => typeof value === "string")) return z.enum(values as [string, ...string[]])
     return z.union(values.map((value) => z.literal(value as never)) as unknown as [z.ZodType, z.ZodType])
   }
@@ -113,7 +129,8 @@ export function fromJsonSchema(node: JsonSchemaObject): z.ZodType {
     case "null":
       return z.null()
     case "array": {
-      let a = z.array(node.items && typeof node.items === "object" ? fromJsonSchema(node.items as JsonSchemaObject) : z.unknown())
+      const items = node.items
+      let a = z.array(typeof items === "boolean" || (items && typeof items === "object") ? fromJsonSchema(items as JsonSchemaObject | boolean) : z.unknown())
       if (typeof node.minItems === "number") a = a.min(node.minItems)
       if (typeof node.maxItems === "number") a = a.max(node.maxItems)
       return a
@@ -126,12 +143,19 @@ export function fromJsonSchema(node: JsonSchemaObject): z.ZodType {
         const member = fromJsonSchema(value)
         shape[key] = required.has(key) ? member : member.optional()
       }
-      const object = z.object(shape)
-      if (node.additionalProperties === false) return object.strict()
-      if (node.additionalProperties && typeof node.additionalProperties === "object") {
-        return object.catchall(fromJsonSchema(node.additionalProperties as JsonSchemaObject))
-      }
-      return object.loose()
+      const base = z.object(shape)
+      const object =
+        node.additionalProperties === false
+          ? base.strict()
+          : node.additionalProperties && typeof node.additionalProperties === "object"
+            ? base.catchall(fromJsonSchema(node.additionalProperties as JsonSchemaObject))
+            : base.loose()
+      // A required key with no `properties` entry must still be present.
+      const unlisted = [...required].filter((key) => !(key in properties))
+      if (unlisted.length === 0) return object
+      return object.refine((value) => unlisted.every((key) => key in (value as object)), {
+        message: `missing required key(s): ${unlisted.join(", ")}`,
+      })
     }
     default:
       return z.unknown()

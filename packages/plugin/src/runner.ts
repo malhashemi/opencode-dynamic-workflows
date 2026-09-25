@@ -332,9 +332,13 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
 
   /** Stop the session and give it a bounded moment to go quiet, so its usage is final and no work outlives the Unit. */
   const halt = async (id: string) => {
-    await Promise.resolve()
-      .then(() => host.session.interrupt({ sessionID: id }))
-      .catch(() => {})
+    // Both steps are bounded: a hung host call must not keep the Unit (and its concurrency slot) forever.
+    await Promise.race([
+      Promise.resolve()
+        .then(() => host.session.interrupt({ sessionID: id }))
+        .catch(() => {}),
+      Bun.sleep(DRAIN_MS),
+    ])
     await Promise.race([Promise.resolve(host.session.wait({ sessionID: id })).catch(() => {}), Bun.sleep(DRAIN_MS)])
   }
 

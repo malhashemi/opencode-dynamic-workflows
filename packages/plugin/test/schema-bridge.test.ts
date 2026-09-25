@@ -82,3 +82,22 @@ describe("DEFAULT_RETRIES", () => {
     expect(DEFAULT_RETRIES).toBe(2)
   })
 })
+
+describe("audit round 4 — JSON Schema conversion matches JSON Schema", () => {
+  const { fromJsonSchema } = require("../src/schema-bridge") as typeof import("../src/schema-bridge")
+  it("a required key without a properties entry must be present", () => {
+    const s = fromJsonSchema({ type: "object", required: ["id"], properties: {} })
+    expect(s.safeParse({}).success).toBe(false)
+    expect(s.safeParse({ id: 1 }).success).toBe(true)
+  })
+  it("type still applies next to enum", () => {
+    const s = fromJsonSchema({ type: "string", enum: ["ok", null] })
+    expect(s.safeParse("ok").success).toBe(true)
+    expect(s.safeParse(null).success).toBe(false)
+  })
+  it("boolean items: false accepts only an empty array, true anything", () => {
+    expect(fromJsonSchema({ type: "array", items: false }).safeParse([1]).success).toBe(false)
+    expect(fromJsonSchema({ type: "array", items: false }).safeParse([]).success).toBe(true)
+    expect(fromJsonSchema({ type: "object", properties: { a: { type: "array", items: true } } }).safeParse({ a: [1, "x"] }).success).toBe(true)
+  })
+})
