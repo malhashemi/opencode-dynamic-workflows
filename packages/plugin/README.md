@@ -54,7 +54,7 @@ package (`bun run pack` output). The TUI part loads automatically with the serve
 | --- | --- | --- |
 | `inline` | `"ask"` | Inline (model-written) Workflows: `ask` a person each time (or "always for this project"), `allow`, or `deny`. Headless `ask` refuses. |
 | `inlineCapabilities` | `true` | Give inline Runs `ctx.$`, `ctx.file`, `ctx.fetch`. |
-| `retention` | `"keep"` | `delete-on-success`: the TUI deletes the Unit sessions of Runs that succeeded. |
+| `retention` | `"keep"` | `delete-on-success`: Runs that succeed are marked for cleanup; `/workflows cleanup` in the TUI deletes their Unit sessions. Press `d` on any finished Run to delete its Unit sessions. |
 | `limits` | `{ maxUnits: 1000, maxItemsPerCall: 4096, maxUnitSteps: 250 }` | Hard limits per Run / call / Unit. |
 | `gateway` | `{ enabled: true, bind: "loopback", port: 4320, auth: "token", allowedOrigins: [], web: true }` | The HTTP + SSE Gateway and web app. See [security](./docs/security.md). |
 

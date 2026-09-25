@@ -96,5 +96,6 @@ still need a token, but prefer `tailscale` or an SSH tunnel.
 | `$XDG_CACHE_HOME/opencode-dynamic-workflows/workflows/` | loaded Workflow modules, one directory per content hash. Safe to delete. |
 | `$XDG_STATE_HOME/opencode-dynamic-workflows/` | Gateway device tokens. |
 
-Unit sessions stay in OpenCode's database like any session. With `retention: "delete-on-success"`, the TUI
-deletes the Unit sessions of Runs that succeeded (the server plugin cannot delete sessions itself).
+Unit sessions stay in OpenCode's database like any session. The server plugin cannot delete sessions,
+so deletion happens in the TUI and only on your action: `d` on a finished Run, or `/workflows cleanup` for the
+Runs that `retention: "delete-on-success"` marked. The web app can only mark a Run for cleanup.
