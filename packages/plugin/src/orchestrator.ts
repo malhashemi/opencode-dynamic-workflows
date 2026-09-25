@@ -7,6 +7,7 @@
  * {@link EngineHost} and an {@link UnitIndex}.
  */
 import type { Broker } from "./broker"
+import { createCapabilities } from "./capabilities"
 import { createEngineState, createWorkflowContext, type ReplayPlan, type RunLimits } from "./context"
 import type { EngineHost, HostPermissionRule } from "./host"
 import type { Journal } from "./journal"
@@ -84,8 +85,10 @@ export interface RunWorkflowInput {
   resumeOf?: string | null
   /** Rules applied to every Unit session in addition to `meta.permissions`. */
   permissions?: HostPermissionRule[]
-  /** Extra context members (capabilities). */
+  /** Extra context members. */
   extend?: Record<string, unknown>
+  /** `ctx.$` / `ctx.file` / `ctx.fetch`: off (with the reason) or on. */
+  capabilities?: { disabled?: string; shellTimeoutMs?: number }
   /** The Run exists; `stop` ends it. */
   onRegister?: (runId: string, stop: (reason?: string) => void) => void
   onUnitSession?: (runId: string, unitId: string, sessionID: string, stop: () => void) => void
@@ -218,7 +221,16 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
             },
           }
         : {}),
-      ...(input.extend ? { extend: input.extend } : {}),
+      extend: {
+        ...createCapabilities({
+          location: input.location,
+          signal,
+          audit: (message) => store.apply({ type: "run.log", runId: input.runId, value: message, kind: "capability" }),
+          ...(input.capabilities?.disabled ? { disabled: input.capabilities.disabled } : {}),
+          ...(input.capabilities?.shellTimeoutMs ? { shellTimeoutMs: input.capabilities.shellTimeoutMs } : {}),
+        }),
+        ...input.extend,
+      },
       events: {
         onLog: (message) => store.apply({ type: "run.log", runId: input.runId, value: message }),
         onPhase: (title) => store.apply({ type: "run.phase", runId: input.runId, value: title }),

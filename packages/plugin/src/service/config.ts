@@ -25,6 +25,8 @@ export interface GatewayConfig {
 
 export interface PluginConfig {
   inline: InlinePolicy
+  /** Give inline (model-authored) Runs `ctx.$` / `ctx.file` / `ctx.fetch`. Durable Runs always have them. */
+  inlineCapabilities: boolean
   retention: Retention
   limits: RunLimits
   gateway: GatewayConfig
@@ -34,6 +36,7 @@ export const DEFAULT_GATEWAY_PORT = 4320
 
 export const DEFAULT_CONFIG: PluginConfig = {
   inline: "ask",
+  inlineCapabilities: true,
   retention: "keep",
   limits: { ...DEFAULT_LIMITS },
   gateway: { enabled: true, bind: "loopback", port: DEFAULT_GATEWAY_PORT, allowedOrigins: [], auth: "token", web: true },
@@ -54,6 +57,7 @@ export function parseConfig(options: unknown): PluginConfig {
   const port = typeof gateway.port === "number" && Number.isInteger(gateway.port) && gateway.port >= 0 && gateway.port <= 65_535 ? gateway.port : DEFAULT_GATEWAY_PORT
   return {
     inline,
+    inlineCapabilities: input.inlineCapabilities !== false,
     retention,
     limits: {
       maxUnits: positiveInt(limits.maxUnits, DEFAULT_LIMITS.maxUnits),

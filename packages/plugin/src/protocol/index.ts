@@ -318,7 +318,7 @@ export const EventType = z.enum([
 export type EventType = z.infer<typeof EventType>
 
 export const ActivityEntry = z.object({
-  kind: z.enum(["log", "phase", "engine"]),
+  kind: z.enum(["log", "phase", "engine", "capability"]),
   message: z.string(),
   time: z.number(),
   unitId: z.string().nullable(),

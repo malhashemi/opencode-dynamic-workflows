@@ -1,0 +1,193 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/PendingInteraction.json",
+  "title": "PendingInteraction",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "interactionId": {
+      "type": "string"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "unitId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "question",
+        "permission",
+        "approval"
+      ]
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "script",
+        "agent",
+        "permission",
+        "engine"
+      ]
+    },
+    "sessionID": {
+      "type": "string"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "header": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "description"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "custom": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "header",
+          "prompt",
+          "options",
+          "multiple",
+          "custom"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "permission": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "save": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requestID": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "resources",
+        "save",
+        "requestID"
+      ],
+      "additionalProperties": false
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "number"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "requestingSessionID": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "bytes",
+        "preview",
+        "requestingSessionID"
+      ],
+      "additionalProperties": false
+    },
+    "form": {
+      "type": "object",
+      "properties": {
+        "formID": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "formID"
+      ],
+      "additionalProperties": false
+    },
+    "raisedAt": {
+      "type": "number"
+    },
+    "graceEndsAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "interactionId",
+    "runId",
+    "unitId",
+    "kind",
+    "origin",
+    "sessionID",
+    "phase",
+    "questions",
+    "raisedAt",
+    "graceEndsAt"
+  ],
+  "additionalProperties": false
+}

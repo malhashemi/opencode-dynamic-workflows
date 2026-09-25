@@ -294,13 +294,41 @@ export interface PipelineFn {
   <I>(items: I[], ...stages: Array<PipelineStage<any, any, I>>): Promise<Array<unknown>>
 }
 
+/** What `ctx.$` resolves to. A non-zero `exitCode` is a value, not a throw. */
+export interface ShellResult {
+  stdout: string
+  stderr: string
+  exitCode: number
+}
+
 /**
- * The context handed to a Workflow's `run`. This slice implements `agent`, `parallel`, `pipeline`, `collect`,
- * `errors`, `args`, `log`, `phase`, `budget`, `signal`, `ask`; the remaining primitives (`workflow`,
- * `mergeWorktree`, …) arrive in later tickets and are intentionally omitted so the typed surface never
- * overstates what works.
+ * Project-confined helpers, stopped with the Run and recorded in its activity. Not a sandbox: see the security
+ * docs. Disabled for inline Workflows when the plugin option `inlineCapabilities` is `false`.
  */
-export interface WorkflowContext<A = unknown> {
+export interface WorkflowCapabilities {
+  /**
+   * Run a shell command in the project (`sh -c`). As a tagged template, interpolations are shell-quoted:
+   * ``await $`git log -1 ${ref}` ``. Options: `cwd` (inside the project), `timeoutMs` (default 120 s), `env`.
+   */
+  $: {
+    (command: string, options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<ShellResult>
+    (strings: TemplateStringsArray, ...values: unknown[]): Promise<ShellResult>
+  }
+  /** Files inside the project only (paths resolve through symlinks and may not leave it). */
+  file: {
+    read(path: string): Promise<string>
+    write(path: string, content: string): Promise<void>
+    exists(path: string): Promise<boolean>
+    /** Entry names; directories end in `/`. */
+    list(path?: string): Promise<string[]>
+    stat(path: string): Promise<{ size: number; isFile: boolean; isDirectory: boolean; modified: number }>
+  }
+  /** `fetch`, aborted when the Run stops. */
+  fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+}
+
+/** The context handed to a Workflow's `run`. */
+export interface WorkflowContext<A = unknown> extends WorkflowCapabilities {
   /** Run one Unit as a named subagent (default `"general"`). */
   agent: AgentFn
   /** Fan a list of Units out concurrently (bounded barrier); failures become `null` slots + `errors`. */
@@ -325,11 +353,11 @@ export interface WorkflowContext<A = unknown> {
    */
   ask: AskFn
   /**
-   * Advisory token budget (D10): `total` is the caller's ceiling (or null), `spent()` the running output-token
-   * sum, `remaining()` is `max(0, total - spent())` (or Infinity when uncapped). No engine hard-stop.
+   * Token budget: `total` is the ceiling (or null), `spent()` the running output-token sum, `remaining()` is
+   * `max(0, total - spent())` (or Infinity when uncapped). Advisory unless `meta.budget` is `{ tokens, hard: true }`.
    */
   budget: { total: number | null; spent(): number; remaining(): number }
-  /** The Run's abort signal (D11). Aborting stops launching queued Units AND cancels in-flight Units (their child prompt is `session.abort`-ed); each dropped Unit is recorded in {@link errors}. */
+  /** The Run's abort signal (D11). Aborting stops launching queued Units AND interrupts in-flight Unit sessions; each dropped Unit is recorded in {@link errors}. */
   signal: AbortSignal
 }
 

@@ -1,0 +1,41 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/ProtocolError.json",
+  "title": "ProtocolError",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "not_found",
+        "conflict",
+        "invalid_args",
+        "invalid_state",
+        "unauthorized",
+        "forbidden",
+        "rate_limited",
+        "unsupported",
+        "internal"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "details": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "retryable"
+  ],
+  "additionalProperties": false
+}

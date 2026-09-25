@@ -1,0 +1,22 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/StartRunInput.json",
+  "title": "StartRunInput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "args": {},
+    "parentSessionID": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

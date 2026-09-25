@@ -1,0 +1,248 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/Unit.json",
+  "title": "Unit",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "unitId": {
+      "type": "string"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "ordinal": {
+      "type": "number"
+    },
+    "label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subagent": {
+      "type": "string"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "repairing",
+        "succeeded",
+        "failed",
+        "stopped",
+        "replayed"
+      ]
+    },
+    "sessionID": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "location": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "requested": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolved": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "requested",
+        "resolved"
+      ],
+      "additionalProperties": false
+    },
+    "schema": {
+      "type": "boolean"
+    },
+    "resultPath": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "text",
+            "tool",
+            "text-json",
+            "extract",
+            "replay"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "turn": {
+            "type": "number"
+          },
+          "path": {
+            "type": "string",
+            "enum": [
+              "text",
+              "tool",
+              "text-json",
+              "extract",
+              "replay"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn",
+          "path",
+          "ok"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "output": {
+      "type": "string"
+    },
+    "outputElided": {
+      "type": "boolean"
+    },
+    "error": {
+      "type": "string"
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number"
+            },
+            "output": {
+              "type": "number"
+            },
+            "reasoning": {
+              "type": "number"
+            },
+            "cacheRead": {
+              "type": "number"
+            },
+            "cacheWrite": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "reasoning",
+            "cacheRead",
+            "cacheWrite"
+          ],
+          "additionalProperties": false
+        },
+        "cost": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "tokens",
+        "cost"
+      ],
+      "additionalProperties": false
+    },
+    "startedAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "endedAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "unitId",
+    "runId",
+    "ordinal",
+    "label",
+    "subagent",
+    "phase",
+    "status",
+    "sessionID",
+    "location",
+    "prompt",
+    "model",
+    "schema",
+    "resultPath",
+    "attempts",
+    "usage",
+    "startedAt",
+    "endedAt"
+  ],
+  "additionalProperties": false
+}

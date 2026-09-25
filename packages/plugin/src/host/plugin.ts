@@ -15,11 +15,13 @@
  * - the Gateway (HTTP + SSE for the web app and third parties).
  */
 import { realpathSync, watch, type FSWatcher } from "node:fs"
+import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { Plugin } from "@opencode/plugin"
 import type { Context } from "@opencode/plugin/promise/plugin"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
 import { createBroker } from "../broker"
+import { confine } from "../capabilities"
 import { engineGlobal, locationSlot } from "../engine-global"
 import type { EngineHost, HostSessionInfo } from "../host"
 import { createJournal, journalRoot, subscribeJournal } from "../journal"
@@ -225,8 +227,9 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         service.stopRun(input.stop)
         return { content: `Stopping run ${input.stop}.` }
       }
-      if (typeof input.resume === "string") {
-        const resumeId = input.resume
+      const resumeTarget = typeof input.resume === "string" ? input.resume : typeof input.resumeFromRunId === "string" ? input.resumeFromRunId : undefined
+      if (resumeTarget) {
+        const resumeId = resumeTarget
         return runForeground(() => service.resumeRun(resumeId, true, { surface: "the workflow tool" }), tc, input.background === true)
       }
       if (typeof input.save_run === "string") {
@@ -254,8 +257,15 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   }
 
   const inlineTool = async (input: Record<string, unknown>, tc: ToolContext): Promise<ToolResult> => {
-    const source = typeof input.source === "string" ? input.source : ""
-    if (!source) return { content: "workflow_inline needs `source`: a module that default-exports defineWorkflow({ meta, run })." }
+    let source = typeof input.source === "string" ? input.source : ""
+    if (!source && typeof input.scriptPath === "string") {
+      try {
+        source = await readFile(confine(location, input.scriptPath), "utf8")
+      } catch (error) {
+        return { content: `workflow_inline could not read scriptPath: ${error instanceof Error ? error.message : String(error)}` }
+      }
+    }
+    if (!source) return { content: "workflow_inline needs `source` (or `scriptPath`): a module that default-exports defineWorkflow({ meta, run })." }
     try {
       if (typeof input.save === "string") {
         const saved = await service.promote(source, input.save)
@@ -287,6 +297,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
           result: { type: "string", description: "runId: return a finished Run's result." },
           stop: { type: "string", description: "runId: stop a running Run." },
           resume: { type: "string", description: "runId: resume an interrupted or failed Run." },
+          resumeFromRunId: { type: "string", description: "Alias of `resume`." },
           save_run: { type: "string", description: "runId: save an inline Run's script as a durable Workflow." },
         },
         additionalProperties: false,
@@ -301,11 +312,11 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         type: "object",
         properties: {
           source: { type: "string", description: "TypeScript module: export default defineWorkflow({ meta, run })." },
+          scriptPath: { type: "string", description: "Instead of `source`: a project file holding the module (still approved as inline)." },
           args: { description: "JSON value passed to the Workflow as `args`." },
           background: { type: "boolean", description: "Return at once with the runId instead of waiting." },
           save: { type: "string", description: "Save the source as .opencode/workflows/<save>.ts instead of running it." },
         },
-        required: ["source"],
         additionalProperties: false,
       },
       options: { codemode: false },

@@ -14,6 +14,7 @@ import { formatModel, toHostModel, type EngineHost, type HostPermissionRule } fr
 import { emptyUsage, type Unit, type Usage } from "./protocol"
 import { DEFAULT_SUBAGENT, runUnit, stringifyError, type UnitRunResult } from "./runner"
 import { toUnitOutput } from "./runs"
+import { createCapabilities } from "./capabilities"
 import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
 import { resolveJsonSchema } from "./schema-bridge"
 import type { UnitBinding, UnitIndex } from "./units"
@@ -392,6 +393,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
   }
 
   return {
+    ...createCapabilities({ location: input.location, signal, audit: () => {}, disabled: "capabilities are only available inside a Run" }),
     ...(input.extend ?? {}),
     agent,
     ask,
@@ -406,5 +408,5 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     phase,
     budget,
     signal,
-  } as WorkflowContext<A>
+  } as unknown as WorkflowContext<A>
 }

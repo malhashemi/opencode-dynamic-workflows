@@ -1,0 +1,174 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/LibraryEntry.json",
+  "title": "LibraryEntry",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "durable",
+            "inline"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "description",
+        "provenance"
+      ],
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "string"
+    },
+    "parentSessionID": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "stopped",
+        "interrupted"
+      ]
+    },
+    "waiting": {
+      "type": "boolean"
+    },
+    "units": {
+      "type": "number"
+    },
+    "settledUnits": {
+      "type": "number"
+    },
+    "failedUnits": {
+      "type": "number"
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "phasesDeclared": {
+      "type": "boolean"
+    },
+    "currentPhase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number"
+            },
+            "output": {
+              "type": "number"
+            },
+            "reasoning": {
+              "type": "number"
+            },
+            "cacheRead": {
+              "type": "number"
+            },
+            "cacheWrite": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "reasoning",
+            "cacheRead",
+            "cacheWrite"
+          ],
+          "additionalProperties": false
+        },
+        "cost": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "tokens",
+        "cost"
+      ],
+      "additionalProperties": false
+    },
+    "tokensSpent": {
+      "type": "number"
+    },
+    "startedAt": {
+      "type": "number"
+    },
+    "endedAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "live": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "runId",
+    "workflow",
+    "location",
+    "parentSessionID",
+    "status",
+    "waiting",
+    "units",
+    "settledUnits",
+    "failedUnits",
+    "phases",
+    "phasesDeclared",
+    "currentPhase",
+    "usage",
+    "tokensSpent",
+    "startedAt",
+    "endedAt",
+    "live"
+  ],
+  "additionalProperties": false
+}

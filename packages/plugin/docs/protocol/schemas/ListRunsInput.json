@@ -1,0 +1,37 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/ListRunsInput.json",
+  "title": "ListRunsInput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "stopped",
+          "interrupted"
+        ]
+      }
+    },
+    "parentSessionID": {
+      "type": "string"
+    },
+    "search": {
+      "type": "string"
+    },
+    "since": {
+      "type": "number"
+    },
+    "limit": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 500
+    }
+  },
+  "additionalProperties": false
+}

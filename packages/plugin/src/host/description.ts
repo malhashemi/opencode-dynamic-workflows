@@ -24,6 +24,10 @@ const CONTEXT_REFERENCE = `The \`run\` function receives a context:
     REQUIRED and answers at once when nobody is attached (headless), so a Run never hangs.
   - budget   { total, spent(), remaining() } in output tokens. Advisory unless meta.budget = { tokens, hard: true }.
   - signal   the Run's AbortSignal (stopping the Run interrupts every Unit).
+  - $(command) or $\`cmd \${value}\` → { stdout, stderr, exitCode }   shell in the project (values quoted)
+  - file.read/write/exists/list/stat(path)   project files only
+  - fetch(url, init?)   aborted with the Run
+    Capability calls are confined to the project and recorded in the Run's activity.
 
 meta: { name, description, whenToUse?, phases?: [{ title, detail? }], args?: zod schema, concurrency?, unitTimeout?,
         budget?: number | { tokens, hard? }, permissions?: rules for every Unit, limits?: { maxUnits, maxItemsPerCall,
@@ -54,7 +58,8 @@ MODES (pick one):
   - status: "<runId>" — where a Run is (phase, Units, failures). Works across sessions and restarts.
   - result: "<runId>" — a finished Run's result (its status if still running).
   - stop: "<runId>" — stop a running Run.
-  - resume: "<runId>" — re-run an interrupted/failed Run, replaying the Units it already finished.
+  - resume: "<runId>" (alias resumeFromRunId) — re-run an interrupted/failed Run, replaying the Units it
+    already finished.
   - save_run: "<runId>" — promote an inline Run's script to a durable Workflow.
 To run inline Workflow source, use the \`workflow_inline\` tool.
 
@@ -72,7 +77,7 @@ Inline Workflows run with the user's permissions inside OpenCode, so the user ap
 Workflows for the project) before it starts. Headless (no TUI or web app attached) it is refused unless the
 project allows inline Workflows. Prefer a durable Workflow (the \`workflow\` tool) when one fits.
 
-Arguments: source (required), args (validated against meta.args), background (return at once with the runId),
+Arguments: source (or scriptPath: a project file holding the module), args (validated against meta.args), background (return at once with the runId),
 save: "<name>" (instead of running: save the source as .opencode/workflows/<name>.ts; "/" makes a namespace).
 
 ${CONTEXT_REFERENCE}

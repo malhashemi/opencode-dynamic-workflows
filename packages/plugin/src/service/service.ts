@@ -352,6 +352,9 @@ export class WorkflowService {
           background: options.background ?? false,
           limits: this.deps.config.limits,
           existingRun: true,
+          ...(identity.provenance === "inline" && !this.deps.config.inlineCapabilities
+            ? { capabilities: { disabled: "inline Workflows have no capabilities in this project (plugin option inlineCapabilities: false)" } }
+            : {}),
           ...(options.replay ? { replay: options.replay } : {}),
           ...(options.resumeOf ? { resumeOf: options.resumeOf } : {}),
           onRegister: (_id, stop) => {

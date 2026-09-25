@@ -27,9 +27,22 @@ export default defineWorkflow({
 })
 `
 
+const CAPS = `import { defineWorkflow } from "opencode-dynamic-workflows/workflow"
+export default defineWorkflow({
+  meta: { name: "caps", description: "capabilities in the host" },
+  async run({ $, file }) {
+    const pwd = await $("pwd")
+    await file.write("out/hello.txt", "hi")
+    let escaped = "no"
+    try { await file.read("../../etc/hosts") ; escaped = "yes" } catch (e) { escaped = String(e.message) }
+    return { pwd: pwd.stdout.trim(), wrote: await file.read("out/hello.txt"), escaped }
+  },
+})
+`
+
 let server: LiveServer
 beforeAll(async () => {
-  server = await startLive({ files: { ".opencode/workflows/fanout.ts": FANOUT }, pluginOptions: { inline: "allow" } })
+  server = await startLive({ files: { ".opencode/workflows/fanout.ts": FANOUT, ".opencode/workflows/caps.ts": CAPS }, pluginOptions: { inline: "allow" } })
 })
 afterAll(async () => {
   await server?.stop()
@@ -41,8 +54,8 @@ describe("live: core", () => {
     expect(info.protocol).toBe(1)
     expect(info.location).toContain("project")
     const listing = (await server.workflow.listWorkflows({})) as any
-    expect(listing.workflows.map((w: any) => w.key)).toEqual(["fanout"])
-    expect(listing.workflows[0].args.properties.topic.type).toBe("string")
+    expect(listing.workflows.map((w: any) => w.key)).toEqual(["caps", "fanout"])
+    expect(listing.workflows[1].args.properties.topic.type).toBe("string")
     const agents = (await server.client.agent.list({ location: { directory: server.project } } as never)) as any
     console.log("agents:", (agents.data ?? agents).map((a: any) => `${a.id ?? a.name}:${a.mode}`).join(", "))
   })
@@ -84,4 +97,18 @@ describe("live: core", () => {
     expect(output).toContain("INLINE-OK")
     expect(output).toContain("hello-inline · succeeded")
   }, 240_000)
+
+  test("capabilities run confined to the project and are audited", async () => {
+    const { runId } = (await server.workflow.startRun({ name: "caps" })) as any
+    await until(async () => {
+      const { run } = (await server.workflow.getRun({ runId })) as any
+      return run.status !== "running" && run.status !== "queued" ? run : undefined
+    }, 60_000, 300)
+    const { result } = (await server.workflow.getResult({ runId })) as any
+    expect(result.pwd).toBe(server.project)
+    expect(result.wrote).toBe("hi")
+    expect(result.escaped).toContain("escapes the project")
+    const { entries } = (await server.workflow.getActivity({ runId })) as any
+    expect(entries.filter((e: any) => e.kind === "capability").map((e: any) => e.message)).toEqual(["$ pwd", "write out/hello.txt (2 bytes)", "read out/hello.txt"])
+  })
 })

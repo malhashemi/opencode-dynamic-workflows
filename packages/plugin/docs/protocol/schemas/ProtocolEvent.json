@@ -1,0 +1,53 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/ProtocolEvent.json",
+  "title": "ProtocolEvent",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "type": "number",
+      "const": 1
+    },
+    "seq": {
+      "type": "number"
+    },
+    "time": {
+      "type": "number"
+    },
+    "location": {
+      "type": "string"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "run.started",
+        "run.updated",
+        "run.ended",
+        "unit.updated",
+        "interaction.pending",
+        "interaction.resolved",
+        "activity.appended",
+        "library.changed",
+        "resync.required"
+      ]
+    },
+    "revision": {
+      "type": "number"
+    },
+    "data": {}
+  },
+  "required": [
+    "protocol",
+    "seq",
+    "time",
+    "location",
+    "runId",
+    "type",
+    "revision",
+    "data"
+  ],
+  "additionalProperties": false
+}

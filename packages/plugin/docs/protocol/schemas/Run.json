@@ -1,0 +1,912 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/Run.json",
+  "title": "Run",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "durable",
+            "inline"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "description",
+        "provenance"
+      ],
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "string"
+    },
+    "parentSessionID": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "stopped",
+        "interrupted"
+      ]
+    },
+    "waiting": {
+      "type": "boolean"
+    },
+    "background": {
+      "type": "boolean"
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "phasesDeclared": {
+      "type": "boolean"
+    },
+    "currentPhase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "unitId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "number"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagent": {
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "repairing",
+              "succeeded",
+              "failed",
+              "stopped",
+              "replayed"
+            ]
+          },
+          "sessionID": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "requested": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resolved": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "requested",
+              "resolved"
+            ],
+            "additionalProperties": false
+          },
+          "schema": {
+            "type": "boolean"
+          },
+          "resultPath": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "tool",
+                  "text-json",
+                  "extract",
+                  "replay"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "turn": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "tool",
+                    "text-json",
+                    "extract",
+                    "replay"
+                  ]
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "turn",
+                "path",
+                "ok"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "output": {
+            "type": "string"
+          },
+          "outputElided": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "tokens": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "reasoning": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "input",
+                  "output",
+                  "reasoning",
+                  "cacheRead",
+                  "cacheWrite"
+                ],
+                "additionalProperties": false
+              },
+              "cost": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "tokens",
+              "cost"
+            ],
+            "additionalProperties": false
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "unitId",
+          "runId",
+          "ordinal",
+          "label",
+          "subagent",
+          "phase",
+          "status",
+          "sessionID",
+          "location",
+          "prompt",
+          "model",
+          "schema",
+          "resultPath",
+          "attempts",
+          "usage",
+          "startedAt",
+          "endedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "logs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "subagent": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit",
+          "prompt",
+          "subagent",
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "interactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "interactionId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "unitId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "question",
+              "permission",
+              "approval"
+            ]
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "script",
+              "agent",
+              "permission",
+              "engine"
+            ]
+          },
+          "sessionID": {
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "header": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "multiple": {
+                  "type": "boolean"
+                },
+                "custom": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "header",
+                "prompt",
+                "options",
+                "multiple",
+                "custom"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "permission": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "resources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "save": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "requestID": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "resources",
+              "save",
+              "requestID"
+            ],
+            "additionalProperties": false
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "sha256": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "preview": {
+                "type": "string"
+              },
+              "requestingSessionID": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sha256",
+              "bytes",
+              "preview",
+              "requestingSessionID"
+            ],
+            "additionalProperties": false
+          },
+          "form": {
+            "type": "object",
+            "properties": {
+              "formID": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "formID"
+            ],
+            "additionalProperties": false
+          },
+          "raisedAt": {
+            "type": "number"
+          },
+          "graceEndsAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "interactionId",
+          "runId",
+          "unitId",
+          "kind",
+          "origin",
+          "sessionID",
+          "phase",
+          "questions",
+          "raisedAt",
+          "graceEndsAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "resolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "interactionId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "unitId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "question",
+              "permission",
+              "approval"
+            ]
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "script",
+              "agent",
+              "permission",
+              "engine"
+            ]
+          },
+          "sessionID": {
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "header": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "multiple": {
+                  "type": "boolean"
+                },
+                "custom": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "header",
+                "prompt",
+                "options",
+                "multiple",
+                "custom"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "permission": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "resources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "save": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "requestID": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "resources",
+              "save",
+              "requestID"
+            ],
+            "additionalProperties": false
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "sha256": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "preview": {
+                "type": "string"
+              },
+              "requestingSessionID": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sha256",
+              "bytes",
+              "preview",
+              "requestingSessionID"
+            ],
+            "additionalProperties": false
+          },
+          "form": {
+            "type": "object",
+            "properties": {
+              "formID": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "formID"
+            ],
+            "additionalProperties": false
+          },
+          "raisedAt": {
+            "type": "number"
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "by": {
+            "type": "string",
+            "enum": [
+              "human",
+              "automation"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "rejected",
+              "cancelled"
+            ]
+          },
+          "resolvedAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "interactionId",
+          "runId",
+          "unitId",
+          "kind",
+          "origin",
+          "sessionID",
+          "phase",
+          "questions",
+          "raisedAt",
+          "answers",
+          "by",
+          "resolvedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number"
+            },
+            "output": {
+              "type": "number"
+            },
+            "reasoning": {
+              "type": "number"
+            },
+            "cacheRead": {
+              "type": "number"
+            },
+            "cacheWrite": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "reasoning",
+            "cacheRead",
+            "cacheWrite"
+          ],
+          "additionalProperties": false
+        },
+        "cost": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "tokens",
+        "cost"
+      ],
+      "additionalProperties": false
+    },
+    "tokensSpent": {
+      "type": "number"
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hard": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "total",
+        "hard"
+      ],
+      "additionalProperties": false
+    },
+    "startedAt": {
+      "type": "number"
+    },
+    "endedAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resultPreview": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resumeOf": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cleanup": {
+      "type": "string",
+      "enum": [
+        "none",
+        "pending",
+        "done"
+      ]
+    },
+    "revision": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "runId",
+    "workflow",
+    "location",
+    "parentSessionID",
+    "status",
+    "waiting",
+    "background",
+    "phases",
+    "phasesDeclared",
+    "currentPhase",
+    "units",
+    "logs",
+    "errors",
+    "interactions",
+    "resolved",
+    "usage",
+    "tokensSpent",
+    "budget",
+    "startedAt",
+    "endedAt",
+    "resultPreview",
+    "resumeOf",
+    "cleanup",
+    "revision"
+  ],
+  "additionalProperties": false
+}

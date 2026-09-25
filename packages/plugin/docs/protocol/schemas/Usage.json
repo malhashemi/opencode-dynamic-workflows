@@ -1,0 +1,44 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/Usage.json",
+  "title": "Usage",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "reasoning": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "reasoning",
+        "cacheRead",
+        "cacheWrite"
+      ],
+      "additionalProperties": false
+    },
+    "cost": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "tokens",
+    "cost"
+  ],
+  "additionalProperties": false
+}

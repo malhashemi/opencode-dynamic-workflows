@@ -1,0 +1,29 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/ReplyInteractionInput.json",
+  "title": "ReplyInteractionInput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "interactionId": {
+      "type": "string"
+    },
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "required": [
+    "runId",
+    "interactionId",
+    "answers"
+  ],
+  "additionalProperties": false
+}

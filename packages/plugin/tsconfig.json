@@ -13,6 +13,7 @@
     "src",
     "test",
     "server.ts",
-    "rpc.ts"
+    "rpc.ts",
+    "docs/examples"
   ]
 }

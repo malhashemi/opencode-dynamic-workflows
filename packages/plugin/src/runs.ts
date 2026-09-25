@@ -337,7 +337,8 @@ export function createRunStore(location: string): RunStore {
       }
       case "run.log": {
         run = requireRun(change.runId)
-        run.logs.push(change.value)
+        // Capability audit lines live in the activity feed only; `logs` stays the author's own narration.
+        if (change.kind !== "capability") run.logs.push(change.value)
         run.revision += 1
         const entry: ActivityEntry = {
           kind: change.kind ?? "log",

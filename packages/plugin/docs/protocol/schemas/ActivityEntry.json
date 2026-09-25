@@ -1,0 +1,40 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/ActivityEntry.json",
+  "title": "ActivityEntry",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "log",
+        "phase",
+        "engine",
+        "capability"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "time": {
+      "type": "number"
+    },
+    "unitId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "message",
+    "time",
+    "unitId"
+  ],
+  "additionalProperties": false
+}
