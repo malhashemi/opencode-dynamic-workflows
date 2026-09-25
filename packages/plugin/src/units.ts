@@ -41,6 +41,8 @@ export interface UnitBinding {
    * session instead of treating the interrupt as a stop.
    */
   restart: boolean
+  /** True between admitting a prompt and its turn settling — the only time a restart can take effect. */
+  turnActive: boolean
   /** Restarts used so far (a surface may restart a running Unit at most MAX_RESTARTS times). */
   restarts: number
   /** Called once when `steps` passes `maxSteps`; the runner interrupts the Unit. */

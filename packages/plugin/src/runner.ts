@@ -163,9 +163,17 @@ export function usageFromSession(info: HostSessionInfo | undefined): Usage {
 }
 
 type Settle = "settled" | "stopped" | "aborted" | "timeout" | "steps" | { error: string }
+type Interrupted = Exclude<Settle, "settled">
 
 /** How long to wait for a session to go quiet after `interrupt`, before reading its final usage. */
 const DRAIN_MS = 5_000
+
+function interruptedBeforeSession(why: Settle): string {
+  if (typeof why === "object") return why.error
+  if (why === "timeout") return "unit exceeded its timeout while its session was being created"
+  if (why === "stopped") return "unit stopped before its session existed"
+  return "unit aborted before its session existed"
+}
 
 /** Rough token count for host calls that report no usage (`generate.text` on 2.0.16): ~4 characters a token. */
 export function estimateTokens(text: string): number {
@@ -243,10 +251,24 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
   }
   if (spec.signal?.aborted) return fail("unit aborted before it started", true)
 
+  // The Unit's deadline and stop signals start before its session exists: a slow create is part of the Unit.
+  const stop = new AbortController()
+  const stepLimit = new AbortController()
+  const timeout = spec.timeoutMs && Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0 ? AbortSignal.timeout(spec.timeoutMs) : undefined
+  const guards = [spec.signal, stop.signal, stepLimit.signal, timeout].filter((signal): signal is AbortSignal => !!signal)
+  const guard = AbortSignal.any(guards)
+
+  const reason = (): Interrupted =>
+    stop.signal.aborted ? "stopped" : stepLimit.signal.aborted ? "steps" : timeout?.aborted ? "timeout" : "aborted"
+  const aborted = new Promise<Interrupted>((resolve) => {
+    if (guard.aborted) resolve(reason())
+    else guard.addEventListener("abort", () => resolve(reason()), { once: true })
+  })
+
   const location = spec.unitLocation ?? spec.location
   let info: HostSessionInfo
   try {
-    info = await host.session.create({
+    const creating = Promise.resolve(host.session.create({
           title: unitTitle(spec.workflow, spec.label, spec.subagent),
           agent: spec.subagent,
           ...(spec.model ? { model: spec.model } : {}),
@@ -264,16 +286,21 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
           },
           permissions: [...(spec.permissions ?? []), ...ENGINE_UNIT_RULES],
           ...(spec.unitLocation ? { location: { directory: spec.unitLocation } } : {}),
-        })
+        }))
+    const created = await Promise.race([creating.then((value) => ({ value })), aborted.then((why) => ({ why }))])
+    if ("why" in created) {
+      // Stopped while OpenCode was still creating it: stop that session whenever it appears.
+      void creating.then((late) => (late.id ? host.session.interrupt({ sessionID: late.id }) : undefined)).catch(() => {})
+      return fail(interruptedBeforeSession(created.why), created.why === "stopped" || created.why === "aborted")
+    }
+    info = created.value
   } catch (error) {
-    return fail(`could not create the Unit session: ${stringifyError(error)}`)
+    return fail(`could not create the Unit session: ${stringifyError(error)}`, guard.aborted)
   }
   sessionID = info.id
   if (!sessionID) return fail("session.create returned no session id")
   trace.sessionID = sessionID
 
-  const stop = new AbortController()
-  const stepLimit = new AbortController()
   const binding: UnitBinding = {
     sessionID,
     runId: spec.runId,
@@ -289,6 +316,7 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
     settled: false,
     restart: false,
     restarts: 0,
+    turnActive: false,
     onStepLimit: () => stepLimit.abort(),
     ask: spec.ask,
     permissionPolicy: spec.permissionPolicy,
@@ -301,16 +329,6 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
   model = info.model ?? model
   spec.onSession?.(sessionID, () => stop.abort(), model)
 
-  const timeout = spec.timeoutMs && Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0 ? AbortSignal.timeout(spec.timeoutMs) : undefined
-  const guards = [spec.signal, stop.signal, stepLimit.signal, timeout].filter((signal): signal is AbortSignal => !!signal)
-  const guard = AbortSignal.any(guards)
-
-  const reason = (): Settle =>
-    stop.signal.aborted ? "stopped" : stepLimit.signal.aborted ? "steps" : timeout?.aborted ? "timeout" : "aborted"
-  const aborted = new Promise<Settle>((resolve) => {
-    if (guard.aborted) resolve(reason())
-    else guard.addEventListener("abort", () => resolve(reason()), { once: true })
-  })
 
   /** Stop the session and give it a bounded moment to go quiet, so its usage is final and no work outlives the Unit. */
   const halt = async (id: string) => {
@@ -392,11 +410,13 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
         const spent = await overBudget()
         if (spent) return fail(`budget exhausted before repair turn ${turn}: ${lastError ?? "workflow_result was not called"}`, false, spent)
       }
+      binding.turnActive = true
       const admitted = await admit(sessionID, text)
       if (admitted !== "settled") {
         return fail(interruptedMessage(admitted), admitted === "stopped" || admitted === "aborted", await readUsage())
       }
       const outcome = await settle(sessionID)
+      binding.turnActive = false
       if (outcome === "settled" && binding.restart && binding.restarts >= MAX_RESTARTS) {
         // Never read an interrupted turn as a finished one.
         binding.restart = false
@@ -423,6 +443,8 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
       }
       model = final.model ?? model
       lastText = final.text ?? lastText
+      // Stopped while the turn was being read: the stop wins over the answer.
+      if (guard.aborted) return fail(interruptedMessage(reason()), reason() === "stopped" || reason() === "aborted", await readUsage())
 
       if (!spec.schema) {
         if (final.text !== undefined) {
@@ -479,7 +501,12 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
         const prompt =
           "Extract the answer below into ONE JSON value that matches this JSON Schema. Output only the JSON.\n" +
           `Schema: ${JSON.stringify(jsonSchema)}\n\nAnswer:\n${lastText}`
-        const generated = await host.generateText({ model, prompt })
+        const extracting = await Promise.race([
+          Promise.resolve(host.generateText({ model, prompt })).then((value) => ({ value })),
+          aborted.then((why) => ({ why })),
+        ])
+        if ("why" in extracting) return fail(interruptedMessage(extracting.why), extracting.why === "stopped" || extracting.why === "aborted", await readUsage())
+        const generated = extracting.value
         // The host reports no usage for this call; count an estimate so budgets and totals are not blind to it.
         extra = addUsage(extra, { ...emptyUsage(), tokens: { ...emptyUsage().tokens, input: estimateTokens(prompt), output: estimateTokens(generated.text) } })
         const parsed = parseJsonFromText(generated.text)

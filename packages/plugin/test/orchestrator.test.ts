@@ -146,3 +146,17 @@ describe("policy resolution", () => {
     expect(previewResult(undefined)).toBeNull()
   })
 })
+
+describe("audit round 3 — a Run owns every Unit it started", () => {
+  it("Units the script did not await are stopped and settled before run.ended", async () => {
+    const { promise, store, runId, host, events } = await start(wf(`ctx.agent("stray"); await new Promise((r) => setTimeout(r, 10)); return "done"`), { host: { reply: { hang: true } } })
+    expect((await promise).result).toBe("done")
+    const run = store.get(runId)!
+    expect(run.status).toBe("succeeded")
+    expect(run.units[0]?.status).toBe("stopped")
+    expect(host.interrupts).toHaveLength(1)
+    const ended = events.find((e) => e.type === "run.ended")!.seq
+    expect(events.filter((e) => e.type === "unit.updated").every((e) => e.seq < ended)).toBe(true)
+    expect(run.logs.join("\n")).toContain("stopping 1 Unit(s) the script did not await")
+  })
+})

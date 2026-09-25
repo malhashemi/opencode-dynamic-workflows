@@ -215,7 +215,7 @@ describe("audit round 2 — nothing answerable outlives its Unit", () => {
     expect(store.get("r1")!.interactions.map((i) => i.permission?.requestID)).toEqual(["p2"])
   })
 
-  it("an allow still in flight when the Unit ends is taken back with a reject", async () => {
+  it("an allow in flight when the Unit ends is not followed by a contradictory reject", async () => {
     const { store, broker, replies, hold, open } = setup()
     broker.permission({ runId: "r1", unitId: "u1", sessionID: "s1", detail: detail("p1") })
     const id = store.get("r1")!.interactions[0]!.interactionId
@@ -225,7 +225,7 @@ describe("audit round 2 — nothing answerable outlives its Unit", () => {
     open()
     expect(await reply).toBe(true)
     await Promise.resolve()
-    expect(replies.map((r) => r.decision)).toEqual(["once", "reject"])
+    expect(replies.map((r) => r.decision)).toEqual(["once"])
   })
 
   it("coerceAnswers drops duplicate labels", () => {

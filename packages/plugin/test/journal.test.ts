@@ -165,3 +165,14 @@ describe("audit round 2 — replay recomputes totals", () => {
   })
 })
 
+
+describe("audit round 3 — journal failures are reported with their Run", () => {
+  it("onError receives the runId", async () => {
+    const seen: Array<string | undefined> = []
+    const blocked = path.join(dir, "not-a-dir")
+    await writeFile(blocked, "x")
+    const broken = createJournal(path.join(blocked, "runs"), { onError: (_e, _c, runId) => seen.push(runId) })
+    await broken.begin(baseRun(), { source: SOURCE, args: null, instance: "i" })
+    expect(seen).toEqual(["r1"])
+  })
+})

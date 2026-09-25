@@ -107,7 +107,14 @@ function ensureService(ctx: Context, location: string, config: PluginConfig, ins
     return { slot: existing, fresh: false }
   }
   const store = createRunStore(location)
-  const journal = createJournal(journalRoot(location))
+  const journal = createJournal(journalRoot(location), {
+    onError: (error, context, runId) => {
+      const message = `journal ${context}: ${error instanceof Error ? error.message : String(error)}`
+      console.warn(`[workflow] ${message}`)
+      // Visible where people look: the Run's activity. (A journal error never fails the Run itself.)
+      if (runId && store.get(runId)) store.apply({ type: "run.log", runId, value: `the run journal could not be written — ${message}`, kind: "engine" })
+    },
+  })
   subscribeJournal(store, journal)
   const holder = {} as ServiceSlot
   const broker = createBroker({

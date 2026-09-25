@@ -60,7 +60,7 @@ export interface Journal {
 }
 
 export interface JournalOptions {
-  onError?: (error: unknown, context: string) => void
+  onError?: (error: unknown, context: string, runId?: string) => void
 }
 
 const RUN_FILE = "run.json"
@@ -212,12 +212,17 @@ function defaultOnError(error: unknown, context: string): void {
 export function createJournal(root: string, options: JournalOptions = {}): Journal {
   const onError = options.onError ?? defaultOnError
   const chains = new Map<string, Promise<void>>()
+  /** Runs whose last append failed: the next line starts on a fresh line, so a torn fragment costs only itself. */
+  const torn = new Set<string>()
   const opened = new Map<string, { args: unknown; owner: RunDocument["owner"] }>()
   const runDirectory = (runId: string): string => path.join(root, runId)
 
   const chain = (runId: string, task: () => Promise<void>, context: string): Promise<void> => {
     const previous = chains.get(runId) ?? Promise.resolve()
-    const next = previous.then(task).catch((error: unknown) => onError(error, `${context} (${runId})`))
+    const next = previous.then(task).catch((error: unknown) => {
+      if (context === "append") torn.add(runId)
+      onError(error, `${context} (${runId})`, runId)
+    })
     chains.set(runId, next)
     void next.then(() => {
       if (chains.get(runId) === next) chains.delete(runId)
@@ -293,7 +298,8 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
       return chain(
         event.runId,
         async () => {
-          await appendFile(path.join(runDirectory(event.runId), UNITS_FILE), `${JSON.stringify(event)}\n`, "utf8")
+          const lead = torn.delete(event.runId) ? "\n" : ""
+          await appendFile(path.join(runDirectory(event.runId), UNITS_FILE), `${lead}${JSON.stringify(event)}\n`, "utf8")
         },
         "append",
       )

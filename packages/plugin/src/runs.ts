@@ -356,6 +356,7 @@ export function createRunStore(location: string): RunStore {
       }
       case "unit.upsert": {
         run = requireRun(change.runId)
+        if (isTerminal(run.status)) return cloneRun(run) // a finished Run's Units are final
         const unit = cloneUnit(change.unit)
         const index = run.units.findIndex((candidate) => candidate.unitId === unit.unitId)
         if (index === -1) run.units.push(unit)
@@ -368,6 +369,7 @@ export function createRunStore(location: string): RunStore {
       }
       case "interaction.pending": {
         run = requireRun(change.runId)
+        if (isTerminal(run.status)) return cloneRun(run)
         const interaction = clonePendingInteraction(change.interaction)
         if (interaction.phase === null) interaction.phase = run.currentPhase
         const index = run.interactions.findIndex((candidate) => candidate.interactionId === interaction.interactionId)

@@ -37,10 +37,12 @@ export interface EngineState {
   /** Output tokens of completed Units — what `ctx.budget.spent()` reports. */
   tokensSpent: number
   usage: Usage
+  /** Units started and not yet settled — including ones the script never awaited. */
+  inflight: Set<Promise<unknown>>
 }
 
 export function createEngineState(): EngineState {
-  return { logs: [], phases: [], currentPhase: null, errors: [], unitCount: 0, tokensSpent: 0, usage: emptyUsage() }
+  return { logs: [], phases: [], currentPhase: null, errors: [], unitCount: 0, tokensSpent: 0, usage: emptyUsage(), inflight: new Set() }
 }
 
 export interface RunLimits {
@@ -163,7 +165,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     }
   }
 
-  const agent = (async (prompt: string, opts: AgentOpts<z.ZodType> = {}) => {
+  const runOne = async (prompt: string, opts: AgentOpts<z.ZodType> = {}) => {
     state.unitCount += 1
     const ordinal = state.unitCount
     const unitId = crypto.randomUUID()
@@ -317,6 +319,13 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
       }
       throw err
     }
+  }
+
+  const agent = ((prompt: string, opts?: AgentOpts<z.ZodType>) => {
+    const task = runOne(prompt, opts)
+    state.inflight.add(task)
+    task.finally(() => state.inflight.delete(task)).catch(() => {})
+    return task
   }) as WorkflowContext<A>["agent"]
 
   const checkItems = (count: number, what: string) => {

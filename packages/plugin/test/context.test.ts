@@ -276,6 +276,7 @@ describe("audit regressions — a Unit never outlives its stop, and never throws
     const pending = ctx.agent("x")
     setTimeout(() => controller.abort(), 5)
     expect(await pending).toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, 40)) // the session appears later; it is stopped then
     expect(host.interrupts).toEqual(["ses_fake_1"])
     expect(host.prompts).toHaveLength(0)
   })
@@ -364,5 +365,29 @@ describe("audit round 2 — runner setup and restarts", () => {
     await host.session.interrupt({ sessionID: "ses_fake_1" })
     expect(await pending).toBeNull()
     expect(state.errors[0]?.error).toContain("restarted more than 5 times")
+  })
+})
+
+describe("audit round 3 — deadlines cover every step", () => {
+  test("the Unit timeout covers a slow session create", async () => {
+    const { ctx, host, state } = makeCtx({ createDelayMs: 80 })
+    expect(await ctx.agent("x", { timeoutMs: 20 })).toBeNull()
+    expect(state.errors[0]?.error).toContain("timeout while its session was being created")
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(host.interrupts).toEqual(["ses_fake_1"])
+  })
+
+  test("a hung extraction honours the Unit timeout", async () => {
+    const { ctx, state } = makeCtx({ reply: { text: "no json" }, generate: () => new Promise<string>(() => {}) })
+    expect(await ctx.agent("x", { schema: z.object({ n: z.number() }), retries: 0, timeoutMs: 30 })).toBeNull()
+    expect(state.errors[0]?.error).toContain("30ms timeout")
+  })
+
+  test("a turn is active only between admission and settling", async () => {
+    const { ctx, index } = makeCtx({ reply: { hang: true } })
+    const pending = ctx.agent("x", { timeoutMs: 40 })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(index.get("ses_fake_1")?.turnActive).toBe(true)
+    await pending
   })
 })

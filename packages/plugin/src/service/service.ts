@@ -465,6 +465,9 @@ export class WorkflowService {
     if (!binding || binding.settled) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is not running; resume the Run to re-run finished Units.`)
     if (binding.restarts >= MAX_RESTARTS) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" was already restarted ${MAX_RESTARTS} times.`)
     if (binding.restart) throw new WorkflowProtocolError("conflict", `Unit "${unitId}" is already restarting.`)
+    if (!binding.turnActive) {
+      throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is finishing its turn; a restart only takes effect while it is working. Try again, or resume the Run later.`, { retryable: true })
+    }
     binding.restart = true
     await this.deps.host.session.interrupt({ sessionID: binding.sessionID })
     this.deps.store.apply({ type: "run.log", runId, value: `restarted a Unit in its own session`, kind: "engine", unitId })

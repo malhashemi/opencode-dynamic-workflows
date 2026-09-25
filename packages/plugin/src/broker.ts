@@ -223,8 +223,6 @@ export function createBroker(options: BrokerOptions): Broker {
       console.warn(`[workflow] permission reply failed: ${error instanceof Error ? error.message : String(error)}`)
       return false
     }
-    // Released while an allow was on its way: the Unit is gone, so take the permission back.
-    if (waiter.released && decision !== "reject") rejectNative(request.sessionID, request.requestID, "The workflow Unit ended.")
     permissions.delete(waiter.interaction.permission.requestID)
     finish(interactionId, { answers, by: "human", outcome: decision === "reject" ? "rejected" : "answered" })
     return true

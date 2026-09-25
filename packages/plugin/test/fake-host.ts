@@ -43,7 +43,7 @@ export interface FakeHostOptions {
   /** Steps (model requests) each prompt takes — drives the step guard via the index. */
   stepsPerPrompt?: number
   /** Extraction reply for `generateText`; absent ⇒ no extraction support. */
-  generate?: (prompt: string) => string
+  generate?: (prompt: string) => string | Promise<string>
 }
 
 export interface PromptCall {
@@ -238,7 +238,7 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
       ? {
           async generateText(input: { prompt: string }) {
             generates.push(input.prompt)
-            return { text: options.generate!(input.prompt) }
+            return { text: await options.generate!(input.prompt) }
           },
         }
       : {}),

@@ -12,9 +12,12 @@ import { createEngineState, createWorkflowContext, type ReplayPlan, type RunLimi
 import type { EngineHost, HostPermissionRule } from "./host"
 import type { Journal } from "./journal"
 import type { Run, WorkflowIdentity } from "./protocol"
-import { newRun, type RunStore } from "./runs"
+import { isTerminal, newRun, type RunStore } from "./runs"
 import type { UnitIndex } from "./units"
 import type { DefineWorkflowConfig, WorkflowMeta } from "./workflow"
+
+/** How long a Run waits for Units it did not await to stop, after `run` returned. */
+const STRAY_DRAIN_MS = 10_000
 
 /** No default per-Unit timeout: a deadline is opt-in (meta.unitTimeout, the Run, or agent({ timeoutMs })). */
 export function resolveUnitTimeout(fromRun: number | undefined, fromMeta: number | undefined): number | undefined {
@@ -240,6 +243,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         onLog: (message) => store.apply({ type: "run.log", runId: input.runId, value: message }),
         onPhase: (title) => store.apply({ type: "run.phase", runId: input.runId, value: title }),
         onUnit: (unit) => {
+          if (isTerminal(store.get(input.runId)?.status ?? "failed")) return
           store.apply({ type: "unit.upsert", runId: input.runId, unit })
           if (unit.endedAt !== null) {
             // An ended Unit (done, failed, stopped, timed out) can no longer be allowed or asked anything.
@@ -264,6 +268,16 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     failure ??= error instanceof Error ? error.message : String(error)
     throw error
   } finally {
+    if (state.inflight.size > 0) {
+      // `run` returned while Units it never awaited were still going: they belong to this Run, so they stop with it
+      // and settle BEFORE it ends (nothing may change a Run after run.ended).
+      const stray = state.inflight.size
+      if (!signal.aborted) {
+        store.apply({ type: "run.log", runId: input.runId, value: `stopping ${stray} Unit(s) the script did not await`, kind: "engine" })
+        stopController.abort(new Error("the Run ended"))
+      }
+      await Promise.race([Promise.allSettled([...state.inflight]), new Promise((resolve) => setTimeout(resolve, STRAY_DRAIN_MS))])
+    }
     input.broker.releaseRun(input.runId)
     let current = store.get(input.runId)
     if (current && (current.status === "running" || current.status === "queued")) {
