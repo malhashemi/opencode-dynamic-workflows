@@ -3,20 +3,13 @@
 ## 0.1.0 (2026-09-26)
 
 
-### ⚠ BREAKING CHANGES
-
-* release setup; drop V1 compatibility; fix the minified TUI crash
-* publish as @malhashemi/opencode-dynamic-workflows; run capabilities on Windows
-* 5 Units per Run and 5 Runs at once by default
-* port the engine to OpenCode V2 (protocol v1, service, RPC, gateway)
-
 ### Features
 
 * 5 Units per Run and 5 Runs at once by default ([1b692f6](https://github.com/malhashemi/opencode-dynamic-workflows/commit/1b692f67c6d3504f3ea1ca88228933573fb27969))
 * background notifications, cross-Run limits, nested Workflows, worktree isolation, transcripts ([9612afe](https://github.com/malhashemi/opencode-dynamic-workflows/commit/9612afe77a47b696d7c41a664d553172ce4fafc3))
 * port the engine to OpenCode V2 (protocol v1, service, RPC, gateway) ([9f133ea](https://github.com/malhashemi/opencode-dynamic-workflows/commit/9f133eae123d533fd142dbbc022bdf4a83f3f050))
 * run defaulted-args Workflows with no args; dogfooding guide ([6764027](https://github.com/malhashemi/opencode-dynamic-workflows/commit/676402709a97c60094d6063c98b8411b91acfcfb))
-* script capabilities, authoring aliases, protocol docs and examples ([f1a8e9c](https://github.com/malhashemi/opencode-dynamic-workflows/commit/f1a8e9cc75d15bf9ee5130e0f064b438aebfe0e0))
+* script capabilities, protocol docs and examples ([f1a8e9c](https://github.com/malhashemi/opencode-dynamic-workflows/commit/f1a8e9cc75d15bf9ee5130e0f064b438aebfe0e0))
 * ship the dynamic-workflows authoring skill; shorter tool descriptions ([0f2c748](https://github.com/malhashemi/opencode-dynamic-workflows/commit/0f2c74894363b0e2f2c74ef85874594b46ee9953))
 * **tui:** the workflows TUI plugin, packaging and acceptance ([45aae3e](https://github.com/malhashemi/opencode-dynamic-workflows/commit/45aae3e5409566de401f9a2117a02b53f534caf0))
 * **web:** the workflows web app, served by the gateway ([6a1301b](https://github.com/malhashemi/opencode-dynamic-workflows/commit/6a1301baf5123a73b6985a5ae8f8bcd5e9e9b9b2))
