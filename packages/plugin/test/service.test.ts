@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -14,19 +15,21 @@ import { createFakeHost } from "./fake-host"
 const project = await mkdtemp(path.join(os.tmpdir(), "wf-service-"))
 afterAll(() => rm(project, { recursive: true, force: true }))
 
-function service(options: { approved?: boolean } = {}) {
+function service(options: { approved?: boolean; attached?: boolean; location?: string } = {}) {
   const index = createUnitIndex()
-  const store = createRunStore(project)
-  const journal = createJournal(journalRoot(project), { onError: () => {} })
+  const location = options.location ?? project
+  const store = createRunStore(location)
+  const journal = createJournal(journalRoot(location), { onError: () => {} })
   return {
     journal,
+    store,
     service: new WorkflowService({
-      location: project,
+      location,
       host: createFakeHost(index),
       index,
       store,
       journal,
-      broker: createBroker({ store, attached: () => false }),
+      broker: createBroker({ store, attached: () => options.attached === true }),
       config: DEFAULT_CONFIG,
       instance: "test",
       opencodeVersion: "2.0.16",
@@ -76,6 +79,61 @@ describe("inline source runs only after approval", () => {
     expect(output?.result).toBe("ran")
     expect(run.workflow.name).toBe("marker")
     expect(run.phases).toEqual(["only"])
+  })
+})
+
+describe("saving inline source needs the same approval as running it", () => {
+  const made: string[] = []
+  afterAll(() => Promise.all(made.map((dir) => rm(dir, { recursive: true, force: true }))))
+  const fresh = async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "wf-save-"))
+    made.push(dir)
+    return dir
+  }
+  const saved = (location: string, name: string) =>
+    existsSync(path.join(location, ".opencode", "workflows", `${name}.ts`))
+
+  it("an unapproved save is refused, and the script neither runs nor is written", async () => {
+    const location = await fresh()
+    const { service: svc } = service({ location })
+    await expect(svc.saveInline(sideEffect("wfSaveRefused"), "kept", "p")).rejects.toThrow("no one approved saving")
+    expect(marked("wfSaveRefused")).toBe(false)
+    expect(saved(location, "kept")).toBe(false)
+  })
+
+  it("a project that allows inline Workflows saves at once", async () => {
+    const location = await fresh()
+    const { service: svc } = service({ location, approved: true })
+    const result = await svc.saveInline(sideEffect("wfSaveAllowed"), "kept", "p")
+    expect(result.key).toBe("marker")
+    expect(saved(location, "kept")).toBe(true)
+  })
+
+  it("save_run of a refused Run asks again instead of saving the refused script", async () => {
+    const location = await fresh()
+    const { service: svc } = service({ location })
+    const started = await svc.startRun({ source: sideEffect("wfSaveRunRefused"), parentSessionID: "p" })
+    await started.done
+    await expect(svc.saveRun(started.runId, "kept")).rejects.toThrow("no one approved saving")
+    expect(marked("wfSaveRunRefused")).toBe(false)
+    expect(saved(location, "kept")).toBe(false)
+  })
+
+  it("save_run of a Run the person approved saves without asking again", async () => {
+    const location = await fresh()
+    const { service: svc, store } = service({ location, attached: true })
+    const started = await svc.startRun({ source: sideEffect("wfSaveRunApproved"), parentSessionID: "p" })
+    let pending = store.get(started.runId)?.interactions[0]
+    for (let tries = 0; !pending && tries < 50; tries++) {
+      await Bun.sleep(10)
+      pending = store.get(started.runId)?.interactions[0]
+    }
+    expect(pending?.approval?.action).toBe("run")
+    await svc.replyInteraction(started.runId, pending!.interactionId, [["Run once"]])
+    await started.done
+    const result = await svc.saveRun(started.runId, "kept")
+    expect(result.key).toBe("marker")
+    expect(saved(location, "kept")).toBe(true)
   })
 })
 

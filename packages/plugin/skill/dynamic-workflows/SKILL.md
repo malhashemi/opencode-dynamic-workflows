@@ -277,7 +277,7 @@ finder pool, 3–5 verifiers per finding, a synthesis stage.
 
 - `workflow_inline({ source, args })` runs a script you just wrote; the person approves inline code before it runs.
 - `workflow_inline({ source, save: "team/review" })` saves it as a durable Workflow (`.opencode/workflows/team/review.ts`)
-  instead. Its key is `team:<meta.name>`; `workflow({ name: key, args })` then runs it without approval, and the key
+  instead; the person approves the save the same way. Its key is `team:<meta.name>`; `workflow({ name: key, args })` then runs it without approval, and the key
   (with `/` for `:`) becomes a command. `workflow({ list: true })` shows the saved ones.
 - `background: true` returns at once with a run id. When the Run ends, a notification with its summary and a
   result preview arrives in your session — continue other work meanwhile instead of polling

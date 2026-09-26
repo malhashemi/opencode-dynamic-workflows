@@ -401,7 +401,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       }
     try {
       if (typeof input.save === "string") {
-        const saved = await service.promote(source, input.save)
+        const saved = await service.saveInline(source, input.save, tc.sessionID, tc.signal)
         return {
           content: `Saved as durable Workflow "${saved.key}" at ${saved.path}. Run it with workflow({ name: "${saved.key}", args }).`,
         }

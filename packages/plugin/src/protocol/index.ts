@@ -179,6 +179,10 @@ export const PermissionDetail = z.object({
 export type PermissionDetail = z.infer<typeof PermissionDetail>
 
 export const ApprovalDetail = z.object({
+  /** `run`: run the source now. `save`: save it as a durable Workflow, which later runs without approval. */
+  action: z.enum(["run", "save"]),
+  /** For `save`: the file it would be written to. */
+  target: z.string().nullable(),
   sha256: z.string(),
   bytes: z.number(),
   /** The whole inline source: a person reads all of it before the code runs. */

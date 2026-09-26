@@ -71,7 +71,10 @@ export interface Broker {
   }): void
   /** The host reports a native form replied or cancelled. */
   formResolved(formID: string, answers: string[][] | null): void
-  /** Inline-run approval. Resolves to the decision; headless resolves at once to `null` (no one to ask). */
+  /**
+   * Approval of inline source, to run it (`detail.action: "run"`) or to save it as a durable Workflow (`"save"`).
+   * Resolves to the decision; headless resolves at once to `null` (no one to ask).
+   */
   approval(input: {
     runId: string
     sessionID: string
@@ -129,6 +132,10 @@ const APPROVAL_OPTIONS = [
   { label: "Run once", description: "Run this inline Workflow now." },
   { label: "Always for this project", description: "Run inline Workflows in this project without asking." },
   { label: "Reject", description: "Do not run it." },
+]
+const SAVE_OPTIONS = [
+  { label: "Save", description: "Save it as a durable Workflow. It then runs by name without approval." },
+  { label: "Reject", description: "Do not save it." },
 ]
 
 interface Waiter {
@@ -441,15 +448,26 @@ export function createBroker(options: BrokerOptions): Broker {
         kind: "approval",
         origin: "engine",
         questions: [
-          {
-            header: "Run inline Workflow?",
-            prompt:
-              `A model wants to run an inline Workflow (${input.detail.bytes} bytes, sha256 ${input.detail.sha256.slice(0, 12)}). ` +
-              "Inline Workflows run with your permissions inside the OpenCode service.",
-            options: APPROVAL_OPTIONS.map((option) => ({ ...option })),
-            multiple: false,
-            custom: false,
-          },
+          input.detail.action === "save"
+            ? {
+                header: "Save inline Workflow?",
+                prompt:
+                  `A model wants to save an inline Workflow as ${input.detail.target ?? "a durable Workflow"} ` +
+                  `(${input.detail.bytes} bytes, sha256 ${input.detail.sha256.slice(0, 12)}). ` +
+                  "A saved Workflow runs by name, without approval, with your permissions.",
+                options: SAVE_OPTIONS.map((option) => ({ ...option })),
+                multiple: false,
+                custom: false,
+              }
+            : {
+                header: "Run inline Workflow?",
+                prompt:
+                  `A model wants to run an inline Workflow (${input.detail.bytes} bytes, sha256 ${input.detail.sha256.slice(0, 12)}). ` +
+                  "Inline Workflows run with your permissions inside the OpenCode service.",
+                options: APPROVAL_OPTIONS.map((option) => ({ ...option })),
+                multiple: false,
+                custom: false,
+              },
         ],
         approval: { ...input.detail },
         graceEndsAt: null,
@@ -463,7 +481,7 @@ export function createBroker(options: BrokerOptions): Broker {
         onGrace: () => ({ answers: null, outcome: "cancelled" }),
       })
       const choice = result.answers?.[0]?.[0]
-      if (choice === "Run once") return "once"
+      if (choice === "Run once" || choice === "Save") return "once"
       if (choice === "Always for this project") return "project"
       if (choice === "Reject") return "reject"
       return null

@@ -612,27 +612,37 @@ export class WorkflowService {
     if (!run || isTerminal(run.status)) return
     this.deps.store.apply({ type: "run.log", runId, value: reason, kind: "engine" })
     const current = this.deps.store.get(runId)!
-    const patch: Partial<Run> = { status, endedAt: Date.now(), error: reason }
+    const patch: Partial<Run> = { status, endedAt: Date.now(), ...(status === "succeeded" ? {} : { error: reason }) }
     await this.deps.journal.finish({ ...current, ...patch, revision: current.revision + 1 }, null)
     if (!isTerminal(this.deps.store.get(runId)?.status ?? "failed"))
       this.deps.store.apply({ type: "run.ended", runId, patch })
   }
 
-  /** The inline-run gate: project approval, plugin policy, or a person — never silent. */
+  /** Plugin policy and project approval: `true` passes, a string refuses, `null` means a person must decide. */
+  private async inlineGate(): Promise<true | string | null> {
+    const policy = this.deps.config.inline
+    if (policy === "allow") return true
+    if (policy === "deny") return 'inline Workflows are disabled for this project (plugin option inline: "deny")'
+    if (await this.deps.approvals.get()) return true
+    return null
+  }
+
+  /** The inline gate: project approval, plugin policy, or a person — never silent. */
   private async approveInline(
     runId: string,
     source: string,
     sessionID: string,
     signal: AbortSignal,
+    request: { action: "run" | "save"; target: string | null } = { action: "run", target: null },
   ): Promise<true | string> {
-    const policy = this.deps.config.inline
-    if (policy === "allow") return true
-    if (policy === "deny") return 'inline Workflows are disabled for this project (plugin option inline: "deny")'
-    if (await this.deps.approvals.get()) return true
+    const gate = await this.inlineGate()
+    if (gate !== null) return gate
     const verdict = await this.deps.broker.approval({
       runId,
       sessionID,
       detail: {
+        action: request.action,
+        target: request.target,
         sha256: sha256(source),
         bytes: Buffer.byteLength(source),
         source,
@@ -645,10 +655,11 @@ export class WorkflowService {
       await this.deps.approvals.set()
       return true
     }
-    if (verdict === "reject") return "the inline Workflow was rejected by the user"
+    const what = request.action === "save" ? "saving the inline Workflow" : "the inline Workflow"
+    if (verdict === "reject") return `${what} was rejected by the user`
     return signal.aborted
       ? "stopped before it started"
-      : 'no one approved the inline Workflow (no workflow surface is attached). Open the TUI or the web app and retry, approve inline runs for this project, or set the plugin option inline: "allow".'
+      : `no one approved ${what} (no workflow surface is attached). Open the TUI or the web app and retry, approve inline runs for this project, or set the plugin option inline: "allow".`
   }
 
   stopRun(runId: string, reason = "stopped by the user"): void {
@@ -794,10 +805,97 @@ export class WorkflowService {
         `${record.run.workflow.key ?? record.run.workflow.name} is already a durable Workflow.`,
       )
     }
-    return this.promote(record.source, name ?? record.run.workflow.name)
+    const save = name ?? record.run.workflow.name
+    // A durable Workflow's source is already trusted; inline source that a person approved to run (this exact
+    // text) saves without asking again. Anything else — a refused Run, say — asks, as a new save does.
+    const approvedBefore =
+      record.run.workflow.provenance === "durable" ||
+      record.run.resolved.some(
+        (interaction) =>
+          interaction.kind === "approval" &&
+          interaction.approval?.action === "run" &&
+          interaction.approval.sha256 === sha256(record.source!) &&
+          ["Run once", "Always for this project"].includes(interaction.answers[0]?.[0] ?? ""),
+      )
+    if (approvedBefore) return this.writeDurable(record.source, this.saveTarget(save))
+    return this.saveInline(record.source, save, record.run.parentSessionID)
   }
 
-  async promote(source: string, save: string): Promise<{ key: string; path: string }> {
+  /**
+   * Save inline source as a durable Workflow (`workflow_inline({ save })`). A saved Workflow later runs by name with
+   * no approval, so saving needs the same approval as running, and the source is not loaded (its code does not
+   * run) before it is approved. The request is held by a queued Run that ends when the save is decided.
+   */
+  async saveInline(
+    source: string,
+    save: string,
+    parentSessionID: string,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<{ key: string; path: string }> {
+    const target = this.saveTarget(save)
+    const gate = await this.inlineGate()
+    if (typeof gate === "string") throw new WorkflowProtocolError("forbidden", gate)
+    if (gate === true) return this.writeDurable(source, target)
+
+    const runId = crypto.randomUUID()
+    const store = this.deps.store
+    const relative = path.relative(this.deps.location, target)
+    store.create(
+      newRun({
+        runId,
+        workflow: { key: null, name: `save ${save}`, description: `Save as ${relative}`, provenance: "inline" },
+        location: this.deps.location,
+        parentSessionID,
+        phases: [],
+        background: false,
+        resumeOf: null,
+        status: "queued",
+      }),
+    )
+    await this.deps.journal.begin(store.get(runId)!, { source, args: null, instance: this.deps.instance })
+    const stop = new AbortController()
+    this.live.set(runId, { stop: (reason) => stop.abort(new Error(reason ?? "stopped")), units: new Map() })
+    try {
+      const verdict = await this.approveInline(runId, source, parentSessionID, AbortSignal.any([signal, stop.signal]), {
+        action: "save",
+        target: relative,
+      })
+      if (verdict !== true) {
+        await this.endQueued(runId, verdict)
+        throw new WorkflowProtocolError("forbidden", verdict)
+      }
+      try {
+        const saved = await this.writeDurable(source, target)
+        await this.endQueued(runId, `saved as "${saved.key}" at ${relative}`, "succeeded")
+        return saved
+      } catch (error) {
+        await this.endQueued(runId, error instanceof Error ? error.message : String(error))
+        throw error
+      }
+    } finally {
+      this.live.delete(runId)
+    }
+  }
+
+  /** Where a save name lands, checked without touching the source. */
+  private saveTarget(save: string): string {
+    const rel = save.replace(/\.ts$/, "")
+    const root = path.join(this.deps.location, ".opencode", "workflows")
+    const target = path.join(root, `${rel}.ts`)
+    if (!path.resolve(target).startsWith(path.resolve(root) + path.sep)) {
+      throw new WorkflowProtocolError(
+        "invalid_args",
+        `The save name must stay within .opencode/workflows (got ${JSON.stringify(save)}).`,
+      )
+    }
+    if (rel.split(/[/\\]/)[0] === "runs")
+      throw new WorkflowProtocolError("invalid_args", "`runs/` is reserved for the run journal.")
+    if (existsSync(target)) throw new WorkflowProtocolError("conflict", `A Workflow file already exists at ${target}.`)
+    return target
+  }
+
+  /** Load (its code runs) and write an approved or trusted source as a durable Workflow. */
+  private async writeDurable(source: string, target: string): Promise<{ key: string; path: string }> {
     let meta: DefineWorkflowConfig["meta"]
     try {
       meta = (await loadWorkflowConfig(source, this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {})).meta
@@ -807,18 +905,6 @@ export class WorkflowService {
         `The source is not a Workflow: ${error instanceof Error ? error.message : String(error)}`,
       )
     }
-    const rel = save.replace(/\.ts$/, "")
-    const root = path.join(this.deps.location, ".opencode", "workflows")
-    const target = path.join(root, `${rel}.ts`)
-    const resolvedRoot = path.resolve(root)
-    if (!path.resolve(target).startsWith(resolvedRoot + path.sep)) {
-      throw new WorkflowProtocolError(
-        "invalid_args",
-        `The save name must stay within .opencode/workflows (got ${JSON.stringify(save)}).`,
-      )
-    }
-    if (rel.split(/[/\\]/)[0] === "runs")
-      throw new WorkflowProtocolError("invalid_args", "`runs/` is reserved for the run journal.")
     if (existsSync(target)) throw new WorkflowProtocolError("conflict", `A Workflow file already exists at ${target}.`)
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, source, "utf8")
