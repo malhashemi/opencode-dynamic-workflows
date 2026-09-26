@@ -68,7 +68,7 @@ describe("loader", () => {
       expect(loaded.file.endsWith("workflow.js")).toBe(true)
       expect(await loaded.config.run({} as never)).toBe(15)
       const bundled = await Bun.file(loaded.file).text()
-      expect(bundled).toContain(AUTHORING_PATH)
+      expect(bundled).toContain(AUTHORING_PATH.replaceAll("\\", "/"))
     } finally {
       await rm(project, { recursive: true, force: true })
     }
