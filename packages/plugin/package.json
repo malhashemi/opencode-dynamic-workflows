@@ -1,6 +1,6 @@
 {
   "name": "@malhashemi/opencode-dynamic-workflows",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Deterministic multi-agent Workflows for OpenCode: TypeScript scripts that fan work out to subagents, with typed results, a live TUI panel, a web app and a versioned protocol.",
   "keywords": [
     "agents",
