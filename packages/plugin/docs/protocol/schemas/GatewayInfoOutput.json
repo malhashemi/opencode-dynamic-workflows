@@ -1,0 +1,195 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/GatewayInfoOutput.json",
+  "title": "GatewayInfoOutput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "type": "number",
+      "const": 1
+    },
+    "plugin": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string"
+          },
+          "info": {
+            "type": "object",
+            "properties": {
+              "protocol": {
+                "type": "number",
+                "const": 1
+              },
+              "plugin": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version"
+                ],
+                "additionalProperties": false
+              },
+              "opencode": {
+                "type": "string"
+              },
+              "location": {
+                "type": "string"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "maxUnits": {
+                    "type": "number"
+                  },
+                  "maxItemsPerCall": {
+                    "type": "number"
+                  },
+                  "maxUnitSteps": {
+                    "type": "number"
+                  },
+                  "maxConcurrentUnits": {
+                    "type": "number"
+                  },
+                  "maxConcurrentRuns": {
+                    "type": "number"
+                  },
+                  "providerConcurrency": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "required": [
+                  "maxUnits",
+                  "maxItemsPerCall",
+                  "maxUnitSteps"
+                ],
+                "additionalProperties": false
+              },
+              "gateway": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "protocol",
+              "plugin",
+              "opencode",
+              "location",
+              "capabilities",
+              "limits",
+              "gateway"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "location",
+          "info"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "device": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "scopes"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loopback": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "device",
+        "loopback"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "protocol",
+    "plugin",
+    "locations",
+    "auth"
+  ],
+  "additionalProperties": false
+}

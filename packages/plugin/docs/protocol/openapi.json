@@ -1,0 +1,3718 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OpenCode dynamic workflows: Gateway API",
+    "version": "1",
+    "description": "The HTTP + SSE face of the workflow protocol: start and follow Runs, answer questions and approvals, read\nresults and transcripts. The same resources and commands are also OpenCode plugin RPC methods\n(`POST /api/rpc/workflow/<method>` on the OpenCode server), which an OpenCode client can use with its\nexisting credentials. Guide: https://github.com/malhashemi/opencode-dynamic-workflows/blob/main/docs/integrating.md\n\nWithin protocol v1 changes are additive only: new optional fields, event types and error codes. Ignore\nwhat you do not know.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4320",
+      "description": "The default local Gateway (the next free port if taken)"
+    }
+  ],
+  "security": [
+    {},
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/v1/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "summary": "This document",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI document",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/info": {
+      "get": {
+        "operationId": "info",
+        "summary": "Versions, capabilities and limits of every location this process serves, and who the caller is",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayInfoOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "operationId": "events",
+        "summary": "The event stream of one location (Server-Sent Events)",
+        "description": "Each SSE message has `id: <epoch>.<seq>`, `event: <type>` and `data: <ProtocolEvent>` (JSON).\nReconnect with the `Last-Event-ID` header (or `?after=<epoch>.<seq>`) to receive what was missed; when the\ngap cannot be filled (the service restarted, or the buffer moved on) a `resync.required` event arrives:\nre-read `GET /v1/runs` and the Runs you show.\n\nAn open stream also marks the location as **attached**: while one is open, questions and inline-Workflow\napprovals wait for an answer instead of being refused or taking their fallback.",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "location",
+            "in": "query",
+            "required": false,
+            "description": "The project directory (an OpenCode location) this call is for. Needed when the OpenCode process serves more than one; see `GET /v1/info`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Resume after this event id (`<epoch>.<seq>`); the `Last-Event-ID` header does the same.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An endless `text/event-stream`; every `data` line is a ProtocolEvent",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolEvent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflows": {
+      "get": {
+        "operationId": "listWorkflows",
+        "summary": "The durable (saved) Workflows of a location, with each one's args JSON Schema",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "location",
+            "in": "query",
+            "required": false,
+            "description": "The project directory (an OpenCode location) this call is for. Needed when the OpenCode process serves more than one; see `GET /v1/info`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkflowsOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "summary": "Runs, newest first (live and journaled)",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "location",
+            "in": "query",
+            "required": false,
+            "description": "The project directory (an OpenCode location) this call is for. Needed when the OpenCode process serves more than one; see `GET /v1/info`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Only Runs in these states (repeat the parameter for several).",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "stopped",
+                  "interrupted"
+                ]
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parentSessionID",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Only Runs started at or after this time (ms since the epoch).",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRunsOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_args: the request does not match the schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "startRun",
+        "summary": "Start a Run: a durable Workflow by `name`, or inline `source`",
+        "description": "Returns at once; follow the Run on the event stream. Inline source needs approval unless the project allows it (plugin option `inline`); the approval is a pending interaction on the Run.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "location",
+            "in": "query",
+            "required": false,
+            "description": "The project directory (an OpenCode location) this call is for. Needed when the OpenCode process serves more than one; see `GET /v1/info`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted: the Run is starting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartRunOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_args: the request does not match the schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}": {
+      "get": {
+        "operationId": "getRun",
+        "summary": "A Run in full (Units' outputs may be elided; fetch the Unit for the whole value)",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetRunOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/result": {
+      "get": {
+        "operationId": "getResult",
+        "summary": "What the Workflow returned",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetResultOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/activity": {
+      "get": {
+        "operationId": "getActivity",
+        "summary": "The Run's activity: logs, phases, engine and capability lines",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/units/{unitId}": {
+      "get": {
+        "operationId": "getUnit",
+        "summary": "One Unit with its whole output",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "in": "path",
+            "required": true,
+            "description": "The Unit's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetUnitOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/units/{unitId}/transcript": {
+      "get": {
+        "operationId": "getTranscript",
+        "summary": "The Unit's session: messages, reasoning and tool calls",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "in": "path",
+            "required": true,
+            "description": "The Unit's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetTranscriptOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/stop": {
+      "post": {
+        "operationId": "stopRun",
+        "summary": "Stop a Run (running Units are interrupted)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/resume": {
+      "post": {
+        "operationId": "resumeRun",
+        "summary": "Resume a finished Run from its journal as a new Run (finished Units replay)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRunBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted: the new Run is starting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartRunOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/save": {
+      "post": {
+        "operationId": "saveRun",
+        "summary": "Save the Run's script as a durable Workflow",
+        "description": "Inline source that no person approved to run needs approval to be saved (a saved Workflow runs without approval): the call waits for it.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveRunBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaveRunOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_args: the request does not match the schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/cleanup": {
+      "post": {
+        "operationId": "cleanupRun",
+        "summary": "Mark a finished Run's Unit sessions for deletion, or record the ones a client deleted",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanupRunBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanupRunOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/units/{unitId}/stop": {
+      "post": {
+        "operationId": "stopUnit",
+        "summary": "Stop one Unit (it resolves to null in the script)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "in": "path",
+            "required": true,
+            "description": "The Unit's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/units/{unitId}/restart": {
+      "post": {
+        "operationId": "restartUnit",
+        "summary": "Restart one Unit in a fresh session",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unitId",
+            "in": "path",
+            "required": true,
+            "description": "The Unit's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/interactions/{interactionId}/reply": {
+      "post": {
+        "operationId": "replyInteraction",
+        "summary": "Answer a pending question, permission request or inline-Workflow approval",
+        "description": "`answers` has one entry per question, each a list of chosen option labels (or free text where the question allows `custom`). An approval's options are `Run once`, `Always for this project` and `Reject` (to save: `Save`, `Reject`).",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "interactionId",
+            "in": "path",
+            "required": true,
+            "description": "The pending interaction's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkOutput"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_args: the request does not match the schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{runId}/interactions/{interactionId}/cancel": {
+      "post": {
+        "operationId": "cancelInteraction",
+        "summary": "Dismiss a pending interaction (a script question takes its fallback; an approval is refused)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "description": "The Run's id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "interactionId",
+            "in": "path",
+            "required": true,
+            "description": "The pending interaction's id.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found: no such Run, Unit, Workflow or route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "conflict or invalid_state: the Run or interaction is not in a state for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/pair": {
+      "post": {
+        "operationId": "pair",
+        "summary": "Exchange a one-use pairing code (from `/workflows pair` in the TUI) for a token",
+        "security": [
+          {}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: a token is missing, unknown or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/pair/local": {
+      "post": {
+        "operationId": "pairLocal",
+        "summary": "A browser on this machine, on the Gateway's own origin, pairs itself",
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairOutput"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: the token lacks the scope, or the origin or host is not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A device token from pairing. `read` scope for remote reads, `control` scope for every action. Tokens never go in URLs."
+      }
+    },
+    "schemas": {
+      "GatewayInfoOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocol": {
+            "type": "number",
+            "const": 1
+          },
+          "plugin": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version"
+            ],
+            "additionalProperties": false
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string"
+                },
+                "info": {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "type": "number",
+                      "const": 1
+                    },
+                    "plugin": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "opencode": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "maxUnits": {
+                          "type": "number"
+                        },
+                        "maxItemsPerCall": {
+                          "type": "number"
+                        },
+                        "maxUnitSteps": {
+                          "type": "number"
+                        },
+                        "maxConcurrentUnits": {
+                          "type": "number"
+                        },
+                        "maxConcurrentRuns": {
+                          "type": "number"
+                        },
+                        "providerConcurrency": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      "required": [
+                        "maxUnits",
+                        "maxItemsPerCall",
+                        "maxUnitSteps"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "gateway": {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "url"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "plugin",
+                    "opencode",
+                    "location",
+                    "capabilities",
+                    "limits",
+                    "gateway"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "location",
+                "info"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "auth": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "scopes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "scopes"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "loopback": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "device",
+              "loopback"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "protocol",
+          "plugin",
+          "locations",
+          "auth"
+        ],
+        "additionalProperties": false
+      },
+      "ListRunsOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "type": "string"
+                },
+                "workflow": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "provenance": {
+                      "type": "string",
+                      "enum": [
+                        "durable",
+                        "inline"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "name",
+                    "description",
+                    "provenance"
+                  ],
+                  "additionalProperties": false
+                },
+                "location": {
+                  "type": "string"
+                },
+                "parentSessionID": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "stopped",
+                    "interrupted"
+                  ]
+                },
+                "waiting": {
+                  "type": "boolean"
+                },
+                "units": {
+                  "type": "number"
+                },
+                "settledUnits": {
+                  "type": "number"
+                },
+                "failedUnits": {
+                  "type": "number"
+                },
+                "phases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "phasesDeclared": {
+                  "type": "boolean"
+                },
+                "currentPhase": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "usage": {
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number"
+                        },
+                        "output": {
+                          "type": "number"
+                        },
+                        "reasoning": {
+                          "type": "number"
+                        },
+                        "cacheRead": {
+                          "type": "number"
+                        },
+                        "cacheWrite": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "input",
+                        "output",
+                        "reasoning",
+                        "cacheRead",
+                        "cacheWrite"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "cost": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "tokens",
+                    "cost"
+                  ],
+                  "additionalProperties": false
+                },
+                "tokensSpent": {
+                  "type": "number"
+                },
+                "startedAt": {
+                  "type": "number"
+                },
+                "endedAt": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "live": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "runId",
+                "workflow",
+                "location",
+                "parentSessionID",
+                "status",
+                "waiting",
+                "units",
+                "settledUnits",
+                "failedUnits",
+                "phases",
+                "phasesDeclared",
+                "currentPhase",
+                "usage",
+                "tokensSpent",
+                "startedAt",
+                "endedAt",
+                "live"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "additionalProperties": false
+      },
+      "GetRunOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "object",
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "workflow": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "provenance": {
+                    "type": "string",
+                    "enum": [
+                      "durable",
+                      "inline"
+                    ]
+                  }
+                },
+                "required": [
+                  "key",
+                  "name",
+                  "description",
+                  "provenance"
+                ],
+                "additionalProperties": false
+              },
+              "location": {
+                "type": "string"
+              },
+              "parentSessionID": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "succeeded",
+                  "failed",
+                  "stopped",
+                  "interrupted"
+                ]
+              },
+              "waiting": {
+                "type": "boolean"
+              },
+              "background": {
+                "type": "boolean"
+              },
+              "phases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "phasesDeclared": {
+                "type": "boolean"
+              },
+              "currentPhase": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "units": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "unitId": {
+                      "type": "string"
+                    },
+                    "runId": {
+                      "type": "string"
+                    },
+                    "ordinal": {
+                      "type": "number"
+                    },
+                    "label": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "subagent": {
+                      "type": "string"
+                    },
+                    "phase": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "running",
+                        "repairing",
+                        "succeeded",
+                        "failed",
+                        "stopped",
+                        "replayed"
+                      ]
+                    },
+                    "sessionID": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "location": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "object",
+                      "properties": {
+                        "requested": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "resolved": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requested",
+                        "resolved"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "schema": {
+                      "type": "boolean"
+                    },
+                    "resultPath": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "text",
+                            "tool",
+                            "text-json",
+                            "extract",
+                            "replay"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "attempts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "turn": {
+                            "type": "number"
+                          },
+                          "path": {
+                            "type": "string",
+                            "enum": [
+                              "text",
+                              "tool",
+                              "text-json",
+                              "extract",
+                              "replay"
+                            ]
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "note": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "turn",
+                          "path",
+                          "ok"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "output": {
+                      "type": "string"
+                    },
+                    "outputElided": {
+                      "type": "boolean"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "tokens": {
+                          "type": "object",
+                          "properties": {
+                            "input": {
+                              "type": "number"
+                            },
+                            "output": {
+                              "type": "number"
+                            },
+                            "reasoning": {
+                              "type": "number"
+                            },
+                            "cacheRead": {
+                              "type": "number"
+                            },
+                            "cacheWrite": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "input",
+                            "output",
+                            "reasoning",
+                            "cacheRead",
+                            "cacheWrite"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "cost": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "tokens",
+                        "cost"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "startedAt": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "endedAt": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "unitId",
+                    "runId",
+                    "ordinal",
+                    "label",
+                    "subagent",
+                    "phase",
+                    "status",
+                    "sessionID",
+                    "location",
+                    "prompt",
+                    "model",
+                    "schema",
+                    "resultPath",
+                    "attempts",
+                    "usage",
+                    "startedAt",
+                    "endedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "logs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "errors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "unit": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "subagent": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "unit",
+                    "prompt",
+                    "subagent",
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "interactions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "interactionId": {
+                      "type": "string"
+                    },
+                    "runId": {
+                      "type": "string"
+                    },
+                    "unitId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "question",
+                        "permission",
+                        "approval"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "enum": [
+                        "script",
+                        "agent",
+                        "permission",
+                        "engine"
+                      ]
+                    },
+                    "sessionID": {
+                      "type": "string"
+                    },
+                    "phase": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "questions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "header": {
+                            "type": "string"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "options": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "label": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "label",
+                                "description"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "multiple": {
+                            "type": "boolean"
+                          },
+                          "custom": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "header",
+                          "prompt",
+                          "options",
+                          "multiple",
+                          "custom"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "permission": {
+                      "type": "object",
+                      "properties": {
+                        "action": {
+                          "type": "string"
+                        },
+                        "resources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "save": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "requestID": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "action",
+                        "resources",
+                        "save",
+                        "requestID"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "approval": {
+                      "type": "object",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "run",
+                            "save"
+                          ]
+                        },
+                        "target": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sha256": {
+                          "type": "string"
+                        },
+                        "bytes": {
+                          "type": "number"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "requestingSessionID": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "action",
+                        "target",
+                        "sha256",
+                        "bytes",
+                        "source",
+                        "requestingSessionID"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "form": {
+                      "type": "object",
+                      "properties": {
+                        "formID": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "formID"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "raisedAt": {
+                      "type": "number"
+                    },
+                    "graceEndsAt": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "interactionId",
+                    "runId",
+                    "unitId",
+                    "kind",
+                    "origin",
+                    "sessionID",
+                    "phase",
+                    "questions",
+                    "raisedAt",
+                    "graceEndsAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "resolved": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "interactionId": {
+                      "type": "string"
+                    },
+                    "runId": {
+                      "type": "string"
+                    },
+                    "unitId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "question",
+                        "permission",
+                        "approval"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "enum": [
+                        "script",
+                        "agent",
+                        "permission",
+                        "engine"
+                      ]
+                    },
+                    "sessionID": {
+                      "type": "string"
+                    },
+                    "phase": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "questions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "header": {
+                            "type": "string"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "options": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "label": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "label",
+                                "description"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "multiple": {
+                            "type": "boolean"
+                          },
+                          "custom": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "header",
+                          "prompt",
+                          "options",
+                          "multiple",
+                          "custom"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "permission": {
+                      "type": "object",
+                      "properties": {
+                        "action": {
+                          "type": "string"
+                        },
+                        "resources": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "save": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "requestID": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "action",
+                        "resources",
+                        "save",
+                        "requestID"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "approval": {
+                      "type": "object",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "run",
+                            "save"
+                          ]
+                        },
+                        "target": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sha256": {
+                          "type": "string"
+                        },
+                        "bytes": {
+                          "type": "number"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "requestingSessionID": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "action",
+                        "target",
+                        "sha256",
+                        "bytes",
+                        "source",
+                        "requestingSessionID"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "form": {
+                      "type": "object",
+                      "properties": {
+                        "formID": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "formID"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "raisedAt": {
+                      "type": "number"
+                    },
+                    "answers": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "by": {
+                      "type": "string",
+                      "enum": [
+                        "human",
+                        "automation"
+                      ]
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "answered",
+                        "rejected",
+                        "cancelled"
+                      ]
+                    },
+                    "resolvedAt": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "interactionId",
+                    "runId",
+                    "unitId",
+                    "kind",
+                    "origin",
+                    "sessionID",
+                    "phase",
+                    "questions",
+                    "raisedAt",
+                    "answers",
+                    "by",
+                    "resolvedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "tokens": {
+                    "type": "object",
+                    "properties": {
+                      "input": {
+                        "type": "number"
+                      },
+                      "output": {
+                        "type": "number"
+                      },
+                      "reasoning": {
+                        "type": "number"
+                      },
+                      "cacheRead": {
+                        "type": "number"
+                      },
+                      "cacheWrite": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "input",
+                      "output",
+                      "reasoning",
+                      "cacheRead",
+                      "cacheWrite"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "cost": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "tokens",
+                  "cost"
+                ],
+                "additionalProperties": false
+              },
+              "tokensSpent": {
+                "type": "number"
+              },
+              "budget": {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "hard": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "total",
+                  "hard"
+                ],
+                "additionalProperties": false
+              },
+              "startedAt": {
+                "type": "number"
+              },
+              "endedAt": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resultPreview": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "resumeOf": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "cleanup": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "pending",
+                  "done"
+                ]
+              },
+              "revision": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "runId",
+              "workflow",
+              "location",
+              "parentSessionID",
+              "status",
+              "waiting",
+              "background",
+              "phases",
+              "phasesDeclared",
+              "currentPhase",
+              "units",
+              "logs",
+              "errors",
+              "interactions",
+              "resolved",
+              "usage",
+              "tokensSpent",
+              "budget",
+              "startedAt",
+              "endedAt",
+              "resultPreview",
+              "resumeOf",
+              "cleanup",
+              "revision"
+            ],
+            "additionalProperties": false
+          },
+          "live": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "live"
+        ],
+        "additionalProperties": false
+      },
+      "GetUnitOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "object",
+            "properties": {
+              "unitId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "ordinal": {
+                "type": "number"
+              },
+              "label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "subagent": {
+                "type": "string"
+              },
+              "phase": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "running",
+                  "repairing",
+                  "succeeded",
+                  "failed",
+                  "stopped",
+                  "replayed"
+                ]
+              },
+              "sessionID": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "location": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "model": {
+                "type": "object",
+                "properties": {
+                  "requested": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "resolved": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "requested",
+                  "resolved"
+                ],
+                "additionalProperties": false
+              },
+              "schema": {
+                "type": "boolean"
+              },
+              "resultPath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "text",
+                      "tool",
+                      "text-json",
+                      "extract",
+                      "replay"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "turn": {
+                      "type": "number"
+                    },
+                    "path": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "tool",
+                        "text-json",
+                        "extract",
+                        "replay"
+                      ]
+                    },
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "turn",
+                    "path",
+                    "ok"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "output": {
+                "type": "string"
+              },
+              "outputElided": {
+                "type": "boolean"
+              },
+              "error": {
+                "type": "string"
+              },
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "tokens": {
+                    "type": "object",
+                    "properties": {
+                      "input": {
+                        "type": "number"
+                      },
+                      "output": {
+                        "type": "number"
+                      },
+                      "reasoning": {
+                        "type": "number"
+                      },
+                      "cacheRead": {
+                        "type": "number"
+                      },
+                      "cacheWrite": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "input",
+                      "output",
+                      "reasoning",
+                      "cacheRead",
+                      "cacheWrite"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "cost": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "tokens",
+                  "cost"
+                ],
+                "additionalProperties": false
+              },
+              "startedAt": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "endedAt": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "unitId",
+              "runId",
+              "ordinal",
+              "label",
+              "subagent",
+              "phase",
+              "status",
+              "sessionID",
+              "location",
+              "prompt",
+              "model",
+              "schema",
+              "resultPath",
+              "attempts",
+              "usage",
+              "startedAt",
+              "endedAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "unit"
+        ],
+        "additionalProperties": false
+      },
+      "GetResultOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "stopped",
+              "interrupted"
+            ]
+          },
+          "result": {}
+        },
+        "required": [
+          "runId",
+          "status",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "ActivityOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "log",
+                    "phase",
+                    "engine",
+                    "capability"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "time": {
+                  "type": "number"
+                },
+                "unitId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "message",
+                "time",
+                "unitId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "additionalProperties": false
+      },
+      "GetTranscriptOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sessionID": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant",
+                    "system",
+                    "other"
+                  ]
+                },
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "text",
+                          "reasoning",
+                          "tool",
+                          "other"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "tool": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "input": {
+                            "type": "string"
+                          },
+                          "output": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "error": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "role",
+                "parts",
+                "model",
+                "error"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "clipped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessionID",
+          "messages",
+          "clipped"
+        ],
+        "additionalProperties": false
+      },
+      "ListWorkflowsOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workflows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "whenToUse": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "phases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "title",
+                      "detail"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "args": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {}
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "name",
+                "description",
+                "whenToUse",
+                "phases",
+                "args",
+                "path",
+                "scope"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "collisions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "kept": {
+                  "type": "string"
+                },
+                "shadowed": {
+                  "type": "string"
+                },
+                "sameScope": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "key",
+                "kept",
+                "shadowed",
+                "sameScope"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "error"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "workflows",
+          "collisions",
+          "failures"
+        ],
+        "additionalProperties": false
+      },
+      "StartRunInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "args": {},
+          "parentSessionID": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StartRunOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false
+      },
+      "ResumeRunBody": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "rerunFailed": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SaveRunBody": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SaveRunOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "CleanupRunBody": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CleanupRunOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "number"
+          },
+          "pending": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "deleted",
+          "pending"
+        ],
+        "additionalProperties": false
+      },
+      "ReplyBody": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "additionalProperties": false
+      },
+      "OkOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "PairInput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "PairOutput": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "ProtocolEvent": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocol": {
+            "type": "number",
+            "const": 1
+          },
+          "seq": {
+            "type": "number"
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "time": {
+            "type": "number"
+          },
+          "location": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.started",
+              "run.updated",
+              "run.ended",
+              "unit.updated",
+              "interaction.pending",
+              "interaction.resolved",
+              "activity.appended",
+              "library.changed",
+              "resync.required"
+            ]
+          },
+          "revision": {
+            "type": "number"
+          },
+          "data": {}
+        },
+        "required": [
+          "protocol",
+          "seq",
+          "time",
+          "location",
+          "runId",
+          "type",
+          "revision",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "ProtocolError": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "not_found",
+                  "conflict",
+                  "invalid_args",
+                  "invalid_state",
+                  "unauthorized",
+                  "forbidden",
+                  "rate_limited",
+                  "unsupported",
+                  "internal"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "details": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "retryable"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

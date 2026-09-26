@@ -9,7 +9,9 @@ and third-party tools. It has two transports that carry the same resources, comm
 | Gateway (HTTP + SSE) | the web app, scripts, other machines | `http://127.0.0.1:4320/v1/…` by default (see [security](../security.md)) |
 
 The zod definitions in `src/protocol/index.ts` are the source of truth. The JSON Schemas in
-[`schemas/`](./schemas) are generated from them (`bun run script/protocol-schemas.ts`). TypeScript clients can
+[`schemas/`](./schemas) and the Gateway's [OpenAPI 3.1 document](./openapi.json) (also served at
+`GET /v1/openapi.json`) are generated from them (`bun run script/protocol-schemas.ts`). For a walkthrough, see the
+[integration guide](../../../../docs/integrating.md). TypeScript clients can
 import the types from `@malhashemi/opencode-dynamic-workflows/protocol` and the RPC contract from
 `@malhashemi/opencode-dynamic-workflows/rpc`.
 
@@ -61,6 +63,7 @@ script question back to its fallback, dismisses a Unit's question, and rejects a
 
 | RPC method | Gateway route | Result |
 | --- | --- | --- |
+| (Gateway only) | `GET /v1/openapi.json` | this API as an OpenAPI 3.1 document |
 | `info` | `GET /v1/info` | versions, capabilities, limits, Gateway URL (Gateway: every location) |
 | `listRuns` | `GET /v1/runs?status=&search=&parentSessionID=&since=&limit=&location=` | `{ runs: LibraryEntry[] }` |
 | `getRun` | `GET /v1/runs/:runId` | `{ run, live }` |

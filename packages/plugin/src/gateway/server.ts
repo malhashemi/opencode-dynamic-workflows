@@ -28,6 +28,7 @@ import {
   type ProtocolErrorCode,
   type ProtocolEvent,
 } from "../protocol"
+import { openApiDocument } from "../protocol/openapi"
 import { elideEvent } from "../runs"
 import type { GatewayConfig } from "../service/config"
 import { PLUGIN_NAME, PLUGIN_VERSION, type WorkflowService } from "../service/service"
@@ -404,6 +405,7 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
       const location = url.searchParams.get("location")
 
       if (request.method === "GET") {
+        if (parts[0] === "openapi.json" && parts.length === 1) return json(openApiDocument(), 200, extra)
         if (parts[0] === "info" && parts.length === 1) {
           return json(
             {
