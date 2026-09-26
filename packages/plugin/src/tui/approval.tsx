@@ -3,28 +3,13 @@
  * Built like OpenCode's own permission prompt (a raised panel with a `┃` accent, a `△` header, a darker footer
  * with pill buttons), so it reads as part of OpenCode.
  */
-import { generateSyntax } from "@opencode/theme/tui"
-import type { ScrollBoxRenderable, SyntaxStyle } from "@opentui/core"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, For, onCleanup, Show } from "solid-js"
+import { For, Show } from "solid-js"
 
 import type { PendingInteraction } from "../protocol"
+import { ACCENT_BORDER, useSyntax } from "./ui"
 import type { Wf } from "./views"
-
-/** OpenCode's `SplitBorder`: a heavy left bar, nothing else. */
-export const ACCENT_BORDER = {
-  topLeft: "",
-  bottomLeft: "",
-  vertical: "┃",
-  topRight: "",
-  bottomRight: "",
-  horizontal: " ",
-  bottomT: "",
-  topT: "",
-  cross: "",
-  leftT: "",
-  rightT: "",
-}
 
 export function ApprovalPanel(props: {
   wf: Wf
@@ -50,17 +35,7 @@ export function ApprovalPanel(props: {
     return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`
   }
 
-  // One style per theme; each replaced style is released when the panel goes away.
-  const styles: SyntaxStyle[] = []
-  const syntax = createMemo(() => {
-    // `@opencode/theme` types a different `@opentui/core` release; at run time both are the host's one copy.
-    const style = generateSyntax(theme()) as unknown as SyntaxStyle
-    styles.push(style)
-    return style
-  })
-  onCleanup(() => {
-    for (const style of styles.splice(0)) style.destroy()
-  })
+  const syntax = useSyntax(theme)
 
   const variant = (label: string) => (label === "Reject" ? "destructive" : "primary")
 
@@ -116,6 +91,7 @@ export function ApprovalPanel(props: {
               syntaxStyle={syntax()}
               fg={theme().text.base}
               drawUnstyledText={true}
+              conceal={false}
               wrapMode="word"
             />
           </line_number>
