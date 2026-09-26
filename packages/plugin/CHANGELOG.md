@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.3.0...v0.4.0) (2026-09-26)
+
+
+### Features
+
+* **tui:** a Saved section in /workflows ([81347b3](https://github.com/malhashemi/opencode-dynamic-workflows/commit/81347b3880cd14312b314437a81c279ae50f7c51))
+
+
+### Bug fixes
+
+* **tui:** saved Workflows: defaults, non-object args, one start at a time, fresh list ([297e63c](https://github.com/malhashemi/opencode-dynamic-workflows/commit/297e63ccf4446778b3f98697d671c0ff2fe20527))
+
 ## [0.3.0](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.2.0...v0.3.0) (2026-09-26)
 
 
