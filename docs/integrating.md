@@ -57,7 +57,7 @@ between model-written code and their machine. The choices are `Run once`, `Alway
 
 ```ts
 import { OpenCode } from "@opencode/client"
-import type { PendingInteraction } from "@malhashemi/opencode-dynamic-workflows/protocol"
+import type { PendingInteraction, ProtocolEvent } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { WorkflowRpc } from "@malhashemi/opencode-dynamic-workflows/rpc"
 
 const directory = "/path/to/project"
@@ -65,38 +65,53 @@ const client = OpenCode.make({ baseUrl: "http://127.0.0.1:4096", headers: { "x-o
 const workflow = client.rpc(WorkflowRpc)
 const at = { location: { directory } }
 
+// Your UI: show the interaction (its questions and options; for an approval, the whole `approval.source`) and
+// resolve with the labels the person chose, one list per question.
+declare function askPerson(interaction: PendingInteraction): Promise<string[][]>
+
 // Be attached while your UI is open, so questions and approvals wait for the person. One surface id per window:
 // two windows sharing an id would replace each other's attachment, and one's detach would end both.
 const surface = `my-app-${crypto.randomUUID()}`
 await workflow.attach({ surface, ttlMs: 45_000 }, at)
 const heartbeat = setInterval(() => void workflow.attach({ surface, ttlMs: 45_000 }, at), 20_000)
 
-// Show an interaction to the person, then send their answer (one list of chosen labels per question).
-// The event and the read below can both see the same interaction: answer each one once.
-const answered = new Set<string>()
-const answer = async (runId: string, interaction: PendingInteraction) => {
-  if (answered.has(interaction.interactionId)) return
+let runId: string | null = null
+const early: ProtocolEvent[] = [] // events that arrive before startRun returns the Run's id
+const answered = new Set<string>() // an event and the read below can both see one interaction
+let finished = false
+
+async function answer(interaction: PendingInteraction) {
+  if (!runId || answered.has(interaction.interactionId)) return
   answered.add(interaction.interactionId)
-  await workflow.replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["Quick"]] }, at)
+  const answers = await askPerson(interaction)
+  await workflow.replyInteraction({ runId, interactionId: interaction.interactionId, answers }, at)
 }
 
-// Listen before starting, so nothing the Run asks early is missed.
-let runId: string | null = null
-workflow.events.on("event", async ({ data: event }) => {
-  if (!runId || event.runId !== runId) return
-  if (event.type === "interaction.pending") await answer(runId, event.data as PendingInteraction)
-  if (event.type === "run.ended") {
-    const { result } = await workflow.getResult({ runId }, at)
-    console.log(event.data, result)
-    clearInterval(heartbeat)
-    await workflow.detach({ surface }, at)
-  }
-})
+async function finish() {
+  if (!runId || finished) return
+  finished = true
+  const { status, result } = await workflow.getResult({ runId }, at)
+  console.log(status, result)
+  clearInterval(heartbeat)
+  await workflow.detach({ surface }, at)
+}
+
+async function handle(event: ProtocolEvent) {
+  if (event.runId !== runId) return
+  if (event.type === "interaction.pending") await answer(event.data as PendingInteraction)
+  if (event.type === "run.ended") await finish()
+}
+
+// Listen before starting, and hold what arrives before the Run's id is known.
+workflow.events.on("event", ({ data }) => void (runId ? handle(data) : early.push(data)))
 
 const { workflows } = await workflow.listWorkflows({}, at) // each with its args JSON Schema
 runId = (await workflow.startRun({ name: workflows[0]!.key, args: {} }, at)).runId
-// Anything that became pending before `runId` was known: read it from the Run.
-for (const interaction of (await workflow.getRun({ runId }, at)).run.interactions) await answer(runId, interaction)
+for (const event of early.splice(0)) await handle(event)
+// Then reconcile with the Run itself: interactions already pending, or a Run that already ended.
+const { run } = await workflow.getRun({ runId }, at)
+for (const interaction of run.interactions) await answer(interaction)
+if (run.status !== "queued" && run.status !== "running") await finish()
 ```
 
 Without the typed client, a plugin RPC call is a plain POST to the OpenCode server: the input goes in `input`,
