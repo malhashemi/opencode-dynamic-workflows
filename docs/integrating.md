@@ -73,7 +73,12 @@ declare function askPerson(interaction: PendingInteraction): Promise<string[][]>
 // two windows sharing an id would replace each other's attachment, and one's detach would end both.
 const surface = `my-app-${crypto.randomUUID()}`
 await workflow.attach({ surface, ttlMs: 45_000 }, at)
-const heartbeat = setInterval(() => void workflow.attach({ surface, ttlMs: 45_000 }, at), 20_000)
+// The heartbeat also re-reads the Run, so a dropped event (a question, the Run's end) is caught within 20 s.
+// For exact recovery, track each event's `seq` and `epoch` and use `eventsSince` (see "Events worth handling").
+const heartbeat = setInterval(() => {
+  void workflow.attach({ surface, ttlMs: 45_000 }, at)
+  void reconcile()
+}, 20_000)
 
 let runId: string | null = null
 const early: ProtocolEvent[] = [] // events that arrive before startRun returns the Run's id
@@ -96,6 +101,14 @@ async function finish() {
   await workflow.detach({ surface }, at)
 }
 
+// Answer what is pending and finish a Run that has ended, from the Run itself rather than from events.
+async function reconcile() {
+  if (!runId || finished) return
+  const { run } = await workflow.getRun({ runId }, at)
+  for (const interaction of run.interactions) await answer(interaction)
+  if (run.status !== "queued" && run.status !== "running") await finish()
+}
+
 async function handle(event: ProtocolEvent) {
   if (event.runId !== runId) return
   if (event.type === "interaction.pending") await answer(event.data as PendingInteraction)
@@ -108,10 +121,8 @@ workflow.events.on("event", ({ data }) => void (runId ? handle(data) : early.pus
 const { workflows } = await workflow.listWorkflows({}, at) // each with its args JSON Schema
 runId = (await workflow.startRun({ name: workflows[0]!.key, args: {} }, at)).runId
 for (const event of early.splice(0)) await handle(event)
-// Then reconcile with the Run itself: interactions already pending, or a Run that already ended.
-const { run } = await workflow.getRun({ runId }, at)
-for (const interaction of run.interactions) await answer(interaction)
-if (run.status !== "queued" && run.status !== "running") await finish()
+// Anything that became pending, or a Run that ended, before we were listening for this id.
+await reconcile()
 ```
 
 Without the typed client, a plugin RPC call is a plain POST to the OpenCode server: the input goes in `input`,
