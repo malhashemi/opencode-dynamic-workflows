@@ -60,6 +60,8 @@ export interface ServiceDeps {
   /** Project-level "always allow inline Workflows here" flag (backed by plugin storage). */
   approvals: { get(): Promise<boolean>; set(): Promise<void> }
   gatewayUrl: () => string | null
+  /** Whether the running Gateway serves the web app (it is shared by every location, with its own settings). */
+  gatewayWeb?: () => boolean
 }
 
 export interface StartOptions {
@@ -256,7 +258,7 @@ export class WorkflowService {
         maxConcurrentRuns: this.deps.config.maxConcurrentRuns,
         providerConcurrency: { ...this.deps.config.providerConcurrency },
       },
-      gateway: { url: this.deps.gatewayUrl(), web: this.deps.config.gateway.web },
+      gateway: { url: this.deps.gatewayUrl(), web: this.deps.gatewayWeb?.() ?? false },
     }
   }
 

@@ -41,7 +41,8 @@ approval of inline (model-written) Workflows. They wait only while some client i
 With nobody attached, a question takes its fallback answer, a permission request is denied, and an inline
 Workflow is refused, so a Run never hangs.
 
-- **Plugin RPC:** call `attach({ surface: "my-app", ttlMs: 45000, sessionID })` and repeat it every 20 seconds
+- **Plugin RPC:** call `attach({ surface, ttlMs: 45000, sessionID })` with an id unique to this window of your app
+  (for example `my-app-<uuid>`), and repeat it every 20 seconds
   or so while your app shows Workflows. `sessionID` is the session in view, if any. Call `detach` on exit.
 - **Gateway:** an open `GET /v1/events` stream counts as attached.
 
@@ -64,9 +65,11 @@ const client = OpenCode.make({ baseUrl: "http://127.0.0.1:4096", headers: { "x-o
 const workflow = client.rpc(WorkflowRpc)
 const at = { location: { directory } }
 
-// Be attached while your UI is open, so questions and approvals wait for the person.
-await workflow.attach({ surface: "my-app", ttlMs: 45_000 }, at)
-const heartbeat = setInterval(() => void workflow.attach({ surface: "my-app", ttlMs: 45_000 }, at), 20_000)
+// Be attached while your UI is open, so questions and approvals wait for the person. One surface id per window:
+// two windows sharing an id would replace each other's attachment, and one's detach would end both.
+const surface = `my-app-${crypto.randomUUID()}`
+await workflow.attach({ surface, ttlMs: 45_000 }, at)
+const heartbeat = setInterval(() => void workflow.attach({ surface, ttlMs: 45_000 }, at), 20_000)
 
 // Show an interaction to the person, then send their answer (one list of chosen labels per question).
 // The event and the read below can both see the same interaction: answer each one once.
@@ -86,7 +89,7 @@ workflow.events.on("event", async ({ data: event }) => {
     const { result } = await workflow.getResult({ runId }, at)
     console.log(event.data, result)
     clearInterval(heartbeat)
-    await workflow.detach({ surface: "my-app" }, at)
+    await workflow.detach({ surface }, at)
   }
 })
 

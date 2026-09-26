@@ -36,6 +36,8 @@ import { bearer, createTokenStore, isLoopbackAddress, type Scope, type TokenStor
 
 export interface GatewayHandle {
   url: string
+  /** Serves the web app (`gateway.web` of the location that started this process-wide Gateway). */
+  web: boolean
   host: string
   port: number
   register(location: string, service: WorkflowService): () => void
@@ -545,6 +547,7 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
 
   const gateway: GatewayHandle = {
     url: baseUrl,
+    web: config.web,
     host: hostname,
     port,
     tokens,
