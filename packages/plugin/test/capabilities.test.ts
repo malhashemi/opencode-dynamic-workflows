@@ -75,6 +75,13 @@ describe("capabilities", () => {
     await expect(other.$("sleep 5", { timeoutMs: 30 })).rejects.toThrow("timed out")
   })
 
+  it.skipIf(!posix)("$ stops the shell's children too", async () => {
+    const { caps } = make()
+    const started = Date.now()
+    await expect(caps.$("sleep 5; true", { timeoutMs: 50 })).rejects.toThrow("timed out")
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
   it("disabled capabilities throw the reason", async () => {
     const { caps } = make({ disabled: "inline off" })
     await expect(caps.file.read("x")).rejects.toThrow("ctx.file.read is disabled: inline off")

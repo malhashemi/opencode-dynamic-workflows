@@ -84,14 +84,26 @@ export function createCapabilities(options: CapabilityOptions): WorkflowCapabili
     options.audit(`$ ${clip(command)}`)
     const timeout = opts.timeoutMs ?? options.shellTimeoutMs ?? 120_000
     const signal = AbortSignal.any([options.signal, AbortSignal.timeout(timeout)])
+    const windows = process.platform === "win32"
     const child = Bun.spawn(shellCommand(command), {
       cwd,
       env: { ...process.env, ...opts.env },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      // Its own process group, so a stop ends the whole command, not only the shell.
+      detached: !windows,
     })
-    const kill = () => child.kill()
+    // Killing only the shell leaves its children running, holding the output pipes open.
+    const kill = () => {
+      try {
+        if (windows)
+          Bun.spawn(["taskkill", "/pid", String(child.pid), "/t", "/f"], { stdout: "ignore", stderr: "ignore" })
+        else process.kill(-child.pid, "SIGKILL")
+      } catch {
+        child.kill()
+      }
+    }
     signal.addEventListener("abort", kill, { once: true })
     try {
       const [stdout, stderr, exitCode] = await Promise.all([
