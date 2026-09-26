@@ -8,7 +8,7 @@
  */
 import type { Broker } from "./broker"
 import { createCapabilities } from "./capabilities"
-import { defaultConcurrency, Semaphore } from "./scheduler"
+import { Semaphore } from "./scheduler"
 import { createEngineState, createWorkflowContext, type ReplayPlan, type RunLimits } from "./context"
 import type { EngineHost, HostPermissionRule } from "./host"
 import type { Journal } from "./journal"
@@ -16,6 +16,14 @@ import type { Run, WorkflowIdentity } from "./protocol"
 import { isTerminal, newRun, type RunStore } from "./runs"
 import type { UnitIndex } from "./units"
 import type { DefineWorkflowConfig, WorkflowMeta } from "./workflow"
+
+/** Units in flight for one Run: the author's `meta.concurrency`, never above the configured cap. */
+export function resolveConcurrency(fromMeta: number | undefined, cap = DEFAULT_UNITS_PER_RUN): number {
+  const limit = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : DEFAULT_UNITS_PER_RUN
+  return fromMeta !== undefined && Number.isFinite(fromMeta) && fromMeta >= 1 ? Math.min(Math.floor(fromMeta), limit) : limit
+}
+
+export const DEFAULT_UNITS_PER_RUN = 5
 
 /** How long a Run waits for Units it did not await to stop, after `run` returned. */
 const STRAY_DRAIN_MS = 10_000
@@ -96,6 +104,8 @@ export interface RunWorkflowInput {
   /** The Run exists; `stop` ends it. */
   onRegister?: (runId: string, stop: (reason?: string) => void) => void
   onUnitSession?: (runId: string, unitId: string, sessionID: string, stop: () => void) => void
+  /** The per-Run Unit cap (plugin option maxConcurrentUnits); `meta.concurrency` can only lower it. */
+  maxConcurrency?: number
   /** Resolve a saved Workflow by key, for `ctx.workflow(name)`. */
   resolveWorkflow?: (name: string) => Promise<DefineWorkflowConfig>
   /** Cross-Run Unit slots (the process-wide limiter). */
@@ -201,7 +211,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         ...(input.capabilities?.disabled ? { disabled: input.capabilities.disabled } : {}),
         ...(input.capabilities?.shellTimeoutMs ? { shellTimeoutMs: input.capabilities.shellTimeoutMs } : {}),
       })
-    const limiter = new Semaphore(Number.isFinite(meta.concurrency) ? (meta.concurrency as number) : defaultConcurrency())
+    const limiter = new Semaphore(resolveConcurrency(meta.concurrency, input.maxConcurrency))
     const base = {
       host: input.host,
       index: input.index,

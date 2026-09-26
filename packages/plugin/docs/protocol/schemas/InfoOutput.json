@@ -51,6 +51,9 @@
         "maxConcurrentUnits": {
           "type": "number"
         },
+        "maxConcurrentRuns": {
+          "type": "number"
+        },
         "providerConcurrency": {
           "type": "object",
           "propertyNames": {

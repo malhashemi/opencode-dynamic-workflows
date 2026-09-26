@@ -229,8 +229,8 @@ while (budget.total !== null && budget.remaining() > 50_000) { /* another round 
 ```
 
 Limits stop runaway scripts with a clear error: 1000 Units per Run, 4096 items per `parallel`/`pipeline` call,
-250 model requests per Unit (`meta.limits` to change). At most `meta.concurrency` Units run at once (default about
-the CPU count, max 16); extra ones queue.
+250 model requests per Unit (`meta.limits` to change). At most 5 Units of a Run run at once (the plugin option
+`maxConcurrentUnits`; `meta.concurrency` can lower it), and at most 5 Runs execute at once; extra ones queue.
 
 ## Quality patterns
 

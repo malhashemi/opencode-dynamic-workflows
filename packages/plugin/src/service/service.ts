@@ -14,7 +14,7 @@ import path from "node:path"
 import type { Broker } from "../broker"
 import type { ReplayPlan } from "../context"
 import { formatModel, type EngineHost, type HostMessage } from "../host"
-import { unitSlot } from "../engine-global"
+import { runSlot, runSlotsFull, unitSlot } from "../engine-global"
 import { ownerAlive, type Journal } from "../journal"
 import { loadWorkflow, loadWorkflowConfig, sha256 } from "../loader"
 import { runWorkflow, type RunWorkflowOutput } from "../orchestrator"
@@ -232,6 +232,7 @@ export class WorkflowService {
       limits: {
         ...this.deps.config.limits,
         maxConcurrentUnits: this.deps.config.maxConcurrentUnits,
+        maxConcurrentRuns: this.deps.config.maxConcurrentRuns,
         providerConcurrency: { ...this.deps.config.providerConcurrency },
       },
       gateway: { url: this.deps.gatewayUrl() },
@@ -406,6 +407,7 @@ export class WorkflowService {
     this.live.set(runId, live)
     const signal = options.signal ? AbortSignal.any([options.signal, queuedStop.signal]) : queuedStop.signal
 
+    let releaseRun: () => void = () => {}
     const done = (async (): Promise<{ output?: RunWorkflowOutput; error?: string; run: Run }> => {
       try {
         if (needsApproval) {
@@ -416,6 +418,16 @@ export class WorkflowService {
           }
         }
         if (signal.aborted) {
+          await this.endQueued(runId, "stopped before it started", "stopped")
+          return { error: "stopped before it started", run: store.get(runId)! }
+        }
+        // At most maxConcurrentRuns Runs execute at once; this one waits, queued, for a slot.
+        if (runSlotsFull()) {
+          store.apply({ type: "run.log", runId, value: `waiting: ${this.deps.config.maxConcurrentRuns} Runs are already running (maxConcurrentRuns)`, kind: "engine" })
+        }
+        try {
+          releaseRun = await runSlot(signal)
+        } catch {
           await this.endQueued(runId, "stopped before it started", "stopped")
           return { error: "stopped before it started", run: store.get(runId)! }
         }
@@ -437,6 +449,7 @@ export class WorkflowService {
           background: options.background ?? false,
           limits: this.deps.config.limits,
           slot: unitSlot,
+          maxConcurrency: this.deps.config.maxConcurrentUnits,
           resolveWorkflow: (name) => this.resolveDurable(name),
           existingRun: true,
           ...(identity.provenance === "inline" && !this.deps.config.inlineCapabilities
@@ -464,6 +477,7 @@ export class WorkflowService {
       } catch (error) {
         return { error: error instanceof Error ? error.message : String(error), run: store.get(runId)! }
       } finally {
+        releaseRun()
         this.live.delete(runId)
       }
     })()

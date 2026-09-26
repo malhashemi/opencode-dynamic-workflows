@@ -92,6 +92,11 @@ export class Semaphore {
     }
   }
 
+  /** Permits free right now. */
+  get free(): number {
+    return this.available
+  }
+
   /** Permits in the pool (for resizing decisions and tests). */
   get size(): number {
     return this.capacity

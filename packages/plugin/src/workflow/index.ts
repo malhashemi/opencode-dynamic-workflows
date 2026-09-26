@@ -31,7 +31,7 @@ export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
   whenToUse?: string
   /** One entry per `phase()` the run will declare (titles matched exactly for grouping). */
   phases?: { title: string; detail?: string }[]
-  /** Per-workflow concurrency override (default: plugin config). */
+  /** Units in flight at once for this Workflow. Can lower the plugin's `maxConcurrentUnits` (default 5), not raise it. */
   concurrency?: number
   /**
    * Optional per-Unit prompt deadline (ms) for this Workflow's Units (a Unit's own `agent({ timeoutMs })`

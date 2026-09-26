@@ -29,8 +29,10 @@ export interface PluginConfig {
   inlineCapabilities: boolean
   /** Post a message into the calling session when a background Run it started ends (the model then continues). */
   notify: boolean
-  /** Units in flight across ALL Runs of this OpenCode process (per-Run caps are meta.concurrency). */
+  /** Units in flight per Run (a Workflow's meta.concurrency can only lower it). */
   maxConcurrentUnits: number
+  /** Runs executing at once across the OpenCode process; further Runs wait, queued. */
+  maxConcurrentRuns: number
   /** Optional caps per provider id across all Runs, e.g. { "github-copilot": 4 }. */
   providerConcurrency: Record<string, number>
   retention: Retention
@@ -44,7 +46,8 @@ export const DEFAULT_CONFIG: PluginConfig = {
   inline: "ask",
   inlineCapabilities: true,
   notify: true,
-  maxConcurrentUnits: 16,
+  maxConcurrentUnits: 5,
+  maxConcurrentRuns: 5,
   providerConcurrency: {},
   retention: "keep",
   limits: { ...DEFAULT_LIMITS },
@@ -68,7 +71,8 @@ export function parseConfig(options: unknown): PluginConfig {
     inline,
     inlineCapabilities: input.inlineCapabilities !== false,
     notify: input.notify !== false,
-    maxConcurrentUnits: positiveInt(input.maxConcurrentUnits, 16),
+    maxConcurrentUnits: positiveInt(input.maxConcurrentUnits, 5),
+    maxConcurrentRuns: positiveInt(input.maxConcurrentRuns, 5),
     providerConcurrency: Object.fromEntries(
       Object.entries(record(input.providerConcurrency)).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isInteger(entry[1]) && entry[1] > 0),
     ),

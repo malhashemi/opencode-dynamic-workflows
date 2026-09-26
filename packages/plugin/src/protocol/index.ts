@@ -370,8 +370,10 @@ export const InfoOutput = z.object({
     maxUnits: z.number(),
     maxItemsPerCall: z.number(),
     maxUnitSteps: z.number(),
-    /** Units in flight across all Runs of the process. */
+    /** Units in flight per Run. */
     maxConcurrentUnits: z.number().optional(),
+    /** Runs executing at once across the process. */
+    maxConcurrentRuns: z.number().optional(),
     providerConcurrency: z.record(z.string(), z.number()).optional(),
   }),
   gateway: z.object({ url: z.string().nullable() }),

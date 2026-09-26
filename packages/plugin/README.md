@@ -55,7 +55,8 @@ package (`bun run pack` output). The TUI part loads automatically with the serve
 | `inline` | `"ask"` | Inline (model-written) Workflows: `ask` a person each time (or "always for this project"), `allow`, or `deny`. Headless `ask` refuses. |
 | `inlineCapabilities` | `true` | Give inline Runs `ctx.$`, `ctx.file`, `ctx.fetch`. |
 | `notify` | `true` | When a background Run started by the model ends, post a notification (summary + result preview) into that session. |
-| `maxConcurrentUnits` | `16` | Units in flight across **all** Runs of the OpenCode process (per-Run caps are `meta.concurrency`). |
+| `maxConcurrentUnits` | `5` | Units in flight per Run. A Workflow's `meta.concurrency` can lower it, not raise it. |
+| `maxConcurrentRuns` | `5` | Runs executing at once in the OpenCode process; more Runs wait, queued, until one ends. |
 | `providerConcurrency` | `{}` | Caps per provider id across all Runs, e.g. `{ "github-copilot": 4 }` for a rate-limited subscription. |
 | `retention` | `"keep"` | `delete-on-success`: Runs that succeed are marked for cleanup; `/workflows cleanup` in the TUI deletes their Unit sessions. Press `d` on any finished Run to delete its Unit sessions. |
 | `limits` | `{ maxUnits: 1000, maxItemsPerCall: 4096, maxUnitSteps: 250 }` | Hard limits per Run / call / Unit. |

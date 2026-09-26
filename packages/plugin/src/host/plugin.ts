@@ -187,7 +187,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   const instance = crypto.randomUUID()
   const location = canonical(ctx.location.directory)
   const config = parseConfig(ctx.options)
-  configureLimits(config.maxConcurrentUnits, config.providerConcurrency)
+  configureLimits(config.maxConcurrentRuns, config.providerConcurrency)
   const units = engineGlobal().units
   const { slot, fresh } = ensureService(ctx, location, config, instance)
   const service = slot.service
