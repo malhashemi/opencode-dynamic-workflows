@@ -340,11 +340,14 @@ export function setupWorkflowsTui(context: Context): () => void {
           : process.platform === "win32"
             ? ["cmd", "/c", "start", "", url]
             : ["xdg-open", url]
+      const fallback = () => toast(`Could not open a browser. Open ${url} yourself.`, "warning")
       try {
-        Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
-        toast(`Opened ${url}`)
+        const child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+        // Never keep OpenCode alive for the opener (xdg-open can outlive the click).
+        child.unref()
+        void child.exited.then((code) => (code === 0 ? toast(`Opened ${url}`) : fallback()), fallback)
       } catch {
-        toast(`Open ${url} in your browser.`, "warning")
+        fallback()
       }
     },
     openPanel: (runId, sessionID) => openPanel(runId, sessionID),

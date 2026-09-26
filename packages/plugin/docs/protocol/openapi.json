@@ -3,7 +3,7 @@
   "info": {
     "title": "OpenCode dynamic workflows: Gateway API",
     "version": "1",
-    "description": "The HTTP + SSE face of the workflow protocol: start and follow Runs, answer questions and approvals, read\nresults and transcripts. The same resources and commands are also OpenCode plugin RPC methods\n(`POST /api/rpc/workflow/<method>` on the OpenCode server), which an OpenCode client can use with its\nexisting credentials. Guide: https://github.com/malhashemi/opencode-dynamic-workflows/blob/main/docs/integrating.md\n\nWithin protocol v1 changes are additive only: new optional fields, event types and error codes. Ignore\nwhat you do not know.",
+    "description": "The HTTP + SSE face of the workflow protocol: start and follow Runs, answer questions and approvals, read\nresults and transcripts. The same resources and commands are also OpenCode plugin RPC methods\n(`POST /api/rpc/workflow/<method>` on the OpenCode server), which an OpenCode client can use with its\nexisting credentials. Guide: https://github.com/malhashemi/opencode-dynamic-workflows/blob/main/docs/integrating.md\n\nWithin protocol v1 changes are additive only: new optional fields, event types and error codes. Ignore\nwhat you do not know.\n\nAuth: reads need a `read` token, except from the same machine to a loopback Gateway; every action (start,\nstop, answer, …) needs a `control` token. See the bearer scheme and the guide.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -16,7 +16,6 @@
     }
   ],
   "security": [
-    {},
     {
       "bearer": []
     }
@@ -27,7 +26,6 @@
         "operationId": "openapi",
         "summary": "This document",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -57,7 +55,6 @@
         "operationId": "info",
         "summary": "Versions, capabilities and limits of every location this process serves, and who the caller is",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -92,7 +89,6 @@
         "summary": "The event stream of one location (Server-Sent Events)",
         "description": "Each SSE message has `id: <epoch>.<seq>`, `event: <type>` and `data: <ProtocolEvent>` (JSON).\nReconnect with the `Last-Event-ID` header (or `?after=<epoch>.<seq>`) to receive what was missed; when the\ngap cannot be filled (the service restarted, or the buffer moved on) a `resync.required` event arrives:\nre-read `GET /v1/runs` and the Runs you show.\n\nAn open stream also marks the location as **attached**: while one is open, questions and inline-Workflow\napprovals wait for an answer instead of being refused or taking their fallback.",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -156,7 +152,6 @@
         "operationId": "listWorkflows",
         "summary": "The durable (saved) Workflows of a location, with each one's args JSON Schema",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -211,7 +206,6 @@
         "operationId": "listRuns",
         "summary": "Runs, newest first (live and journaled)",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -416,7 +410,6 @@
         "operationId": "getRun",
         "summary": "A Run in full (Units' outputs may be elided; fetch the Unit for the whole value)",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -471,7 +464,6 @@
         "operationId": "getResult",
         "summary": "What the Workflow returned",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -536,7 +528,6 @@
         "operationId": "getActivity",
         "summary": "The Run's activity: logs, phases, engine and capability lines",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -591,7 +582,6 @@
         "operationId": "getUnit",
         "summary": "One Unit with its whole output",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -655,7 +645,6 @@
         "operationId": "getTranscript",
         "summary": "The Unit's session: messages, reasoning and tool calls",
         "security": [
-          {},
           {
             "bearer": []
           }
@@ -1502,7 +1491,7 @@
       "bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A device token from pairing. `read` scope for remote reads, `control` scope for every action. Tokens never go in URLs."
+        "description": "A device token from pairing: `read` scope for reads, `control` scope for every action. A client on the same machine as a loopback Gateway may read without one. Tokens never go in URLs."
       }
     },
     "schemas": {

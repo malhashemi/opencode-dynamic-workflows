@@ -103,8 +103,11 @@ const runId = param("runId", "The Run's id.")
 const unitId = param("unitId", "The Unit's id.")
 const interactionId = param("interactionId", "The pending interaction's id.")
 
-/** Reads: free for a loopback client, a token with `read` scope otherwise. */
-const READ = [{}, { bearer: [] }]
+/**
+ * Reads need a token with `read` scope. A client on the same machine as a loopback Gateway may omit it: OpenAPI
+ * cannot express a network-dependent exception, so it is documented (in `info` and the bearer scheme) instead.
+ */
+const READ = [{ bearer: [] }]
 /** Control actions: always a token with `control` scope (or `gateway.auth: "none"` on a loopback bind). */
 const CONTROL = [{ bearer: [] }]
 
@@ -357,7 +360,8 @@ const PATHS: Json = {
   },
 }
 
-export function openApiDocument(): Json {
+/** `serverUrl`: the Gateway serving the document (its real address); the committed copy uses the default. */
+export function openApiDocument(serverUrl?: string): Json {
   return {
     openapi: "3.1.0",
     info: {
@@ -371,10 +375,15 @@ export function openApiDocument(): Json {
         "",
         "Within protocol v1 changes are additive only: new optional fields, event types and error codes. Ignore",
         "what you do not know.",
+        "",
+        "Auth: reads need a `read` token, except from the same machine to a loopback Gateway; every action (start,",
+        "stop, answer, …) needs a `control` token. See the bearer scheme and the guide.",
       ].join("\n"),
       license: { name: "MIT", identifier: "MIT" },
     },
-    servers: [{ url: "http://127.0.0.1:4320", description: "The default local Gateway (the next free port if taken)" }],
+    servers: serverUrl
+      ? [{ url: serverUrl.replace(/\/$/, ""), description: "This Gateway" }]
+      : [{ url: "http://127.0.0.1:4320", description: "The default local Gateway (the next free port if taken)" }],
     security: READ,
     paths: PATHS,
     components: {
@@ -383,7 +392,7 @@ export function openApiDocument(): Json {
           type: "http",
           scheme: "bearer",
           description:
-            "A device token from pairing. `read` scope for remote reads, `control` scope for every action. Tokens never go in URLs.",
+            "A device token from pairing: `read` scope for reads, `control` scope for every action. A client on the same machine as a loopback Gateway may read without one. Tokens never go in URLs.",
         },
       },
       schemas: Object.fromEntries(

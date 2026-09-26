@@ -412,6 +412,7 @@ export function WorkflowsScreen(props: ScreenProps) {
     return [
       { key: "↑↓", label: "scroll", run: () => moveBy(3) },
       { key: "o", label: "transcript", run: openUnitTranscript },
+      ...(webLink() ? [{ key: "b", label: "open in browser", run: () => wf.actions.openInBrowser(webLink()!) }] : []),
       ...(terminal
         ? []
         : [
@@ -464,7 +465,7 @@ export function WorkflowsScreen(props: ScreenProps) {
         title: "Open in the web app",
         group: "Workflows",
         bind: "b",
-        enabled: () => view().kind !== "unit" && !!webLink(),
+        enabled: () => !!webLink(),
         run: () => void (webLink() && wf.actions.openInBrowser(webLink()!)),
       },
       {
