@@ -256,7 +256,7 @@ export class WorkflowService {
         maxConcurrentRuns: this.deps.config.maxConcurrentRuns,
         providerConcurrency: { ...this.deps.config.providerConcurrency },
       },
-      gateway: { url: this.deps.gatewayUrl() },
+      gateway: { url: this.deps.gatewayUrl(), web: this.deps.config.gateway.web },
     }
   }
 

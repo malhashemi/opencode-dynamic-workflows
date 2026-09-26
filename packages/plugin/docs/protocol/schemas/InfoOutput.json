@@ -83,6 +83,9 @@
               "type": "null"
             }
           ]
+        },
+        "web": {
+          "type": "boolean"
         }
       },
       "required": [

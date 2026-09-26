@@ -69,7 +69,11 @@ await workflow.attach({ surface: "my-app", ttlMs: 45_000 }, at)
 const heartbeat = setInterval(() => void workflow.attach({ surface: "my-app", ttlMs: 45_000 }, at), 20_000)
 
 // Show an interaction to the person, then send their answer (one list of chosen labels per question).
+// The event and the read below can both see the same interaction: answer each one once.
+const answered = new Set<string>()
 const answer = async (runId: string, interaction: PendingInteraction) => {
+  if (answered.has(interaction.interactionId)) return
+  answered.add(interaction.interactionId)
   await workflow.replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["Quick"]] }, at)
 }
 
