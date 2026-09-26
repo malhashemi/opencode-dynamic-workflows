@@ -98,7 +98,7 @@ export function ValueBlock(props: { value: unknown; label?: string; maxHeight?: 
   )
 }
 
-export function CodeBlock(props: { text: string; label?: string; maxHeight?: string }) {
+export function CodeBlock(props: { text: string; label?: string; maxHeight?: string; numbered?: boolean }) {
   return (
     <div class="code-wrap">
       <div class="code-tools">
@@ -113,7 +113,18 @@ export function CodeBlock(props: { text: string; label?: string; maxHeight?: str
         style={props.maxHeight ? { "max-height": props.maxHeight } : undefined}
         aria-label={props.label}
       >
-        {props.text}
+        <Show when={props.numbered} fallback={props.text}>
+          <For each={props.text.split("\n")}>
+            {(line, index) => (
+              <span class="code-line">
+                <span class="code-ln" aria-hidden="true">
+                  {index() + 1}
+                </span>
+                {line}
+              </span>
+            )}
+          </For>
+        </Show>
       </pre>
     </div>
   )

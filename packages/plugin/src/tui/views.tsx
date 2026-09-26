@@ -45,6 +45,7 @@ import {
   unitName,
   unitStatus,
   workflowName,
+  numberedLines,
   wrapLines,
   type Tone,
 } from "./format"
@@ -204,6 +205,8 @@ export function WorkflowsScreen(props: ScreenProps) {
   const [sending, setSending] = createSignal(false)
   const [autoAnswer, setAutoAnswer] = createSignal(props.start()?.answer === true)
   const [scroll, setScroll] = createSignal(0)
+  /** First source row shown in an inline-approval panel. The panel clamps it to the source's length. */
+  const [sourceScroll, setSourceScroll] = createSignal(0)
 
   createEffect(
     on(
@@ -279,6 +282,7 @@ export function WorkflowsScreen(props: ScreenProps) {
   function beginAnswer(interaction: PendingInteraction | undefined) {
     if (!interaction) return
     setNote(null)
+    setSourceScroll(0)
     setAnswer(startAnswer(interaction))
   }
 
@@ -444,6 +448,36 @@ export function WorkflowsScreen(props: ScreenProps) {
 
   const navigating = () => props.active() && answer() === null
   const choosing = () => props.active() && answer() !== null && !answer()!.typing && !sending()
+  // Reading an inline Workflow before approving it: half a screen per page, the wheel scrolls 3 lines.
+  const approvalScrollKeys = (): KeymapCommand[] => {
+    const reading = () => !!pendingInteraction()?.approval
+    const halfScreen = () => Math.max(3, Math.floor(props.height() / 2))
+    const scrollBy = (delta: number) => void setSourceScroll((value) => Math.max(0, value + delta))
+    return [
+      {
+        title: "Scroll source down",
+        group: "Answer",
+        bind: "pagedown",
+        enabled: reading,
+        run: () => scrollBy(halfScreen()),
+      },
+      {
+        title: "Scroll source up",
+        group: "Answer",
+        bind: "pageup",
+        enabled: reading,
+        run: () => scrollBy(-halfScreen()),
+      },
+      { title: "Source top", group: "Answer", bind: "home", enabled: reading, run: () => void setSourceScroll(0) },
+      {
+        title: "Source end",
+        group: "Answer",
+        bind: "end",
+        enabled: reading,
+        run: () => void setSourceScroll(Number.MAX_SAFE_INTEGER),
+      },
+    ]
+  }
   const typing = () => props.active() && answer()?.typing === true
 
   context.keymap.layer(() => {
@@ -555,6 +589,7 @@ export function WorkflowsScreen(props: ScreenProps) {
       { title: "Next option", group: "Answer", bind: "j", run: () => void setAnswer(move(answer()!, 1)) },
       { title: "Previous option", group: "Answer", bind: "up", run: () => void setAnswer(move(answer()!, -1)) },
       { title: "Previous option", group: "Answer", bind: "k", run: () => void setAnswer(move(answer()!, -1)) },
+      ...approvalScrollKeys(),
       { title: "Toggle", group: "Answer", bind: "space", run: () => void setAnswer(toggle(answer()!)) },
       { title: "Choose", group: "Answer", bind: "return", run: () => void step(confirm(answer()!)) },
       { title: "Dismiss", group: "Answer", bind: "x", run: () => void dismiss() },
@@ -629,10 +664,13 @@ export function WorkflowsScreen(props: ScreenProps) {
                 activity={slot()?.activity ?? null}
                 cursor={cursor(nav(), units().length)}
                 width={innerWidth()}
-                height={props.height() - 6}
+                // The hints row is hidden while answering: the answer panel gets those rows too.
+                height={props.height() - (answer() ? 3 : 6)}
                 answer={answer()}
                 interaction={pendingInteraction()}
                 sending={sending()}
+                sourceScroll={sourceScroll()}
+                onSourceScroll={setSourceScroll}
                 onAnswerText={(text) => void step(submitText(answer()!, text))}
                 onPickOption={(index) => void step(pick(answer()!, index + 1))}
                 onPick={(index) => {
@@ -764,6 +802,8 @@ function RunPane(props: {
   answer: AnswerState | null
   interaction: PendingInteraction | undefined
   sending: boolean
+  sourceScroll: number
+  onSourceScroll: (value: number) => void
   onPick: (index: number) => void
   onAnswer: () => void
   onAnswerText: (text: string) => void
@@ -780,10 +820,17 @@ function RunPane(props: {
       props.activity ?? props.run.logs.map((message) => ({ message, kind: "log", time: props.run.startedAt }))
     return entries.slice(-3)
   }
+  // An inline approval comes before the Run starts (no Units yet), so its source gets the whole view.
+  const approving = () => !!(props.answer && props.interaction?.approval)
   const answerRows = () =>
-    props.answer && props.interaction
-      ? Math.min(props.height - 6, 8 + (props.interaction.approval ? 12 : 0) + rows(props.answer).length)
-      : 0
+    !props.answer || !props.interaction
+      ? 0
+      : approving()
+        ? Math.max(
+            8,
+            props.height - 1 - (props.run.workflow.description ? 1 : 0) - (phaseLine(props.run).length ? 1 : 0),
+          )
+        : Math.min(props.height - 6, 8 + rows(props.answer).length)
   const unitRows = () =>
     Math.max(
       3,
@@ -841,44 +888,48 @@ function RunPane(props: {
           width={props.width}
           height={answerRows()}
           sending={props.sending}
+          sourceScroll={props.sourceScroll}
+          onSourceScroll={props.onSourceScroll}
           onText={props.onAnswerText}
           onPickOption={props.onPickOption}
         />
       </Show>
-      <text fg={th().text.muted}>{`  ${renderHeader([statusColumn()])} ${renderHeader(rest())}`}</text>
-      <Show when={props.run.units.length > 0} fallback={<text fg={th().text.muted}> No Units yet.</text>}>
-        <For each={props.run.units.slice(window().start, window().end)}>
-          {(unit, index) => {
-            const absolute = () => window().start + index()
-            const cells = () => unitCells(unit, props.wf.now())
-            return (
-              <Row
-                wf={props.wf}
-                selected={absolute() === props.cursor && !props.answer}
-                status={cells().status}
-                statusWidth={statusColumn().width}
-                tone={unitStatus(unit.status).tone}
-                rest={renderRow(rest(), cells())}
-                onClick={() => props.onPick(absolute())}
-              />
-            )
-          }}
+      <Show when={!approving()}>
+        <text fg={th().text.muted}>{`  ${renderHeader([statusColumn()])} ${renderHeader(rest())}`}</text>
+        <Show when={props.run.units.length > 0} fallback={<text fg={th().text.muted}> No Units yet.</text>}>
+          <For each={props.run.units.slice(window().start, window().end)}>
+            {(unit, index) => {
+              const absolute = () => window().start + index()
+              const cells = () => unitCells(unit, props.wf.now())
+              return (
+                <Row
+                  wf={props.wf}
+                  selected={absolute() === props.cursor && !props.answer}
+                  status={cells().status}
+                  statusWidth={statusColumn().width}
+                  tone={unitStatus(unit.status).tone}
+                  rest={renderRow(rest(), cells())}
+                  onClick={() => props.onPick(absolute())}
+                />
+              )
+            }}
+          </For>
+        </Show>
+        <Show when={props.run.errors.length > 0}>
+          <text fg={th().text.feedback.error.base}>
+            {truncate(
+              `✗ ${props.run.errors.length} error${props.run.errors.length === 1 ? "" : "s"} — last: ${props.run.errors[props.run.errors.length - 1]!.error}`,
+              props.width,
+            )}
+          </text>
+        </Show>
+        <Show when={props.run.resultPreview}>
+          <text fg={th().text.base}>{truncate(`result: ${props.run.resultPreview}`, props.width)}</text>
+        </Show>
+        <For each={activityLines()}>
+          {(entry) => <text fg={th().text.muted}>{truncate(`· ${entry.message}`, props.width)}</text>}
         </For>
       </Show>
-      <Show when={props.run.errors.length > 0}>
-        <text fg={th().text.feedback.error.base}>
-          {truncate(
-            `✗ ${props.run.errors.length} error${props.run.errors.length === 1 ? "" : "s"} — last: ${props.run.errors[props.run.errors.length - 1]!.error}`,
-            props.width,
-          )}
-        </text>
-      </Show>
-      <Show when={props.run.resultPreview}>
-        <text fg={th().text.base}>{truncate(`result: ${props.run.resultPreview}`, props.width)}</text>
-      </Show>
-      <For each={activityLines()}>
-        {(entry) => <text fg={th().text.muted}>{truncate(`· ${entry.message}`, props.width)}</text>}
-      </For>
     </box>
   )
 }
@@ -894,6 +945,8 @@ function AnswerPanel(props: {
   width: number
   height: number
   sending: boolean
+  sourceScroll: number
+  onSourceScroll: (value: number) => void
   onText: (text: string) => void
   onPickOption: (index: number) => void
 }) {
@@ -912,8 +965,17 @@ function AnswerPanel(props: {
   }
   const width = () => props.width - 2
   let input: InputRenderable | undefined
-  const previewLines = () =>
-    props.interaction.approval ? wrapLines(props.interaction.approval.preview, width() - 2).slice(0, 10) : []
+  const promptLines = () => wrapLines(question()?.prompt ?? "", width()).slice(0, 3)
+  // The whole inline source, numbered; the box takes every row the panel does not need for the rest.
+  const sourceLines = () =>
+    props.interaction.approval ? numberedLines(props.interaction.approval.source, width() - 1) : []
+  const sourceRoom = () => Math.max(3, props.height - 5 - promptLines().length - rows(props.state).length)
+  const sourceMax = () => Math.max(0, sourceLines().length - sourceRoom())
+  const sourceOffset = () => Math.min(props.sourceScroll, sourceMax())
+  // Keys may push past the end (End jumps there); pull the stored value back so the next PgUp moves at once.
+  createEffect(() => {
+    if (props.sourceScroll > sourceMax()) props.onSourceScroll(sourceMax())
+  })
   return (
     <box flexDirection="column" backgroundColor={th().background.raised.base} paddingLeft={1} paddingRight={1}>
       <text fg={th().text.feedback.warning.base}>
@@ -922,9 +984,7 @@ function AnswerPanel(props: {
           width(),
         )}
       </text>
-      <For each={wrapLines(question()?.prompt ?? "", width()).slice(0, 3)}>
-        {(line) => <text fg={th().text.base}>{line}</text>}
-      </For>
+      <For each={promptLines()}>{(line) => <text fg={th().text.base}>{line}</text>}</For>
       <Show when={props.interaction.permission}>
         <text fg={th().text.muted}>
           {truncate(
@@ -940,9 +1000,26 @@ function AnswerPanel(props: {
             width(),
           )}
         </text>
-        <box flexDirection="column" backgroundColor={th().background.raised.high} paddingLeft={1}>
-          <For each={previewLines()}>{(line) => <text fg={th().text.base}>{line || " "}</text>}</For>
+        <box
+          flexDirection="column"
+          backgroundColor={th().background.raised.high}
+          paddingLeft={1}
+          onMouseScroll={(event: { scroll?: { direction?: string } }) =>
+            props.onSourceScroll(Math.max(0, sourceOffset() + (event.scroll?.direction === "up" ? -3 : 3)))
+          }
+        >
+          <For each={sourceLines().slice(sourceOffset(), sourceOffset() + sourceRoom())}>
+            {(line) => <text fg={th().text.base}>{line}</text>}
+          </For>
         </box>
+        <text fg={th().text.muted}>
+          {truncate(
+            sourceMax() > 0
+              ? `rows ${sourceOffset() + 1}-${sourceOffset() + Math.min(sourceRoom(), sourceLines().length)} of ${sourceLines().length} · pgup/pgdn · home/end · wheel`
+              : `all ${sourceLines().length} lines shown`,
+            width(),
+          )}
+        </text>
       </Show>
       <For each={rows(props.state)}>
         {(row, index) => {

@@ -12,14 +12,17 @@ not, and what each control does — including what it does not do.
 | Units (the sessions a Workflow starts)                               | Ordinary OpenCode sessions.                                                                                                       | OpenCode's permission rules, plus the Workflow's rules and the engine's policy (below).                     |
 
 **Inline Workflows are not sandboxed.** The script can `import "node:fs"` or spawn processes whatever the
-capability settings are. The approval is the control. Read the source preview before you approve, and prefer
+capability settings are. The approval is the control. Read the whole source before you approve, and prefer
 durable Workflows for anything you run often (`workflow({ save_run })` or `workflow_inline({ save })`).
 
 ## Inline approval
 
 - `inline: "ask"` (default): an inline Run starts `queued` and publishes an `approval` interaction with the
-  source preview, byte count and SHA-256. Choices: **Run once**, **Always for this project** (stored in the
-  plugin's storage for this project directory), **Reject**.
+  whole source, its byte count and SHA-256. The TUI (`/workflows`, then `a`) shows the source with line numbers
+  in a scrolling view (PgUp/PgDn, Home/End, mouse wheel); the web app shows it in a scrolling code box. Choices:
+  **Run once**, **Always for this project** (stored in the plugin's storage for this project directory),
+  **Reject**. The request has no time limit: it waits until someone answers or the Run is stopped, and the
+  model's `workflow_inline` call waits with it.
 - Nobody attached (headless `opencode run`, CI): the Run is refused with a message, unless the project was
   approved before.
 - `inline: "allow"`: no approval (use only where you would run any model-written script).
