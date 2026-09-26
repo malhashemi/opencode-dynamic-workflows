@@ -28,8 +28,9 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      created: ${{ steps.release.outputs.release_created }}
-      tag: ${{ steps.release.outputs.tag_name }}
+      # The package lives in packages/plugin, so release-please prefixes its outputs with that path.
+      created: ${{ steps.release.outputs['packages/plugin--release_created'] }}
+      tag: ${{ steps.release.outputs['packages/plugin--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
