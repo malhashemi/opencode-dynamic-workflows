@@ -116,11 +116,18 @@ describe("saved Workflows", () => {
     args: { type: "object", properties: Object.fromEntries(properties.map((name) => [name, {}])), required },
   })
   test("args from the JSON Schema", () => {
-    expect(savedArgs({ args: null })).toEqual({ required: [], optional: [] })
+    expect(savedArgs({ args: null })).toEqual({ required: [], optional: [], startable: true })
     expect(savedArgs(schema(["question", "depth"], ["question"]))).toEqual({
       required: ["question"],
       optional: ["depth"],
+      startable: false,
     })
+    // zod marks a defaulted field required; the caller may omit it.
+    const defaulted = { args: { type: "object", properties: { n: { type: "number", default: 3 } }, required: ["n"] } }
+    expect(savedArgs(defaulted)).toEqual({ required: [], optional: ["n"], startable: true })
+    // Not an object: `{}` would fail, so it cannot start without args.
+    expect(savedArgs({ args: { type: "string" } }).startable).toBe(false)
+    expect(savedArgsText({ args: { type: "string" } })).toBe("needs args")
     expect(savedArgsText({ args: null })).toBe("no args")
     expect(savedArgsText(schema(["question", "depth", "files"], ["question"]))).toBe("needs question · 2 optional")
     expect(savedArgsText(schema(["depth"]))).toBe("1 optional")
