@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.2.0...v0.3.0) (2026-09-26)
+
+
+### Features
+
+* an OpenAPI 3.1 spec for the Gateway, and an integration guide ([69e2b43](https://github.com/malhashemi/opencode-dynamic-workflows/commit/69e2b43073db329fff1249b5611641cab259ee52))
+* **tui:** show the web app's address, and open the current page with b ([810c4d3](https://github.com/malhashemi/opencode-dynamic-workflows/commit/810c4d36dcf0601e54ada67d22024e43667a8add))
+
+
+### Bug fixes
+
+* deleting a token from the token file revokes it in the running Gateway ([d14a529](https://github.com/malhashemi/opencode-dynamic-workflows/commit/d14a529ff938f29b4a88159c51820aaec64ffb03))
+* no web links when the web app is off; the guide answers each interaction once ([d1327a2](https://github.com/malhashemi/opencode-dynamic-workflows/commit/d1327a2637245c272df4bcc7b7c85bb6b903cb54))
+* review findings: OpenAPI auth and servers, the guide's example, the browser key ([e28d58b](https://github.com/malhashemi/opencode-dynamic-workflows/commit/e28d58b090caa8cf758644e554de588a5b351641))
+* the web-app flag comes from the running Gateway; one surface id per window ([274e3a8](https://github.com/malhashemi/opencode-dynamic-workflows/commit/274e3a85854b936d71a653418e01e991b173e739))
+* token file changes can't be lost to a concurrent write; chmod revokes too ([1da9229](https://github.com/malhashemi/opencode-dynamic-workflows/commit/1da9229019838acb66a4dbbaf72ff51ee2859fe1))
+
 ## [0.2.0](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.1.1...v0.2.0) (2026-09-26)
 
 
