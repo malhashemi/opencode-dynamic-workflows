@@ -458,7 +458,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
 
   return {
     ...createCapabilities({ location: input.location, signal, audit: () => {}, disabled: "capabilities are only available inside a Run" }),
-    ...(input.extend ?? {}),
+    ...input.extend,
     agent,
     ask,
     parallel,

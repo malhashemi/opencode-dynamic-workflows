@@ -33,7 +33,7 @@ export function InteractionsPanel(props: { run: Run }) {
         <details class="resolved">
           <summary>{props.run.resolved.length} resolved</summary>
           <ul class="resolved-list">
-            <For each={[...props.run.resolved].reverse()}>{(record) => <ResolvedRow run={props.run} record={record} />}</For>
+            <For each={props.run.resolved.toReversed()}>{(record) => <ResolvedRow run={props.run} record={record} />}</For>
           </ul>
         </details>
       </Show>

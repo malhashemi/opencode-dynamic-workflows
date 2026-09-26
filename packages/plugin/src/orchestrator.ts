@@ -298,9 +298,9 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
           },
         },
       })
-      const result = await child.run(childCtx)
+      const childResult = await child.run(childCtx)
       store.apply({ type: "run.log", runId: input.runId, value: `◂ ${name} done`, kind: "engine" })
-      return result
+      return childResult
     }
 
     const ctx = createWorkflowContext({ ...base, extend: { ...capabilities(), workflow: nested, ...input.extend } })
@@ -322,7 +322,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         store.apply({ type: "run.log", runId: input.runId, value: `stopping ${stray} Unit(s) the script did not await`, kind: "engine" })
         stopController.abort(new Error("the Run ended"))
       }
-      await Promise.race([Promise.allSettled([...state.inflight]), new Promise((resolve) => setTimeout(resolve, STRAY_DRAIN_MS))])
+      await Promise.race([Promise.allSettled(state.inflight), new Promise((resolve) => setTimeout(resolve, STRAY_DRAIN_MS))])
     }
     input.broker.releaseRun(input.runId)
     let current = store.get(input.runId)

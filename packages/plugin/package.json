@@ -1,9 +1,28 @@
 {
   "name": "@malhashemi/opencode-dynamic-workflows",
-  "version": "0.1.0",
-  "description": "OpenCode V2 plugin: deterministic multi-subagent Workflows with typed results, a live TUI panel, a web app and a versioned protocol.",
-  "type": "module",
+  "version": "0.0.0",
+  "description": "Deterministic multi-agent Workflows for OpenCode: TypeScript scripts that fan work out to subagents, with typed results, a live TUI panel, a web app and a versioned protocol.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "workflow",
+    "orchestration",
+    "multi-agent",
+    "subagents",
+    "agents",
+    "llm",
+    "tui"
+  ],
+  "homepage": "https://github.com/malhashemi/opencode-dynamic-workflows#readme",
+  "bugs": "https://github.com/malhashemi/opencode-dynamic-workflows/issues",
   "license": "MIT",
+  "author": "M. Adel Alhashemi (https://github.com/malhashemi)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/malhashemi/opencode-dynamic-workflows.git",
+    "directory": "packages/plugin"
+  },
+  "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -22,11 +41,17 @@
     "src",
     "dist",
     "docs",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "dependencies": {
-    "@opencode/plugin": "2.0.16",
-    "zod": "^4.1.8"
+    "@opencode/plugin": "^2.0.16",
+    "zod": "4.1.8"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.5.10",

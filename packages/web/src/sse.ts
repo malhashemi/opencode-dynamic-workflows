@@ -147,7 +147,7 @@ export function connectSse(options: SseOptions): SseConnection {
       options.onStatus?.(failures === 0 ? "connecting" : "retrying")
       let delay = parser.retry ?? base
       try {
-        const headers: Record<string, string> = { accept: "text/event-stream", ...(options.headers?.() ?? {}) }
+        const headers: Record<string, string> = { accept: "text/event-stream", ...options.headers?.() }
         if (parser.lastEventId) headers["last-event-id"] = parser.lastEventId
         const response = await doFetch(options.url, { headers, signal: controller.signal, cache: "no-store" })
         if (response.status === 401) {

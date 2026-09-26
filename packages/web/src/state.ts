@@ -115,7 +115,7 @@ export function receiveEvent(view: RunView, event: ProtocolEvent): RunView {
 }
 
 function sortUnits(units: Unit[]): Unit[] {
-  return [...units].sort((a, b) => a.ordinal - b.ordinal)
+  return units.toSorted((a, b) => a.ordinal - b.ordinal)
 }
 
 function isTerminal(status: Run["status"]): boolean {
@@ -258,5 +258,5 @@ export function filterLibrary(entries: LibraryEntry[], filter: LibraryFilter): L
 /** Merge a `library.changed` entry into the list (newest first) until the next refetch confirms it. */
 export function upsertLibraryEntry(entries: LibraryEntry[], entry: LibraryEntry): LibraryEntry[] {
   const rest = entries.filter((candidate) => candidate.runId !== entry.runId)
-  return [...rest, entry].sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
+  return [...rest, entry].toSorted((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
 }

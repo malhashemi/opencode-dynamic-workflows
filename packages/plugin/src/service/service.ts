@@ -39,10 +39,12 @@ import { elideEvent, elideRun, isTerminal, newRun, toLibraryEntry, type RunStore
 import { toJsonSchema } from "../schema-bridge"
 import type { UnitIndex } from "../units"
 import type { DefineWorkflowConfig } from "../workflow"
+import manifest from "../../package.json" with { type: "json" }
 import type { PluginConfig } from "./config"
 
+
 export const PLUGIN_NAME = "@malhashemi/opencode-dynamic-workflows"
-export const PLUGIN_VERSION = "0.1.0"
+export const PLUGIN_VERSION: string = manifest.version
 
 export interface ServiceDeps {
   location: string
@@ -309,7 +311,7 @@ export class WorkflowService {
     const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
     return {
       workflows: [...registry.entries.values()]
-        .sort((a, b) => a.key.localeCompare(b.key))
+        .toSorted((a, b) => a.key.localeCompare(b.key))
         .map((entry) => ({
           key: entry.key,
           name: entry.meta.name,
@@ -359,7 +361,7 @@ export class WorkflowService {
       const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
       const entry = registry.entries.get(input.name)
       if (!entry) {
-        const known = [...registry.entries.keys()].sort()
+        const known = Array.from(registry.entries.keys()).toSorted()
         throw new WorkflowProtocolError("not_found", `No durable Workflow named "${input.name}". Registered: ${known.length ? known.join(", ") : "(none)"}.`, {
           details: { known },
         })
@@ -488,7 +490,7 @@ export class WorkflowService {
   private async resolveDurable(name: string): Promise<DefineWorkflowConfig> {
     const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
     const entry = registry.entries.get(name)
-    if (!entry) throw new Error(`ctx.workflow: no saved Workflow named "${name}" (known: ${[...registry.entries.keys()].sort().join(", ") || "none"})`)
+    if (!entry) throw new Error(`ctx.workflow: no saved Workflow named "${name}" (known: ${Array.from(registry.entries.keys()).toSorted().join(", ") || "none"})`)
     const source = await readFile(entry.absPath, "utf8")
     return (await loadWorkflow(source, { sourcePath: entry.absPath, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })).config
   }
@@ -588,9 +590,9 @@ export class WorkflowService {
     // One entry per `ctx.ask` the script got past, in order. An ask released because the Run stopped is not a
     // decision (skip it: ask again); a person handing one back chose the fallback (null replays the fallback).
     const answers = run.resolved
-      .filter((record) => record.origin === "script" && !(record.by === "automation" && record.outcome === "cancelled"))
-      .sort((a, b) => a.raisedAt - b.raisedAt)
-      .map((record) => (record.answers.length > 0 ? record.answers : null))
+      .filter((entry) => entry.origin === "script" && !(entry.by === "automation" && entry.outcome === "cancelled"))
+      .toSorted((a, b) => a.raisedAt - b.raisedAt)
+      .map((entry) => (entry.answers.length > 0 ? entry.answers : null))
     const replay: ReplayPlan = { units, answers, rerunFailed, diverged: false }
     // The journaled script, not the file on disk: a resume replays the Run that happened, even if the durable
     // file was edited since (a changed script diverges and runs live from the first changed Unit).

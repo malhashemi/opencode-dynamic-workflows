@@ -1,6 +1,6 @@
 {
   "name": "opencode-dynamic-workflows-monorepo",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "private": true,
   "description": "Deterministic multi-subagent Workflow orchestration for OpenCode V2, as a plugin (no core changes).",
   "type": "module",
@@ -8,15 +8,24 @@
     "packages/*"
   ],
   "scripts": {
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun test",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --fix",
     "typecheck": "tsc --build",
     "test": "bun test",
-    "build": "bun run packages/plugin/script/build-tui.ts && bun run --cwd packages/web build && bun run packages/plugin/script/protocol-schemas.ts --check",
+    "build": "bun run packages/plugin/script/build-tui.ts && bun run --cwd packages/web build && bun run schemas:check",
     "build:web": "bun run --cwd packages/web build",
+    "schemas": "bun run packages/plugin/script/protocol-schemas.ts",
+    "schemas:check": "bun run packages/plugin/script/protocol-schemas.ts --check",
     "verify:live": "bun test ./packages/plugin/test/live/core.live.ts ./packages/plugin/test/live/interactions.live.ts ./packages/plugin/test/live/features.live.ts ./packages/plugin/test/live/acceptance.live.ts --timeout 600000",
     "pack": "bun run build && cd packages/plugin && bun pm pack"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "oxfmt": "0.70.0",
+    "oxlint": "1.85.0"
   }
 }

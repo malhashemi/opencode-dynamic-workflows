@@ -120,7 +120,7 @@ export function layout<Id extends string>(specs: readonly ColumnSpec<Id>[], widt
   let chosen = [...specs]
   const need = (columns: readonly ColumnSpec<Id>[]) => columns.reduce((sum, column) => sum + column.width, 0) + Math.max(0, columns.length - 1)
   while (need(chosen) > width && chosen.length > 1) {
-    const drop = chosen.filter((column) => !column.flex).sort((a, b) => a.priority - b.priority)[0]
+    const drop = chosen.filter((column) => !column.flex).toSorted((a, b) => a.priority - b.priority)[0]
     if (!drop) break
     chosen = chosen.filter((column) => column !== drop)
   }
@@ -238,7 +238,7 @@ export function stripText(entries: readonly LibraryEntry[], now: number, width: 
       kept = kept.map((part) => (part === long ? { text: part.short!, priority: part.priority } : part))
       continue
     }
-    const drop = [...kept].sort((a, b) => a.priority - b.priority)[0]!
+    const drop = kept.toSorted((a, b) => a.priority - b.priority)[0]!
     kept = kept.filter((part) => part !== drop)
   }
   return truncate(render(), width)

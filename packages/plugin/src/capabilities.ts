@@ -61,7 +61,7 @@ export function shellCommand(command: string, windows = WINDOWS): string[] {
 export function shellQuote(value: unknown, windows = WINDOWS): string {
   if (Array.isArray(value)) return value.map((entry) => shellQuote(entry, windows)).join(" ")
   const text = String(value)
-  if (/^[A-Za-z0-9_\/.,:=@+-]+$/.test(text)) return text
+  if (/^[A-Za-z0-9_/.,:=@+-]+$/.test(text)) return text
   // cmd.exe: double quotes with inner quotes doubled. `%NAME%` still expands inside them (cmd has no escape for it
   // on a command line) — values containing `%` are the one case that is not literal on Windows.
   if (windows) return `"${text.replace(/"/g, '""')}"`
@@ -128,7 +128,7 @@ export function createCapabilities(options: CapabilityOptions): WorkflowCapabili
       const real = confine(options.location, target)
       options.audit(`list ${clip(target)}`)
       const entries = await readdir(real, { withFileTypes: true })
-      return entries.map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name)).sort()
+      return entries.map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name)).toSorted()
     },
     async stat(target) {
       guard("file.stat")

@@ -225,9 +225,9 @@ export function WorkflowsScreen(props: ScreenProps) {
   })
   // `/workflows answer` and toasts open a Run straight into answer mode.
   createEffect(() => {
-    const current = run()
-    if (!autoAnswer() || !current) return
-    const first = current.interactions[0]
+    const shown = run()
+    if (!autoAnswer() || !shown) return
+    const first = shown.interactions[0]
     if (first) beginAnswer(first)
     setAutoAnswer(false)
   })
@@ -461,8 +461,8 @@ export function WorkflowsScreen(props: ScreenProps) {
   const crumbs = () => {
     const v = view()
     const parts = [props.title]
-    const current = run()
-    if (v.kind !== "library") parts.push(current ? `${workflowName(current)} ${shortId(current.runId)}` : shortId(v.runId))
+    const shown = run()
+    if (v.kind !== "library") parts.push(shown ? `${workflowName(shown)} ${shortId(shown.runId)}` : shortId(v.runId))
     if (v.kind === "unit") {
       const unit = viewUnit()
       parts.push(unit ? unitName(unit) : "unit")
@@ -970,7 +970,7 @@ export function LibraryPage(props: { wf: Wf; data: () => { runId?: string; unitI
   return (
     <WorkflowsScreen
       wf={props.wf}
-      entries={() => Object.values(props.wf.state().runs).map((slot) => slot.entry).sort((a, b) => b.startedAt - a.startedAt)}
+      entries={() => Object.values(props.wf.state().runs).map((slot) => slot.entry).toSorted((a, b) => b.startedAt - a.startedAt)}
       start={props.data}
       root="library"
       title="Workflows"

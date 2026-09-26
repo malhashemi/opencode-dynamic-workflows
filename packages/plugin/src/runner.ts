@@ -269,7 +269,6 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
     else guard.addEventListener("abort", () => resolve(reason()), { once: true })
   })
 
-  const location = spec.unitLocation ?? spec.location
   let info: HostSessionInfo
   try {
     const creating = Promise.resolve(host.session.create({

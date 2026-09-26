@@ -65,8 +65,8 @@ describe("acceptance: installed package", () => {
   test("a durable Run: headless ask fallback, typed Unit, capability", async () => {
     const { runId } = (await server.workflow.startRun({ name: "accept", args: { n: 41 } })) as any
     const run = await until(async () => {
-      const { run } = (await server.workflow.getRun({ runId })) as any
-      return run.status !== "running" && run.status !== "queued" ? run : undefined
+      const { run: current } = (await server.workflow.getRun({ runId })) as any
+      return current.status !== "running" && current.status !== "queued" ? current : undefined
     }, 180_000, 500)
     expect(run.status).toBe("succeeded")
     const { result } = (await server.workflow.getResult({ runId })) as any

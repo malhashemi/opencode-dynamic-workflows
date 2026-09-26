@@ -69,7 +69,7 @@ const SCRIPT_FILE = "script.ts"
 const RESULT_FILE = "result.json"
 const RECORD_VERSION = 2
 
-const RUN_STATUSES: readonly Run["status"][] = ["queued", "running", "succeeded", "failed", "stopped", "interrupted"]
+const RUN_STATUSES: ReadonlySet<Run["status"]> = new Set(["queued", "running", "succeeded", "failed", "stopped", "interrupted"])
 /** V1 records (`done`/`aborted`) still read back. */
 const LEGACY_STATUS: Record<string, Run["status"]> = { done: "succeeded", aborted: "stopped" }
 const LEGACY_UNIT_STATUS: Record<string, Unit["status"]> = { ok: "succeeded" }
@@ -129,7 +129,7 @@ function parseRunDocument(value: unknown): RunDocument | null {
   if (!run || typeof run !== "object") return null
   if (typeof run.runId !== "string" || run.runId.length === 0) return null
   const status = (LEGACY_STATUS[String(run.status)] ?? run.status) as Run["status"]
-  if (!RUN_STATUSES.includes(status)) return null
+  if (!RUN_STATUSES.has(status)) return null
   if (typeof run.startedAt !== "number" || !Number.isFinite(run.startedAt)) return null
   const workflow =
     typeof run.workflow === "object" && run.workflow !== null
@@ -193,12 +193,12 @@ function foldTransitions(run: Run, transitions: ProtocolEvent[]): Run {
       if (record && typeof record.interactionId === "string") resolved.set(record.interactionId, record)
     }
   }
-  const folded = [...units.values()].sort((a, b) => a.ordinal - b.ordinal)
+  const folded = Array.from(units.values()).toSorted((a, b) => a.ordinal - b.ordinal)
   const newest = transitions.reduce((max, event) => (typeof event.revision === "number" && event.revision > max ? event.revision : max), run.revision)
   return {
     ...run,
     units: folded,
-    resolved: [...resolved.values()].sort((a, b) => a.resolvedAt - b.resolvedAt),
+    resolved: Array.from(resolved.values()).toSorted((a, b) => a.resolvedAt - b.resolvedAt),
     // Totals follow the Units they are made of (after a crash `run.json` may predate the last Units).
     usage: transitions.length > 0 ? folded.reduce((sum, unit) => addUsage(sum, unit.usage), emptyUsage()) : run.usage,
     revision: newest,
@@ -371,7 +371,7 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
     },
 
     async flush() {
-      await Promise.all([...chains.values()])
+      await Promise.all(chains.values())
     },
   }
 }

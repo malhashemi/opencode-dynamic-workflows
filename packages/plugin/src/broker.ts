@@ -188,18 +188,18 @@ export function createBroker(options: BrokerOptions): Broker {
 
   /** Close what matches: reject native permission requests (or flag in-flight ones), settle the waiters. */
   const release = (matches: (entry: { runId: string; unitId: string | null }) => boolean, message: string) => {
-    for (const [requestID, entry] of [...permissions]) {
+    for (const [requestID, entry] of Array.from(permissions)) {
       if (!matches(entry)) continue
       permissions.delete(requestID)
       const waiter = waiters.get(entry.interactionId)
       if (waiter?.sending) waiter.released = true
       else rejectNative(entry.sessionID, requestID, message)
     }
-    for (const [interactionId, waiter] of [...waiters]) {
+    for (const [interactionId, waiter] of Array.from(waiters)) {
       if (!matches({ runId: waiter.runId, unitId: waiter.interaction.unitId })) continue
       finish(interactionId, { answers: null, by: "automation", outcome: "cancelled" })
     }
-    for (const [formID, entry] of [...forms]) if (matches(entry)) forms.delete(formID)
+    for (const [formID, entry] of Array.from(forms)) if (matches(entry)) forms.delete(formID)
   }
 
   /**

@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "bun:test"
 import { z } from "../src/workflow"
-import { DEFAULT_RETRIES, parseStructured, toJsonSchema } from "../src/schema-bridge"
+import { DEFAULT_RETRIES, parseStructured, toJsonSchema, fromJsonSchema } from "../src/schema-bridge"
 
 describe("toJsonSchema", () => {
   it("converts a worked-example object schema to a draft-7 JSON Schema (no $schema wrapper)", () => {
@@ -84,7 +84,6 @@ describe("DEFAULT_RETRIES", () => {
 })
 
 describe("audit round 4 — JSON Schema conversion matches JSON Schema", () => {
-  const { fromJsonSchema } = require("../src/schema-bridge") as typeof import("../src/schema-bridge")
   it("a required key without a properties entry must be present", () => {
     const s = fromJsonSchema({ type: "object", required: ["id"], properties: {} })
     expect(s.safeParse({}).success).toBe(false)

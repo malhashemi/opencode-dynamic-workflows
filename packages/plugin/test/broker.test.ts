@@ -187,7 +187,7 @@ describe("audit regressions — permission decisions and native forms", () => {
 })
 
 describe("audit round 2 — nothing answerable outlives its Unit", () => {
-  const setup = () => {
+  const gatedSetup = () => {
     const store = createRunStore("/p")
     store.create(newRun({ runId: "r1", workflow: { key: null, name: "wf", description: "", provenance: "inline" }, location: "/p", parentSessionID: "ses_p" }))
     const replies: Array<{ requestID: string; decision: PermissionDecision }> = []
@@ -206,7 +206,7 @@ describe("audit round 2 — nothing answerable outlives its Unit", () => {
   const detail = (requestID: string) => ({ action: "read", resources: ["x"], save: [], requestID })
 
   it("releaseUnit rejects that Unit's permission requests and leaves other Units alone", async () => {
-    const { store, broker, replies } = setup()
+    const { store, broker, replies } = gatedSetup()
     broker.permission({ runId: "r1", unitId: "u1", sessionID: "s1", detail: detail("p1") })
     broker.permission({ runId: "r1", unitId: "u2", sessionID: "s2", detail: detail("p2") })
     broker.releaseUnit("r1", "u1")
@@ -216,7 +216,7 @@ describe("audit round 2 — nothing answerable outlives its Unit", () => {
   })
 
   it("an allow in flight when the Unit ends is not followed by a contradictory reject", async () => {
-    const { store, broker, replies, hold, open } = setup()
+    const { store, broker, replies, hold, open } = gatedSetup()
     broker.permission({ runId: "r1", unitId: "u1", sessionID: "s1", detail: detail("p1") })
     const id = store.get("r1")!.interactions[0]!.interactionId
     hold()

@@ -63,8 +63,8 @@ describe("live: core", () => {
   test("a durable Workflow runs from RPC: parallel text Units + a typed Unit", async () => {
     const { runId } = (await server.workflow.startRun({ name: "fanout", args: { topic: "octopuses" } })) as any
     const run = await until(async () => {
-      const { run } = (await server.workflow.getRun({ runId })) as any
-      return run.status !== "running" && run.status !== "queued" ? run : undefined
+      const { run: current } = (await server.workflow.getRun({ runId })) as any
+      return current.status !== "running" && current.status !== "queued" ? current : undefined
     }, 180_000, 1_000)
     console.log(JSON.stringify({ status: run.status, units: run.units.map((u: any) => [u.label, u.status, u.resultPath, u.sessionID, u.model.resolved]), errors: run.errors, usage: run.usage }, null, 1))
     expect(run.status).toBe("succeeded")
@@ -101,8 +101,8 @@ describe("live: core", () => {
   test("capabilities run confined to the project and are audited", async () => {
     const { runId } = (await server.workflow.startRun({ name: "caps" })) as any
     await until(async () => {
-      const { run } = (await server.workflow.getRun({ runId })) as any
-      return run.status !== "running" && run.status !== "queued" ? run : undefined
+      const { run: current } = (await server.workflow.getRun({ runId })) as any
+      return current.status !== "running" && current.status !== "queued" ? current : undefined
     }, 60_000, 300)
     const { result } = (await server.workflow.getResult({ runId })) as any
     expect(result.pwd).toBe(server.project)

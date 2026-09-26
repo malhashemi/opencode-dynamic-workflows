@@ -82,7 +82,7 @@ function unique(xs: string[]): string[] {
  */
 export function configDirs(directory: string, _worktree?: string): string[] {
   const dirs: string[] = [globalConfigDir()]
-  if (!envFlag("OPENCODE_DISABLE_PROJECT_CONFIG")) dirs.push(...upExisting(".opencode", directory).reverse())
+  if (!envFlag("OPENCODE_DISABLE_PROJECT_CONFIG")) dirs.push(...upExisting(".opencode", directory).toReversed())
   const envDir = process.env.OPENCODE_CONFIG_DIR
   if (envDir && envDir.length > 0) dirs.push(envDir)
   return unique(dirs)

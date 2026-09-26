@@ -14,6 +14,7 @@
     "test",
     "server.ts",
     "rpc.ts",
-    "docs/examples"
+    "docs/examples",
+    "package.json"
   ]
 }

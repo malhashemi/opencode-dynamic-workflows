@@ -63,8 +63,8 @@ const w = () => server.workflow as any
 
 async function settled(runId: string, ms = 180_000) {
   return until(async () => {
-    const { run } = await w().getRun({ runId })
-    return run.status !== "running" && run.status !== "queued" ? run : undefined
+    const { run: current } = await w().getRun({ runId })
+    return current.status !== "running" && current.status !== "queued" ? current : undefined
   }, ms, 500)
 }
 
@@ -275,8 +275,8 @@ describe("live: service restart", () => {
     await server.restart()
     const run = await until(async () => {
       try {
-        const { run } = await w().getRun({ runId })
-        return run.status === "interrupted" ? run : undefined
+        const { run: current } = await w().getRun({ runId })
+        return current.status === "interrupted" ? current : undefined
       } catch {
         return undefined
       }

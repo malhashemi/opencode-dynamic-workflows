@@ -64,7 +64,7 @@ export function configureLimits(runs: number, perProvider: Record<string, number
   for (const [id, permits] of Object.entries(perProvider)) {
     if (providers.get(id)?.size !== permits) providers.set(id, new Semaphore(permits))
   }
-  for (const id of [...providers.keys()]) if (!(id in perProvider)) providers.delete(id)
+  for (const id of Array.from(providers.keys())) if (!(id in perProvider)) providers.delete(id)
   singletons.set("limit:providers", providers)
 }
 

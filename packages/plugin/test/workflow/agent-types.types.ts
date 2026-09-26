@@ -31,7 +31,7 @@ async function proof() {
 
   // CONTROL — the no-schema result is `string`, so a struct field access IS a type error (proves teeth).
   // @ts-expect-error — `text` is a string, it has no `.title`.
-  if (text !== null) text.title
+  if (text !== null) void text.title
 
   // CONTROL — the schema result is the inferred object, NOT a string (proves the branch actually switched).
   // @ts-expect-error — `finding` is an object, it has no string method `.toUpperCase`.

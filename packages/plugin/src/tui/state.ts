@@ -111,7 +111,7 @@ function mergeHeaderIntoEntry(entry: LibraryEntry, header: RunHeader): LibraryEn
 function upsertUnit(units: readonly Unit[], unit: Unit): Unit[] {
   const next = units.filter((candidate) => candidate.unitId !== unit.unitId)
   next.push(unit)
-  return next.sort((a, b) => a.ordinal - b.ordinal)
+  return next.toSorted((a, b) => a.ordinal - b.ordinal)
 }
 
 function applyToRun(run: Run, event: ProtocolEvent): Run {
@@ -218,7 +218,7 @@ export function applyEvent(state: SyncState, event: ProtocolEvent): Applied {
 export function libraryEntries(state: SyncState): LibraryEntry[] {
   return Object.values(state.runs)
     .map((slot) => slot.entry)
-    .sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
+    .toSorted((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
 }
 
 /** The Runs a session started, newest first. */
@@ -230,7 +230,7 @@ export function sessionEntries(state: SyncState, sessionID: string): LibraryEntr
 export function waitingRuns(state: SyncState): Run[] {
   return Object.values(state.runs)
     .flatMap((slot) => (slot.run && slot.run.interactions.length > 0 ? [slot.run] : []))
-    .sort((a, b) => (a.interactions[0]?.raisedAt ?? 0) - (b.interactions[0]?.raisedAt ?? 0))
+    .toSorted((a, b) => (a.interactions[0]?.raisedAt ?? 0) - (b.interactions[0]?.raisedAt ?? 0))
 }
 
 export function anyLive(state: SyncState): boolean {

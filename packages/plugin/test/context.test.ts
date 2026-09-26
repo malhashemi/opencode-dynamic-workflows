@@ -170,7 +170,7 @@ describe("ctx.agent — stopping and limits", () => {
     stops.get(hangId)!()
     expect(await hanging).toBeNull()
     expect(await fine).toBe("fine")
-    expect(units.filter((u) => u.unitId === hangId).at(-1)?.status).toBe("stopped")
+    expect(units.findLast((u) => u.unitId === hangId)?.status).toBe("stopped")
   })
 
   test("the step guard stops a runaway Unit", async () => {

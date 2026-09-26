@@ -27,7 +27,7 @@ describe("ctx.pipeline", () => {
     expect(reachedStage2).toEqual([1])
     release0()
     expect(await resultsP).toEqual([110, 111])
-    expect(reachedStage2.sort()).toEqual([0, 1])
+    expect(reachedStage2.toSorted()).toEqual([0, 1])
   })
 
   test("a stage that throws drops that item to null + records it; other items complete", async () => {

@@ -115,7 +115,7 @@ describe("scanWorkflowFiles (recursive glob, symlinks)", () => {
       await write(dir, "workflows/a/b/deep.ts", wf("deep"))
       await write(dir, "workflow/singular.ts", wf("sing")) // singular root accepted
       await write(dir, "workflows/notes.md", "ignored") // non-.ts ignored
-      const rels = (await scanWorkflowFiles(dir)).map((f) => f.relMatch).sort()
+      const rels = (await scanWorkflowFiles(dir)).map((f) => f.relMatch).toSorted()
       expect(rels).toContain("workflows/top.ts")
       expect(rels).toContain("workflows/a/b/deep.ts")
       expect(rels).toContain("workflow/singular.ts")
@@ -166,7 +166,7 @@ describe("buildRegistry (discovery → keying → precedence)", () => {
         dirs: [globalScope, projectScope], // explicit precedence: global first, project second (wins)
       })
 
-      const keys = [...reg.entries.keys()].sort()
+      const keys = Array.from(reg.entries.keys()).toSorted()
       expect(keys).toContain("shared")
       expect(keys).toContain("dup")
       expect(keys).toContain("deep-research:dr")

@@ -95,8 +95,8 @@ export function resolveBind(bind: string): string {
   return bind
 }
 
-function json(body: unknown, status = 200, extra: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), {
+function json(payload: unknown, status = 200, extra: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(payload), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...SECURITY_HEADERS, ...extra },
   })
@@ -151,8 +151,8 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
   if (!server) throw lastError instanceof Error ? lastError : new Error("the gateway could not bind a port")
   const port = server.port!
   const publicHost = hostname === "0.0.0.0" ? "127.0.0.1" : hostname
-  const url = `http://${publicHost.includes(":") ? `[${publicHost}]` : publicHost}:${port}`
-  const ownOrigins = new Set([url, `http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`])
+  const baseUrl = `http://${publicHost.includes(":") ? `[${publicHost}]` : publicHost}:${port}`
+  const ownOrigins = new Set([baseUrl, `http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`])
   const allowedOrigins = new Set([...ownOrigins, ...config.allowedOrigins])
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, `${publicHost}:${port}`, ...config.allowedOrigins.map((origin) => { try { return new URL(origin).host } catch { return "" } }).filter(Boolean)])
   if (hostname === "0.0.0.0") {
@@ -433,7 +433,7 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
   }
 
   const gateway: GatewayHandle = {
-    url,
+    url: baseUrl,
     host: hostname,
     port,
     tokens,
@@ -447,7 +447,7 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
       return (subscribers.get(location) ?? 0) > 0
     },
     createPairingCode() {
-      return { ...tokens.createPairingCode(), url }
+      return { ...tokens.createPairingCode(), url: baseUrl }
     },
     async stop() {
       server?.stop(true)

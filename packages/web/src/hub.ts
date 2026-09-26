@@ -93,7 +93,7 @@ export class EventHub {
     }
     const verdict = tracker.observe(event.seq, event.epoch)
     if (verdict !== "ok") this.resync(location, verdict === "gap" ? "missed events" : "the service restarted")
-    for (const listener of [...this.listeners]) listener.event?.(event)
+    for (const listener of Array.from(this.listeners)) listener.event?.(event)
   }
 
   trackerFor(location: string): SeqTracker | undefined {
@@ -101,11 +101,11 @@ export class EventHub {
   }
 
   private resync(location: string, reason: string): void {
-    for (const listener of [...this.listeners]) listener.resync?.(location, reason)
+    for (const listener of Array.from(this.listeners)) listener.resync?.(location, reason)
   }
 
   private setStatus(location: string, status: LocationStatus): void {
     this.statuses.set(location, status)
-    for (const listener of [...this.statusListeners]) listener(this.statuses)
+    for (const listener of Array.from(this.statusListeners)) listener(this.statuses)
   }
 }

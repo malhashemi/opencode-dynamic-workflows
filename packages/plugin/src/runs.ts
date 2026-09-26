@@ -274,7 +274,7 @@ export function createRunStore(location: string): RunStore {
   const publish = (event: ProtocolEvent) => {
     window.push(event)
     if (window.length > EVENT_WINDOW) window.splice(0, window.length - EVENT_WINDOW)
-    for (const subscriber of [...subscribers]) {
+    for (const subscriber of Array.from(subscribers)) {
       try {
         subscriber(structuredClone(event))
       } catch {
@@ -413,7 +413,7 @@ export function createRunStore(location: string): RunStore {
     },
     list() {
       return [...runs.values()]
-        .sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
+        .toSorted((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
         .map(cloneRun)
     },
     apply,

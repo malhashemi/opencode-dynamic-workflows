@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 120,
+  "semi": false,
+  "sortImports": true,
+  "sortPackageJson": true,
+  "ignorePatterns": [
+    "**/dist",
+    "**/dist-types",
+    "bun.lock",
+    "**/CHANGELOG.md",
+    ".release-please-manifest.json",
+    "README.md",
+    "packages/plugin/README.md",
+    "packages/plugin/docs/protocol/schemas",
+    "assets",
+    ".opencode"
+  ]
+}

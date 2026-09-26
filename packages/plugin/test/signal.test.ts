@@ -29,7 +29,7 @@ describe("ctx.signal (abort)", () => {
     controller.abort()
     const [a, b, c] = await Promise.all([pA, pB, pC])
     expect([a, b, c]).toEqual([null, null, null])
-    expect(ctx.errors.map((e) => e.unit).sort()).toEqual(["A", "B", "C"])
+    expect(ctx.errors.map((e) => e.unit).toSorted()).toEqual(["A", "B", "C"])
     expect(host.prompts.map((p) => p.text)).toEqual(["A"])
     expect(host.interrupts).toHaveLength(1)
     expect(state.errors.find((e) => e.unit === "A")?.error).toBe("unit aborted before completion")
