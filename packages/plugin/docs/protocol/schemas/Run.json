@@ -499,6 +499,23 @@
           "approval": {
             "type": "object",
             "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "save"
+                ]
+              },
+              "target": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "sha256": {
                 "type": "string"
               },
@@ -513,6 +530,8 @@
               }
             },
             "required": [
+              "action",
+              "target",
               "sha256",
               "bytes",
               "source",
@@ -692,6 +711,23 @@
           "approval": {
             "type": "object",
             "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "run",
+                  "save"
+                ]
+              },
+              "target": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "sha256": {
                 "type": "string"
               },
@@ -706,6 +742,8 @@
               }
             },
             "required": [
+              "action",
+              "target",
               "sha256",
               "bytes",
               "source",

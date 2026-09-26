@@ -167,7 +167,14 @@ describe("broker — Unit questions, permissions, approvals", () => {
 
   it("approval maps the chosen option and is null when nobody is attached", async () => {
     const { broker, store, setAttached } = setup()
-    const detail = { sha256: "abc", bytes: 10, source: "x", requestingSessionID: "s" }
+    const detail = {
+      action: "run" as const,
+      target: null,
+      sha256: "abc",
+      bytes: 10,
+      source: "x",
+      requestingSessionID: "s",
+    }
     const pending = broker.approval({ runId: "r1", sessionID: "s", detail, signal: new AbortController().signal })
     await Promise.resolve()
     expect(store.get("r1")!.interactions[0]?.kind).toBe("approval")

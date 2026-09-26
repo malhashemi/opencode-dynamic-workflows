@@ -62,7 +62,7 @@ export const WORKFLOW_INLINE_DESCRIPTION = `Run a Workflow script you write now 
 
 Arguments: source (the module), or scriptPath (a project file holding it); args (validated against meta.args);
 background (return at once with a runId); save: "<folder/name>" — save it under .opencode/workflows/ instead of
-running it, after which workflow({ name }) runs it by key.
+running it (the person approves the save the same way), after which workflow({ name }) runs it by key.
 
 ${SKILL_POINTER}
 

@@ -23,8 +23,13 @@ durable Workflows for anything you run often (`workflow({ save_run })` or `workf
   **Run once**, **Always for this project** (stored in the plugin's storage for this project directory),
   **Reject**. The request has no time limit: it waits until someone answers or the Run is stopped, and the
   model's `workflow_inline` call waits with it.
-- Nobody attached (headless `opencode run`, CI): the Run is refused with a message, unless the project was
-  approved before.
+- The script is loaded (so its top-level code runs) only after the approval, on every path: a new Run, a resumed
+  one (a refused Run keeps its script, so resume asks again) and a save.
+- Saving inline source as a durable Workflow (`workflow_inline({ save })`, `workflow({ save_run })`) asks the same
+  way, with **Save** or **Reject**: a saved Workflow later runs by name without approval. `save_run` does not ask
+  again for a Run whose exact source a person approved to run.
+- Nobody attached (headless `opencode run`, CI): the Run or save is refused with a message, unless the project
+  was approved before.
 - `inline: "allow"`: no approval (use only where you would run any model-written script).
 - `inline: "deny"`: inline Workflows never run.
 - `inlineCapabilities: false`: inline Runs get no `ctx.$`, `ctx.file`, `ctx.fetch` (defence in depth only;
