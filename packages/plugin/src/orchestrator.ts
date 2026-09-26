@@ -8,6 +8,7 @@
  */
 import type { Broker } from "./broker"
 import { createCapabilities } from "./capabilities"
+import { defaultConcurrency, Semaphore } from "./scheduler"
 import { createEngineState, createWorkflowContext, type ReplayPlan, type RunLimits } from "./context"
 import type { EngineHost, HostPermissionRule } from "./host"
 import type { Journal } from "./journal"
@@ -95,6 +96,10 @@ export interface RunWorkflowInput {
   /** The Run exists; `stop` ends it. */
   onRegister?: (runId: string, stop: (reason?: string) => void) => void
   onUnitSession?: (runId: string, unitId: string, sessionID: string, stop: () => void) => void
+  /** Resolve a saved Workflow by key, for `ctx.workflow(name)`. */
+  resolveWorkflow?: (name: string) => Promise<DefineWorkflowConfig>
+  /** Cross-Run Unit slots (the process-wide limiter). */
+  slot?: (providerID: string | undefined, signal: AbortSignal) => Promise<() => void>
   /** The Run's result, handed over before `run.ended` is published. */
   onResult?: (runId: string, result: unknown) => void
   /** Called when the Run is terminal (after the store and journal have it). */
@@ -188,7 +193,16 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       input.journal ? () => input.journal!.begin(store.get(input.runId)!, { source: input.source, args, instance: input.instance ?? "" }) : undefined,
     )
 
-    const ctx = createWorkflowContext({
+    const capabilities = () =>
+      createCapabilities({
+        location: input.location,
+        signal,
+        audit: (message) => store.apply({ type: "run.log", runId: input.runId, value: message, kind: "capability" }),
+        ...(input.capabilities?.disabled ? { disabled: input.capabilities.disabled } : {}),
+        ...(input.capabilities?.shellTimeoutMs ? { shellTimeoutMs: input.capabilities.shellTimeoutMs } : {}),
+      })
+    const limiter = new Semaphore(Number.isFinite(meta.concurrency) ? (meta.concurrency as number) : defaultConcurrency())
+    const base = {
       host: input.host,
       index: input.index,
       runId: input.runId,
@@ -203,6 +217,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       signal,
       unitTimeout: resolveUnitTimeout(input.unitTimeout, meta.unitTimeout),
       limits: { ...meta.limits, ...input.limits },
+      ...(input.slot ? { slot: input.slot } : {}),
       permissions: [...(meta.permissions ?? []), ...(input.permissions ?? [])],
       permissionPolicy: () => resolvePermissionPolicy(meta),
       ask: (form, options) =>
@@ -229,16 +244,7 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
             },
           }
         : {}),
-      extend: {
-        ...createCapabilities({
-          location: input.location,
-          signal,
-          audit: (message) => store.apply({ type: "run.log", runId: input.runId, value: message, kind: "capability" }),
-          ...(input.capabilities?.disabled ? { disabled: input.capabilities.disabled } : {}),
-          ...(input.capabilities?.shellTimeoutMs ? { shellTimeoutMs: input.capabilities.shellTimeoutMs } : {}),
-        }),
-        ...input.extend,
-      },
+      limiter,
       events: {
         onLog: (message) => store.apply({ type: "run.log", runId: input.runId, value: message }),
         onPhase: (title) => store.apply({ type: "run.phase", runId: input.runId, value: title }),
@@ -257,7 +263,37 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         },
         onUnitSession: (unitId, sessionID, stop) => input.onUnitSession?.(input.runId, unitId, sessionID, stop),
       },
-    })
+    } satisfies Partial<Parameters<typeof createWorkflowContext>[0]>
+
+    /**
+     * `ctx.workflow(name, args)`: a saved Workflow as one step of this Run. It shares the Run's concurrency cap,
+     * Unit counter (so resume replays it too), budget, errors and signal; its Units and phases are prefixed
+     * `name › `. One level only.
+     */
+    const nested = async (name: string, childArgs?: unknown): Promise<unknown> => {
+      if (!input.resolveWorkflow) throw new Error("ctx.workflow is not available here")
+      const child = await input.resolveWorkflow(name)
+      const parsed = validateArgs(child.meta, childArgs)
+      store.apply({ type: "run.log", runId: input.runId, value: `▸ ${name}`, kind: "engine" })
+      const childCtx = createWorkflowContext({
+        ...base,
+        workflow: `${meta.name} › ${child.meta.name}`,
+        args: parsed,
+        permissions: [...(child.meta.permissions ?? []), ...(input.permissions ?? [])],
+        prefix: `${name} › `,
+        extend: {
+          ...capabilities(),
+          workflow: async () => {
+            throw new Error("ctx.workflow: nesting is one level only")
+          },
+        },
+      })
+      const result = await child.run(childCtx)
+      store.apply({ type: "run.log", runId: input.runId, value: `◂ ${name} done`, kind: "engine" })
+      return result
+    }
+
+    const ctx = createWorkflowContext({ ...base, extend: { ...capabilities(), workflow: nested, ...input.extend } })
 
     result = await config.run(ctx)
     status = signal.aborted ? (failure ? "failed" : "stopped") : "succeeded"

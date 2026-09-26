@@ -22,7 +22,7 @@ import type { Context } from "@opencode/plugin/promise/plugin"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
 import { createBroker } from "../broker"
 import { confine } from "../capabilities"
-import { engineGlobal, locationSlot } from "../engine-global"
+import { configureLimits, engineGlobal, locationSlot } from "../engine-global"
 import type { EngineHost, HostSessionInfo } from "../host"
 import { createJournal, journalRoot, subscribeJournal } from "../journal"
 import { InvalidArgsError } from "../orchestrator"
@@ -40,7 +40,7 @@ import {
   WORKFLOW_INLINE_DESCRIPTION,
   WORKFLOW_TOOL_DESCRIPTION,
 } from "./description"
-import { finishedRunText, listText, runLink, startedRunText, statusText } from "./format"
+import { finishedRunText, listText, notificationText, runLink, startedRunText, statusText } from "./format"
 import { loadAuthoringSkill } from "./skill"
 
 export const PLUGIN_ID = "opencode-dynamic-workflows"
@@ -67,7 +67,42 @@ export function adaptHost(ctx: Context): EngineHost {
       get: (input) => ctx.session.get(input) as unknown as Promise<HostSessionInfo>,
     },
     generateText: (input) => ctx.generate.text({ prompt: input.prompt, model: input.model } as never) as Promise<{ text: string }>,
+    worktree: {
+      async create(name) {
+        const created = (await ctx.worktree.create({ projectID: ctx.location.project.id, name } as never)) as { directory: string }
+        const directory = canonical(created.directory)
+        // OpenCode checks worktrees out detached: give each its own branch so kept work can be merged by name.
+        let branch = git(directory, ["rev-parse", "--abbrev-ref", "HEAD"])
+        if (!branch || branch === "HEAD") {
+          const named = `workflow/${name}`
+          branch = git(directory, ["switch", "-c", named]) !== null ? named : null
+        }
+        return { directory, branch, base: git(directory, ["rev-parse", "HEAD"]) }
+      },
+      async changed(directory, base) {
+        if (git(directory, ["status", "--porcelain"])) return true
+        return base !== null && git(directory, ["rev-parse", "HEAD"]) !== base
+      },
+      async remove(directory) {
+        await ctx.worktree.remove({ projectID: ctx.location.project.id, directory, force: true } as never)
+      },
+      async pluginActive(directory) {
+        // The Unit's session boots that location, which loads its plugins; give setup a moment to finish.
+        const key = canonical(directory)
+        for (let waited = 0; waited < 5_000; waited += 100) {
+          if (locationSlot(key).owner) return true
+          await Bun.sleep(100)
+        }
+        return false
+      },
+    },
   }
+}
+
+/** One git command's trimmed stdout, or null when it fails. */
+function git(directory: string, args: string[]): string | null {
+  const out = Bun.spawnSync(["git", "-C", directory, ...args], { stdout: "pipe", stderr: "ignore" })
+  return out.exitCode === 0 ? out.stdout.toString().trim() : null
 }
 
 /** The shape of the built-in `question` tool's input (2.0.16). */
@@ -152,6 +187,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   const instance = crypto.randomUUID()
   const location = canonical(ctx.location.directory)
   const config = parseConfig(ctx.options)
+  configureLimits(config.maxConcurrentUnits, config.providerConcurrency)
   const units = engineGlobal().units
   const { slot, fresh } = ensureService(ctx, location, config, instance)
   const service = slot.service
@@ -198,7 +234,17 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       return { content: protocolErrorText(error, argsSchema) }
     }
     const run = service.deps.store.get(started.runId)!
-    if (background) return { content: startedRunText(run, link(started.runId)), metadata: { runId: started.runId } }
+    if (background) {
+      if (service.deps.config.notify) {
+        const sessionID = tc.sessionID
+        void started.done.then(async (outcome) => {
+          const text = notificationText(outcome.run, outcome.output?.result, link(outcome.run.runId), outcome.error)
+          // Queued: if the session is mid-turn the notice waits for the turn to end, then the model reads it.
+          await ctx.session.prompt({ sessionID, text, delivery: "queue" } as never)
+        }).catch((error: unknown) => console.warn(`[workflow] background notification failed: ${error instanceof Error ? error.message : String(error)}`))
+      }
+      return { content: startedRunText(run, link(started.runId), service.deps.config.notify), metadata: { runId: started.runId } }
+    }
     const stopMirror = mirrorProgress(started.runId, tc)
     try {
       const outcome = await Promise.race([started.done, disposed.then(() => null)])
@@ -497,6 +543,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     getRun: (input, c) => guard(c.error as never, () => service.getRun(input.runId)),
     getUnit: (input, c) => guard(c.error as never, async () => ({ unit: await service.getUnit(input.runId, input.unitId) })),
     getResult: (input, c) => guard(c.error as never, () => service.getResult(input.runId)),
+    getTranscript: (input, c) => guard(c.error as never, () => service.getTranscript(input.runId, input.unitId)),
     getActivity: (input, c) => guard(c.error as never, async () => ({ entries: await service.getActivity(input.runId) })),
     listWorkflows: (_input, c) => guard(c.error as never, () => service.listWorkflows()),
     startRun: (input, c) =>

@@ -45,9 +45,9 @@ export function finishedRunText(run: Run, result: unknown, link: string | null, 
   return lines.join("\n")
 }
 
-export function startedRunText(run: Run, link: string | null): string {
+export function startedRunText(run: Run, link: string | null, notify = false): string {
   return [
-    `Started ${run.workflow.key ?? run.workflow.name} in the background.`,
+    `Started ${run.workflow.key ?? run.workflow.name} in the background.${notify ? " A notification arrives in this session when it ends — no need to poll." : ""}`,
     `run ${run.runId} — check with workflow({ status: "${run.runId}" }), fetch with workflow({ result: "${run.runId}" }).`,
     ...(link ? [`Watch it: ${link}`] : []),
   ].join("\n")
@@ -92,4 +92,17 @@ export function listText(listing: ListWorkflowsOutput): string {
 
 export function libraryLine(entry: LibraryEntry): string {
   return `${entry.runId} · ${entry.workflow.key ?? entry.workflow.name} · ${entry.status} · ${entry.settledUnits}/${entry.units} units`
+}
+
+/** The message posted into the calling session when a background Run ends. Short: the model fetches the rest. */
+export function notificationText(run: Run, result: unknown, link: string | null, error?: string): string {
+  const preview = run.status === "succeeded" ? body(result) : null
+  const clipped = preview && preview.length > 1_500 ? `${preview.slice(0, 1_499)}…` : preview
+  return [
+    `[workflow notification] The background Run ${run.runId} (${run.workflow.key ?? run.workflow.name}) ended \`${run.status}\`${error && run.status !== "succeeded" ? `: ${error}` : "."}`,
+    summaryLine(run, link),
+    ...(clipped ? ["", "Result preview:", clipped] : []),
+    "",
+    `Full result: workflow({ result: "${run.runId}" }). Continue with what you were doing, using this result if relevant.`,
+  ].join("\n")
 }

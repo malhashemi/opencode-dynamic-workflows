@@ -9,6 +9,7 @@
  */
 import type {
   ActivityEntry,
+  GetTranscriptOutput,
   InfoOutput,
   LibraryEntry,
   ListWorkflowsOutput,
@@ -90,6 +91,7 @@ export interface Api {
   getResult(runId: string): Promise<{ runId: string; status: RunStatus; result: unknown }>
   getActivity(runId: string): Promise<ActivityEntry[]>
   getUnit(runId: string, unitId: string): Promise<Unit>
+  getTranscript(runId: string, unitId: string): Promise<GetTranscriptOutput>
   listWorkflows(location: string): Promise<ListWorkflowsOutput>
   startRun(location: string, input: StartRunInput): Promise<{ runId: string }>
   stopRun(runId: string): Promise<void>
@@ -224,6 +226,7 @@ export function createApi(options: ApiOptions = {}): Api {
     async getUnit(runId, unitId) {
       return (await read<{ unit: Unit }>(`/v1/runs/${enc(runId)}/units/${enc(unitId)}`)).unit
     },
+    getTranscript: (runId, unitId) => read(`/v1/runs/${enc(runId)}/units/${enc(unitId)}/transcript`),
     listWorkflows: (location) => read(`/v1/workflows?location=${enc(location)}`),
     startRun: (location, input) => post(`/v1/runs?location=${enc(location)}`, input),
     async stopRun(runId) {

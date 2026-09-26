@@ -17,7 +17,9 @@ concurrency?, budget?, permissions?, limits? }. run(ctx) returns the result. ctx
   - parallel(thunks) — a barrier; use only when a stage needs all results of the previous one.
   - collect(xs) drops nulls · phase(title) · log(message) · args · budget · signal · errors
   - ask(question, { fallback }) — ask the person; the fallback answers when nobody is watching.
-  - $\\\`cmd \\\${value}\\\` / file.read|write / fetch — shell, files, HTTP confined to the project.`
+  - $\\\`cmd \\\${value}\\\` / file.read|write / fetch — shell, files, HTTP confined to the project.
+  - workflow(name, args) — run a saved Workflow as one step · agent(…, { isolation: "worktree" }) for Units that edit
+    files in parallel; worktrees() lists the ones kept.`
 
 const EXAMPLE = `Example — review each file, verify each finding as soon as its review is done:
   import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
@@ -42,7 +44,8 @@ export const WORKFLOW_TOOL_DESCRIPTION = `Run and inspect Workflows: determinist
 
 MODES (pick one):
   - list: true — the saved (durable) Workflows: key, description, args JSON Schema.
-  - name: "<key>" (+ args) — run a saved Workflow. background: true returns at once with a runId.
+  - name: "<key>" (+ args) — run a saved Workflow. background: true returns at once with a runId; a notification
+    arrives in this session when the Run ends, so continue other work instead of polling.
   - status / result / stop / resume (alias resumeFromRunId): "<runId>" — inspect, fetch, stop or resume a Run.
     Resume replays the Units a Run already finished (matched by start order and prompt) and runs the rest live.
   - save_run: "<runId>" — keep an inline Run's script as a saved Workflow.

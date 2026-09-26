@@ -54,6 +54,9 @@ package (`bun run pack` output). The TUI part loads automatically with the serve
 | --- | --- | --- |
 | `inline` | `"ask"` | Inline (model-written) Workflows: `ask` a person each time (or "always for this project"), `allow`, or `deny`. Headless `ask` refuses. |
 | `inlineCapabilities` | `true` | Give inline Runs `ctx.$`, `ctx.file`, `ctx.fetch`. |
+| `notify` | `true` | When a background Run started by the model ends, post a notification (summary + result preview) into that session. |
+| `maxConcurrentUnits` | `16` | Units in flight across **all** Runs of the OpenCode process (per-Run caps are `meta.concurrency`). |
+| `providerConcurrency` | `{}` | Caps per provider id across all Runs, e.g. `{ "github-copilot": 4 }` for a rate-limited subscription. |
 | `retention` | `"keep"` | `delete-on-success`: Runs that succeed are marked for cleanup; `/workflows cleanup` in the TUI deletes their Unit sessions. Press `d` on any finished Run to delete its Unit sessions. |
 | `limits` | `{ maxUnits: 1000, maxItemsPerCall: 4096, maxUnitSteps: 250 }` | Hard limits per Run / call / Unit. |
 | `gateway` | `{ enabled: true, bind: "loopback", port: 4320, auth: "token", allowedOrigins: [], web: true }` | The HTTP + SSE Gateway and web app. See [security](./docs/security.md). |
@@ -96,7 +99,7 @@ Every tool result links to the Run in the web app, served by the Gateway (defaul
 
 | Member | What it does |
 | --- | --- |
-| `agent(prompt, opts?)` | One Unit. Returns its final text, or — with `schema` (zod or a JSON Schema object) — a validated value. A failed Unit returns `null` and is added to `errors`; it never throws. Options: `subagent` (alias `agentType`, default `general`), `label`, `phase`, `model` (`"provider/model#variant"` or `{ providerID, modelID }`), `effort` (variant), `schema`, `retries` (repair turns, default 2), `timeoutMs`, `permissions`, `location` (another directory, e.g. a worktree). |
+| `agent(prompt, opts?)` | One Unit. Returns its final text, or — with `schema` (zod or a JSON Schema object) — a validated value. A failed Unit returns `null` and is added to `errors`; it never throws. Options: `subagent` (alias `agentType`, default `general`), `label`, `phase`, `model` (`"provider/model#variant"` or `{ providerID, modelID }`), `effort` (variant), `schema`, `retries` (repair turns, default 2), `timeoutMs`, `permissions`, `isolation: "worktree"` (a fresh git worktree, removed if unchanged), `location` (another directory). |
 | `parallel(thunks)` | Run thunks concurrently and wait for all (a barrier). Failures become `null`. |
 | `pipeline(items, ...stages)` | Each item runs its stages independently — no barrier between items. |
 | `collect(xs)` | Drop the `null`s, narrowed type. |
@@ -107,6 +110,8 @@ Every tool result links to the Run in the web app, served by the Gateway (defaul
 | `budget` | `{ total, spent(), remaining() }` in output tokens. |
 | `signal` | The Run's `AbortSignal`. |
 | `$`, `file`, `fetch` | Shell, files and HTTP, confined to the project and recorded in the Run's activity. |
+| `workflow(name, args?)` | Run a saved Workflow as one step of this Run (one level). |
+| `worktrees()` | Worktrees kept by `isolation: "worktree"` Units that changed files. |
 
 `meta`: `name`, `description`, `whenToUse`, `phases`, `args` (zod), `concurrency`, `unitTimeout`,
 `budget` (`number`, or `{ tokens, hard: true }` to stop at the limit), `permissions` (rules for every Unit),
@@ -157,7 +162,7 @@ bun run typecheck
 bun test                                                 # engine, protocol, TUI models (no OpenCode needed)
 bun run build                                            # dist/tui.js, dist/web, schema check
 bun run pack                                             # build, then the publishable tarball
-bun test ./packages/plugin/test/live --timeout 300000    # real OpenCode on a private server (cheap model)
+bun run verify:live                                      # real OpenCode on a private server (Opus 5.5 by default)
 ```
 
 The live harness starts `opencode serve` with its own database under `$TMPDIR/opencode`; it never touches

@@ -65,6 +65,8 @@ export default defineWorkflow({
 | `budget` | `{ total, spent(), remaining() }` in output tokens for this Run. |
 | `signal` | The Run's `AbortSignal`. |
 | `$`, `file`, `fetch` | Shell, files and HTTP, confined to the project (see below). |
+| `workflow(name, args?)` | Run a **saved** Workflow as one step of this Run and get its result (see below). |
+| `worktrees()` | The worktrees kept by `isolation: "worktree"` Units that changed files. |
 
 ### `agent()` options
 
@@ -79,7 +81,8 @@ export default defineWorkflow({
 | `retries` | Repair turns for a typed Unit (default 2). |
 | `timeoutMs` | A deadline for this Unit. There is none by default. |
 | `permissions` | Rules for this Unit's session, e.g. `[{ action: "edit", resource: "*", effect: "deny" }]`. |
-| `location` | Run the Unit in another directory (a git worktree you created with `$`) — for Units that edit files in parallel. |
+| `isolation` | `"worktree"`: run the Unit in a fresh git worktree — for Units that **edit files in parallel** (see below). |
+| `location` | Run the Unit in a directory you prepared yourself. |
 
 ### Typed Units
 
@@ -130,6 +133,32 @@ await file.write(".opencode/reports/out.md", report)
 
 Use them to gather facts cheaply before spending Units, and to write outputs. Paths may not leave the project.
 Shell commands stop when the Run stops (default timeout 120 s).
+
+### Composing saved Workflows
+
+```ts
+const review = await workflow("review-diff", { base: "main" })   // a saved Workflow, by key
+```
+
+The child shares this Run's concurrency cap, budget, errors and stop signal; its Units and phases appear as
+`review-diff › …`. Its args are validated against its own `meta.args` (a bad call throws — catch it if you want to
+continue). One level only. Use it to build a larger process out of Workflows that already work on their own.
+
+### Units that edit files in parallel
+
+Parallel Units editing the same checkout overwrite each other. Give each its own worktree:
+
+```ts
+const results = await pipeline(modules, (m) =>
+  agent(`Migrate ${m} to the new API. Commit your change with a clear message.`, { label: m, isolation: "worktree" }),
+)
+for (const tree of worktrees()) log(`review and merge: ${tree.branch} (${tree.directory})`)
+```
+
+A worktree is removed when its Unit changed nothing; otherwise it is kept and listed by `worktrees()` so the
+script (or the person) can merge it — e.g. a final Unit, or `$\`git merge ${branch}\``. Worktrees cost setup time
+and disk: use them only for Units that write. The plugin must be active in the worktree, so it has to be
+configured in a committed `opencode.json` (or globally); otherwise those Units fail with a clear message.
 
 ## pipeline by default
 
@@ -232,7 +261,9 @@ finder pool, 3–5 verifiers per finding, a synthesis stage.
 - `workflow_inline({ source, save: "team/review" })` saves it as a durable Workflow (`.opencode/workflows/team/review.ts`)
   instead. Its key is `team:<meta.name>`; `workflow({ name: key, args })` then runs it without approval, and the key
   (with `/` for `:`) becomes a command. `workflow({ list: true })` shows the saved ones.
-- `background: true` returns at once with a run id; `workflow({ status })` and `workflow({ result })` read it later.
+- `background: true` returns at once with a run id. When the Run ends, a notification with its summary and a
+  result preview arrives in your session — continue other work meanwhile instead of polling
+  (`workflow({ status })` / `workflow({ result })` are there when you need them earlier).
 - Durable Workflows can import their own relative files and are the right home for anything run twice.
 
 ## Resume

@@ -47,6 +47,18 @@
         },
         "maxUnitSteps": {
           "type": "number"
+        },
+        "maxConcurrentUnits": {
+          "type": "number"
+        },
+        "providerConcurrency": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "number"
+          }
         }
       },
       "required": [

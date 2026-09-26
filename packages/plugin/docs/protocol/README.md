@@ -65,6 +65,7 @@ script question back to its fallback, dismisses a Unit's question, and rejects a
 | `listRuns` | `GET /v1/runs?status=&search=&parentSessionID=&since=&limit=&location=` | `{ runs: LibraryEntry[] }` |
 | `getRun` | `GET /v1/runs/:runId` | `{ run, live }` |
 | `getUnit` | `GET /v1/runs/:runId/units/:unitId` | `{ unit }` with the whole output |
+| `getTranscript` | `GET /v1/runs/:runId/units/:unitId/transcript` | `{ sessionID, messages, clipped }`: the Unit's session for display ([`TranscriptMessage`](./schemas/TranscriptMessage.json)) |
 | `getResult` | `GET /v1/runs/:runId/result` | `{ runId, status, result }`; `invalid_state` while running |
 | `getActivity` | `GET /v1/runs/:runId/activity` | `{ entries }` |
 | `listWorkflows` | `GET /v1/workflows?location=` | workflows, key collisions, load failures |

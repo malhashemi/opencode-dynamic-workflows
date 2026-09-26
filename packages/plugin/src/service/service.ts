@@ -13,7 +13,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { Broker } from "../broker"
 import type { ReplayPlan } from "../context"
-import type { EngineHost } from "../host"
+import { formatModel, type EngineHost, type HostMessage } from "../host"
+import { unitSlot } from "../engine-global"
 import { ownerAlive, type Journal } from "../journal"
 import { loadWorkflow, loadWorkflowConfig, sha256 } from "../loader"
 import { runWorkflow, type RunWorkflowOutput } from "../orchestrator"
@@ -22,7 +23,9 @@ import {
   PROTOCOL_VERSION,
   WorkflowProtocolError,
   type ActivityEntry,
+  type GetTranscriptOutput,
   type InfoOutput,
+  type TranscriptMessage,
   type LibraryEntry,
   type ListRunsInput,
   type ListWorkflowsOutput,
@@ -101,6 +104,58 @@ export function argsSchemaOf(schema: unknown): Record<string, unknown> | null {
 }
 
 const ACTIVITY_PER_RUN = 1_000
+const CLIP = 20_000
+
+function textOf(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === "string") return value
+  if (Array.isArray(value)) {
+    const texts = value.map((entry) => (entry && typeof entry === "object" && "text" in entry ? String((entry as { text: unknown }).text) : "")).filter(Boolean)
+    if (texts.length > 0) return texts.join("")
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+/** Map a session's messages to the protocol's transcript shape, clipping large parts. */
+export function toTranscript(sessionID: string, messages: readonly HostMessage[]): GetTranscriptOutput {
+  let clipped = false
+  const clip = (text: string | undefined) => {
+    if (text === undefined || text.length <= CLIP) return text
+    clipped = true
+    return `${text.slice(0, CLIP)}… (${text.length - CLIP} more characters)`
+  }
+  const out: TranscriptMessage[] = messages.map((message) => ({
+    role: message.type === "user" || message.type === "assistant" || message.type === "system" ? message.type : "other",
+    model: formatModel(message.model),
+    error: message.error?.message ?? null,
+    parts: (message.content ?? []).map((part) => {
+      if (part.type === "text" || part.type === "reasoning") {
+        const text = clip(part.text)
+        return { kind: part.type, ...(text !== undefined ? { text } : {}) } as TranscriptMessage["parts"][number]
+      }
+      if (part.type === "tool") {
+        const input = clip(textOf(part.state?.input))
+        const output = clip(textOf(part.state?.content))
+        return {
+          kind: "tool" as const,
+          tool: {
+            name: part.name ?? "tool",
+            status: part.state?.status ?? "unknown",
+            ...(input !== undefined ? { input } : {}),
+            ...(output !== undefined ? { output } : {}),
+            ...(part.state?.error?.message ? { error: part.state.error.message } : {}),
+          },
+        }
+      }
+      return { kind: "other" as const, text: part.type }
+    }),
+  }))
+  return { sessionID, messages: out, clipped }
+}
 
 export class WorkflowService {
   readonly deps: ServiceDeps
@@ -174,7 +229,11 @@ export class WorkflowService {
       opencode: this.deps.opencodeVersion,
       location: this.deps.location,
       capabilities: ["runs", "units", "interactions", "resume", "restart-unit", "save", "cleanup", "events", "inline-approval"],
-      limits: { ...this.deps.config.limits },
+      limits: {
+        ...this.deps.config.limits,
+        maxConcurrentUnits: this.deps.config.maxConcurrentUnits,
+        providerConcurrency: { ...this.deps.config.providerConcurrency },
+      },
       gateway: { url: this.deps.gatewayUrl() },
     }
   }
@@ -212,6 +271,19 @@ export class WorkflowService {
     const unit = run.units.find((candidate) => candidate.unitId === unitId)
     if (!unit) throw new WorkflowProtocolError("not_found", `Run "${runId}" has no Unit "${unitId}".`)
     return unit
+  }
+
+  /** A Unit's session, simplified for display (the web app's transcript view). */
+  async getTranscript(runId: string, unitId: string): Promise<GetTranscriptOutput> {
+    const unit = await this.getUnit(runId, unitId)
+    if (!unit.sessionID) throw new WorkflowProtocolError("not_found", `Unit "${unitId}" has no session (it never started, or was replayed).`)
+    let messages: readonly HostMessage[]
+    try {
+      messages = await this.deps.host.session.context({ sessionID: unit.sessionID })
+    } catch (error) {
+      throw new WorkflowProtocolError("not_found", `The Unit's session is gone (${error instanceof Error ? error.message : String(error)}).`)
+    }
+    return toTranscript(unit.sessionID, messages)
   }
 
   async getResult(runId: string): Promise<{ runId: string; status: Run["status"]; result: unknown }> {
@@ -364,6 +436,8 @@ export class WorkflowService {
           signal,
           background: options.background ?? false,
           limits: this.deps.config.limits,
+          slot: unitSlot,
+          resolveWorkflow: (name) => this.resolveDurable(name),
           existingRun: true,
           ...(identity.provenance === "inline" && !this.deps.config.inlineCapabilities
             ? { capabilities: { disabled: "inline Workflows have no capabilities in this project (plugin option inlineCapabilities: false)" } }
@@ -394,6 +468,15 @@ export class WorkflowService {
       }
     })()
     return { runId, done }
+  }
+
+  /** Load a saved Workflow by key (for `ctx.workflow`). */
+  private async resolveDurable(name: string): Promise<DefineWorkflowConfig> {
+    const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
+    const entry = registry.entries.get(name)
+    if (!entry) throw new Error(`ctx.workflow: no saved Workflow named "${name}" (known: ${[...registry.entries.keys()].sort().join(", ") || "none"})`)
+    const source = await readFile(entry.absPath, "utf8")
+    return (await loadWorkflow(source, { sourcePath: entry.absPath, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })).config
   }
 
   /** The session a surface-started Run is attributed to. */

@@ -83,6 +83,10 @@ export interface UnitSpec {
   onSession?: (sessionID: string, stop: () => void, model: HostModelRef | undefined) => void
   /** Called when the Unit moves into repair turns. */
   onRepairing?: () => void
+  /** For a Unit in another directory: null when it may run there, else why not. Checked once its session exists. */
+  checkLocation?: (directory: string) => Promise<string | null>
+  /** Take process-wide slots for this Unit (provider, then global). Absent: no cross-Run limit. */
+  slot?: (providerID: string | undefined, signal: AbortSignal) => Promise<() => void>
   /**
    * Hard budget: may this Unit spend more? Receives the output tokens the Unit has used so far. Checked before
    * every repair turn and before extraction, so a typed Unit cannot overrun a hard budget on its own.
@@ -402,6 +406,24 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
     return "unit aborted before completion"
   }
 
+  // Cross-Run limits: wait for a slot now that the provider is known. The session exists but is idle.
+  let releaseSlot: () => void = () => {}
+  if (spec.slot) {
+    try {
+      releaseSlot = await spec.slot(model?.providerID, guard)
+    } catch {
+      await halt(sessionID)
+      binding.settled = true
+      unbind()
+      return fail(interruptedMessage(reason()), reason() === "stopped" || reason() === "aborted", await readUsage())
+    }
+  }
+  const releaseOnce = trace.release
+  trace.release = () => {
+    releaseSlot()
+    releaseOnce?.()
+  }
+
   try {
     const retries = spec.schema ? Math.max(0, spec.retries ?? DEFAULT_RETRIES) : 0
     let text = spec.prompt
@@ -423,6 +445,15 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
       const admitted = await admit(sessionID, text)
       if (admitted !== "settled") {
         return fail(interruptedMessage(admitted), admitted === "stopped" || admitted === "aborted", await readUsage())
+      }
+      // Another directory is its own OpenCode location, booted by this first prompt (with its plugins). Without
+      // this plugin there, typed results and the Unit policy would silently not apply: stop early instead.
+      if (turn === 0 && binding.restarts === 0 && spec.unitLocation && spec.checkLocation) {
+        const refused = await spec.checkLocation(spec.unitLocation)
+        if (refused) {
+          await halt(sessionID)
+          return fail(refused, false, await readUsage())
+        }
       }
       const outcome = await settle(sessionID)
       binding.turnActive = false
@@ -540,6 +571,7 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
       await readUsage(),
     )
   } finally {
+    releaseSlot()
     binding.settled = true
     unbind()
   }

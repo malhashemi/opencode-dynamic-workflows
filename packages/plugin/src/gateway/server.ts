@@ -365,6 +365,9 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
           if (parts[2] === "result" && parts.length === 3) return json(await service.getResult(parts[1]), 200, extra)
           if (parts[2] === "activity" && parts.length === 3) return json({ entries: await service.getActivity(parts[1]) }, 200, extra)
           if (parts[2] === "units" && parts[3] && parts.length === 4) return json({ unit: await service.getUnit(parts[1], parts[3]) }, 200, extra)
+          if (parts[2] === "units" && parts[3] && parts[4] === "transcript" && parts.length === 5) {
+            return json(await service.getTranscript(parts[1], parts[3]), 200, extra)
+          }
         }
         return fail("not_found", "no such route", extra)
       }

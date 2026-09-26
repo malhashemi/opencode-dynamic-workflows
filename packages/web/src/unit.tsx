@@ -1,10 +1,11 @@
-import type { Run, Unit } from "opencode-dynamic-workflows/protocol"
+import type { GetTranscriptOutput, Run, Unit } from "opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
-import { ActionButton, CodeBlock, CopyButton, Empty, Link, Stat, StatusBadge, Tag, ValueBlock } from "./components"
+import { ActionButton, CodeBlock, CopyButton, Empty, ErrorNote, Link, Stat, StatusBadge, Tag, ValueBlock } from "./components"
 import { useApp } from "./context"
 import { clockTime, elapsed, formatCost, formatCount, tokenBreakdown, totalTokens } from "./format"
 import type { RunData } from "./run-data"
 import { navigate, unitPath } from "./router"
+import { messageView, summarizeTranscript, summaryLine, type TranscriptItem, type TranscriptView } from "./transcript"
 
 export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
   const app = useApp()
@@ -153,6 +154,8 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
             </section>
           </div>
 
+          <TranscriptSection runId={props.run.runId} unit={u()} />
+
           <section class="panel" aria-labelledby="unit-attempts">
             <header class="panel-head">
               <h2 id="unit-attempts">
@@ -210,6 +213,171 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
       )}
     </Show>
   )
+}
+
+/** The Unit session's messages, loaded on demand and re-read whenever the Unit's state moves on. */
+function TranscriptSection(props: { runId: string; unit: Unit }) {
+  const app = useApp()
+  const [open, setOpen] = createSignal(false)
+  const [data, setData] = createSignal<GetTranscriptOutput | null>(null)
+  const [error, setError] = createSignal<unknown>(null)
+  const [busy, setBusy] = createSignal(false)
+  let request = 0
+
+  const load = async () => {
+    const ticket = ++request
+    const { runId } = props
+    const unitId = props.unit.unitId
+    setBusy(true)
+    try {
+      const result = await app.api.getTranscript(runId, unitId)
+      if (ticket !== request) return
+      setData(result)
+      setError(null)
+    } catch (caught) {
+      if (ticket !== request) return
+      setError(caught)
+    } finally {
+      if (ticket === request) setBusy(false)
+    }
+  }
+
+  // Another Unit (the [ ] keys reuse this view): start closed again.
+  createEffect(
+    on(
+      () => props.unit.unitId,
+      () => {
+        request++
+        setOpen(false)
+        setData(null)
+        setError(null)
+        setBusy(false)
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => [props.unit.status, props.unit.attempts.length] as const,
+      () => {
+        if (open()) void load()
+      },
+      { defer: true },
+    ),
+  )
+
+  const views = createMemo(() => (data()?.messages ?? []).map(messageView))
+  const summary = createMemo(() => summaryLine(summarizeTranscript(data()?.messages ?? [])))
+  const live = () => props.unit.status === "running" || props.unit.status === "repairing" || props.unit.status === "queued"
+
+  return (
+    <section class="panel" aria-labelledby="unit-transcript">
+      <header class="panel-head wrap">
+        <h2 id="unit-transcript">Transcript</h2>
+        <Show when={open() && data()}>
+          <span class="muted small">{summary()}</span>
+        </Show>
+        <span class="spacer" />
+        <Show
+          when={open()}
+          fallback={
+            <button
+              type="button"
+              class="btn btn-sm"
+              disabled={!props.unit.sessionID}
+              title={props.unit.sessionID ? "Load the messages of this Unit's session" : "This Unit has no session yet"}
+              onClick={() => {
+                setOpen(true)
+                void load()
+              }}
+            >
+              Show transcript
+            </button>
+          }
+        >
+          <button type="button" class="btn btn-ghost btn-sm" disabled={busy()} aria-busy={busy()} onClick={() => void load()}>
+            {busy() ? "Loading…" : "Refresh"}
+          </button>
+          <button type="button" class="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>
+            Hide
+          </button>
+        </Show>
+      </header>
+      <Show when={open()}>
+        <div class="pad transcript">
+          <Show when={error()}>{(caught) => <ErrorNote error={caught()} retry={() => void load()} />}</Show>
+          <Show when={data()?.clipped}>
+            <div class="note" role="status">
+              Some large tool inputs or outputs were clipped for display.
+            </div>
+          </Show>
+          <Show when={data()} fallback={
+              <Show when={!error()}>
+                <p class="muted">Loading…</p>
+              </Show>
+            }>
+            <Show when={views().length > 0} fallback={<p class="muted">No messages yet.</p>}>
+              <ol class="tx-messages">
+                <For each={views()}>{(view) => <TranscriptMessageView view={view} />}</For>
+              </ol>
+            </Show>
+            <Show when={live()}>
+              <p class="muted small">The Unit is still going; the transcript refreshes when its state changes.</p>
+            </Show>
+          </Show>
+        </div>
+      </Show>
+    </section>
+  )
+}
+
+function TranscriptMessageView(props: { view: TranscriptView }) {
+  return (
+    <li class="tx-message" data-role={props.view.role}>
+      <div class="tx-role">
+        <span class="tx-role-name">{props.view.header}</span>
+        <Show when={props.view.model}>
+          <span class="mono muted small">{props.view.model}</span>
+        </Show>
+      </div>
+      <Show when={props.view.error}>
+        <pre class="code code-inline err-text">{props.view.error}</pre>
+      </Show>
+      <For each={props.view.items}>{(item) => <TranscriptItemView item={item} />}</For>
+    </li>
+  )
+}
+
+function TranscriptItemView(props: { item: TranscriptItem }) {
+  const item = props.item
+  switch (item.kind) {
+    case "text":
+      return <pre class="tx-text">{item.text}</pre>
+    case "other":
+      return <pre class="tx-text muted">{item.text}</pre>
+    case "reasoning":
+      return (
+        <details class="tx-fold tx-reasoning">
+          <summary>{item.summary}</summary>
+          <pre class="tx-text muted">{item.text}</pre>
+        </details>
+      )
+    case "tool":
+      return (
+        <details class="tx-fold tx-tool" data-failed={item.failed ? "" : undefined}>
+          <summary class="mono">{item.title}</summary>
+          <div class="tx-tool-body">
+            <Show when={item.tool.input}>{(input) => <ValueBlock value={input()} label="Input" maxHeight="20rem" />}</Show>
+            <Show when={item.tool.output}>{(output) => <CodeBlock text={output()} label="Output" maxHeight="20rem" />}</Show>
+            <Show when={item.tool.error}>{(message) => <pre class="code code-inline err-text">{message()}</pre>}</Show>
+            <Show when={!item.tool.input && !item.tool.output && !item.tool.error}>
+              <p class="muted small">No input or output recorded.</p>
+            </Show>
+          </div>
+        </details>
+      )
+  }
 }
 
 export function UnitControls(props: { run: Run; unit: Unit; compact?: boolean }) {

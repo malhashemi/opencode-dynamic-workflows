@@ -20,7 +20,11 @@ const result = await Bun.build({
   target: "bun",
   format: "esm",
   plugins: [createSolidTransformPlugin()],
+  minify: true,
   external: [
+    // A dependency of this package: resolved from its own node_modules at run time instead of bundled.
+    "zod",
+    "zod/*",
     "@opentui/core",
     "@opentui/core/*",
     "@opentui/solid",

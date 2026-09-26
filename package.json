@@ -12,7 +12,7 @@
     "test": "bun test",
     "build": "bun run packages/plugin/script/build-tui.ts && bun run --cwd packages/web build && bun run packages/plugin/script/protocol-schemas.ts --check",
     "build:web": "bun run --cwd packages/web build",
-    "verify:live": "bun test ./packages/plugin/test/live",
+    "verify:live": "bun test ./packages/plugin/test/live/core.live.ts ./packages/plugin/test/live/interactions.live.ts ./packages/plugin/test/live/features.live.ts ./packages/plugin/test/live/acceptance.live.ts --timeout 600000",
     "pack": "bun run build && cd packages/plugin && bun pm pack"
   },
   "devDependencies": {

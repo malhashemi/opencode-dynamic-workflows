@@ -207,6 +207,12 @@ export interface AgentOpts<S extends z.ZodType | JsonSchemaInput | undefined = u
    * OpenCode location where this plugin is active (commit the plugin config, or install it globally).
    */
   location?: string
+  /**
+   * `"worktree"`: run this Unit in a fresh git worktree of the project (for Units that edit files in parallel).
+   * Removed afterwards when the Unit changed nothing; otherwise kept — see `ctx.worktrees()` to merge the work.
+   * The plugin must be active in the worktree (configure it in a COMMITTED opencode.json, or globally).
+   */
+  isolation?: "worktree"
   /** Permission rules for this Unit's session, applied after the Workflow's `meta.permissions`. */
   permissions?: PermissionRule[]
 }
@@ -359,6 +365,14 @@ export interface WorkflowContext<A = unknown> extends WorkflowCapabilities {
    * `max(0, total - spent())` (or Infinity when uncapped). Advisory unless `meta.budget` is `{ tokens, hard: true }`.
    */
   budget: { total: number | null; spent(): number; remaining(): number }
+  /**
+   * Run a SAVED Workflow (by key) as one step of this Run and get its result. It shares this Run's concurrency cap,
+   * budget, errors and stop signal; its Units and phases show as `name › …`. Its args are validated against its
+   * `meta.args` (an invalid call throws). One level only: calling `workflow` inside it throws.
+   */
+  workflow: (name: string, args?: unknown) => Promise<unknown>
+  /** Worktrees kept by `isolation: "worktree"` Units that changed something, in the order they finished. */
+  worktrees: () => ReadonlyArray<{ unit: string; directory: string; branch: string | null }>
   /** The Run's abort signal (D11). Aborting stops launching queued Units AND interrupts in-flight Unit sessions; each dropped Unit is recorded in {@link errors}. */
   signal: AbortSignal
 }

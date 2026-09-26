@@ -39,10 +39,12 @@ export interface EngineState {
   usage: Usage
   /** Units started and not yet settled — including ones the script never awaited. */
   inflight: Set<Promise<unknown>>
+  /** Worktrees kept by `isolation: "worktree"` Units that changed something. */
+  worktrees: Array<{ unit: string; directory: string; branch: string | null }>
 }
 
 export function createEngineState(): EngineState {
-  return { logs: [], phases: [], currentPhase: null, errors: [], unitCount: 0, tokensSpent: 0, usage: emptyUsage(), inflight: new Set() }
+  return { logs: [], phases: [], currentPhase: null, errors: [], unitCount: 0, tokensSpent: 0, usage: emptyUsage(), inflight: new Set(), worktrees: [] }
 }
 
 export interface RunLimits {
@@ -90,6 +92,12 @@ export interface CreateContextInput<A> {
   /** A limit was hit: the orchestrator stops the Run with this message. */
   onLimit?: (message: string) => void
   replay?: ReplayPlan
+  /** Share another context's limiter (a nested Workflow runs under its parent's concurrency cap). */
+  limiter?: Semaphore
+  /** Prefix for Unit labels and phase titles (a nested Workflow's `name › `). */
+  prefix?: string
+  /** Cross-Run Unit slots (process-wide limiter). */
+  slot?: (providerID: string | undefined, signal: AbortSignal) => Promise<() => void>
   /** Extra context members (capabilities) merged onto the context. */
   extend?: Record<string, unknown>
 }
@@ -128,11 +136,15 @@ function newUnit(input: {
 
 const noAgentQuestions: UnitBinding["ask"] = async () => null
 
+/** A Unit could not be set up (e.g. no worktree): it fails as a value like any other Unit. */
+class UnitSetupError extends Error {}
+
 export function createWorkflowContext<A>(input: CreateContextInput<A>): WorkflowContext<A> {
   const { state, events } = input
   const limits: RunLimits = { ...DEFAULT_LIMITS, ...input.limits }
   const concurrency = Number.isFinite(input.concurrency) ? (input.concurrency as number) : defaultConcurrency()
-  const limiter = new Semaphore(concurrency)
+  const limiter = input.limiter ?? new Semaphore(concurrency)
+  const prefix = input.prefix ?? ""
   const signal = input.signal ?? new AbortController().signal
   const budgetTotal = input.budget == null ? null : input.budget
   const budget: WorkflowContext<A>["budget"] = {
@@ -170,8 +182,8 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     const ordinal = state.unitCount
     const unitId = crypto.randomUUID()
     const subagent = opts.subagent ?? opts.agentType ?? DEFAULT_SUBAGENT
-    const phase = opts.phase ?? state.currentPhase
-    const label = opts.label ?? null
+    const phase = opts.phase !== undefined ? `${prefix}${opts.phase}` : state.currentPhase
+    const label = opts.label ? `${prefix}${opts.label}` : prefix ? `${prefix}${subagent}` : null
     const model = toHostModel(opts.model)
     const withVariant = model && opts.effort && !model.variant ? { ...model, variant: opts.effort } : model
     let schema: z.ZodType | undefined
@@ -238,12 +250,30 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
       return await limiter.run(async () => {
         let current: Unit = { ...unit, status: "running", startedAt: Date.now() }
         emit(current)
+        let worktree: { directory: string; branch: string | null; base: string | null } | null = null
+        if (opts.isolation === "worktree" && !opts.location) {
+          if (!input.host.worktree) throw new UnitSetupError("isolation: \"worktree\" is not available on this host")
+          try {
+            worktree = await input.host.worktree.create(`wf-${input.runId.slice(0, 8)}-${ordinal}`)
+          } catch (error) {
+            throw new UnitSetupError(`could not create a worktree: ${stringifyError(error)}`)
+          }
+        }
+        const unitLocation = opts.location ?? worktree?.directory
         const result: UnitRunResult = await runUnit(input.host, input.index, {
           runId: input.runId,
           unitId,
           workflow: input.workflow,
           location: input.location,
-          ...(opts.location ? { unitLocation: opts.location } : {}),
+          ...(unitLocation ? { unitLocation } : {}),
+          ...(unitLocation && input.host.worktree
+            ? {
+                checkLocation: async (directory: string) =>
+                  (await input.host.worktree!.pluginActive(directory))
+                    ? null
+                    : `the workflow plugin is not active in ${directory}; configure it in a committed opencode.json (or globally) so Units there can use it`,
+              }
+            : {}),
           parentSessionID: input.parentSessionID,
           ordinal,
           prompt,
@@ -254,6 +284,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           ...(opts.retries !== undefined ? { retries: opts.retries } : {}),
           ...(opts.timeoutMs ?? input.unitTimeout ? { timeoutMs: opts.timeoutMs ?? input.unitTimeout } : {}),
           signal,
+          ...(input.slot ? { slot: input.slot } : {}),
           maxSteps: limits.maxUnitSteps,
           permissions: [...(input.permissions ?? []), ...(opts.permissions ?? [])],
           ask: noAgentQuestions,
@@ -262,7 +293,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
             current = {
               ...current,
               sessionID,
-              location: opts.location ?? input.location,
+              location: unitLocation ?? input.location,
               model: { requested: current.model.requested, resolved: formatModel(resolved) },
             }
             const binding = input.index.get(sessionID)
@@ -279,6 +310,16 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           },
         })
 
+        if (worktree && input.host.worktree) {
+          const tree = worktree
+          const changed = await input.host.worktree.changed(tree.directory, tree.base).catch(() => true)
+          if (changed) {
+            state.worktrees.push({ unit: label ?? subagent, directory: tree.directory, branch: tree.branch })
+            events?.onLog?.(`kept worktree ${tree.directory}${tree.branch ? ` (branch ${tree.branch})` : ""} for ${label ?? subagent}`)
+          } else {
+            await input.host.worktree.remove(tree.directory).catch(() => {})
+          }
+        }
         const usage = result.usage
         state.usage = {
           tokens: {
@@ -311,6 +352,11 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
         return null
       }, signal)
     } catch (err) {
+      if (err instanceof UnitSetupError) {
+        emit({ ...unit, status: "failed", error: err.message, endedAt: Date.now() })
+        state.errors.push({ unit: label ?? subagent, prompt, subagent, error: err.message })
+        return null
+      }
       if (err instanceof AbortError) {
         const error = stringifyError(err)
         emit({ ...unit, status: "stopped", error, endedAt: Date.now() })
@@ -380,7 +426,8 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     events?.onLog?.(message)
   }
 
-  const phase: WorkflowContext<A>["phase"] = (title) => {
+  const phase: WorkflowContext<A>["phase"] = (raw) => {
+    const title = `${prefix}${raw}`
     state.currentPhase = title
     state.phases.push(title)
     events?.onPhase?.(title)
@@ -425,5 +472,6 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     phase,
     budget,
     signal,
+    worktrees: () => state.worktrees.map((entry) => ({ ...entry })),
   } as unknown as WorkflowContext<A>
 }

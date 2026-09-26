@@ -40,7 +40,7 @@ export interface HostContentPart {
   type: string
   text?: string
   name?: string
-  state?: { status?: string; error?: { message?: string } }
+  state?: { status?: string; input?: unknown; content?: unknown; error?: { message?: string } }
 }
 
 /** One message from `session.context`. Only assistant messages are read closely. */
@@ -75,7 +75,19 @@ export interface HostSessionApi {
   get(input: { sessionID: string }): Promise<HostSessionInfo>
 }
 
+/** Git worktrees for `agent({ isolation: "worktree" })` (OpenCode's own worktree service). */
+export interface HostWorktreeApi {
+  /** Create a worktree of the Run's project; `base` is the commit it starts from. */
+  create(name: string): Promise<{ directory: string; branch: string | null; base: string | null }>
+  /** Did the Unit change anything (uncommitted files or new commits since `base`)? */
+  changed(directory: string, base: string | null): Promise<boolean>
+  remove(directory: string): Promise<void>
+  /** Is this plugin active in that location (so typed results and policy work there)? */
+  pluginActive(directory: string): Promise<boolean>
+}
+
 export interface EngineHost {
+  worktree?: HostWorktreeApi
   session: HostSessionApi
   /** Transient generation with no session (used only to extract JSON as a last resort). */
   generateText?(input: { model: HostModelRef; prompt: string }): Promise<{ text: string }>

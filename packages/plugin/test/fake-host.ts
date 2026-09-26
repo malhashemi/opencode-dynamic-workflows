@@ -42,6 +42,8 @@ export interface FakeHostOptions {
   waitError?: string
   /** `interrupt` never resolves (and does not stop the session). */
   interruptHang?: boolean
+  /** Worktree support: `changed` decides whether a Unit's worktree is kept; `active: false` = plugin not loaded there. */
+  worktree?: { changed?: boolean; active?: boolean }
   /** Steps (model requests) each prompt takes — drives the step guard via the index. */
   stepsPerPrompt?: number
   /** Extraction reply for `generateText`; absent ⇒ no extraction support. */
@@ -64,6 +66,7 @@ interface FakeSession {
 }
 
 export interface FakeHost extends EngineHost {
+  worktreeLog: string[]
   creates: HostCreateInput[]
   prompts: PromptCall[]
   interrupts: string[]
@@ -166,7 +169,29 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
     session.info.outcome = "succeeded"
   }
 
+  const worktreeLog: string[] = []
   const host: FakeHost = {
+    worktreeLog,
+    ...(options.worktree
+      ? {
+          worktree: {
+            async create(name: string) {
+              worktreeLog.push(`create ${name}`)
+              return { directory: `/wt/${name}`, branch: `wt-${name}`, base: "abc" }
+            },
+            async changed(directory: string) {
+              worktreeLog.push(`changed ${directory}`)
+              return options.worktree!.changed ?? false
+            },
+            async remove(directory: string) {
+              worktreeLog.push(`remove ${directory}`)
+            },
+            async pluginActive() {
+              return options.worktree!.active ?? true
+            },
+          },
+        }
+      : {}),
     creates,
     prompts,
     interrupts,

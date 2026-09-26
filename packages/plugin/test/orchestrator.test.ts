@@ -176,3 +176,46 @@ describe("audit round 5 — nothing outlives the Run", () => {
     expect(host.creates).toHaveLength(0)
   })
 })
+
+describe("nested Workflows — ctx.workflow", () => {
+  async function startWith(parent: string, children: Record<string, string>, host: FakeHostOptions = {}) {
+    const index = createUnitIndex()
+    const fake = createFakeHost(index, host)
+    const store = createRunStore(project)
+    const broker = createBroker({ store, attached: () => false })
+    const { config } = await loadWorkflow(parent, { cacheDir })
+    const runId = crypto.randomUUID()
+    const promise = runWorkflow({
+      config, source: parent, identity: { key: null, name: config.meta.name, description: "", provenance: "inline" },
+      host: fake, index, broker, store, runId, parentSessionID: "p", location: project,
+      resolveWorkflow: async (name) => {
+        if (!children[name]) throw new Error(`no saved Workflow named "${name}"`)
+        return (await loadWorkflow(children[name]!, { cacheDir })).config
+      },
+    })
+    return { promise, store, runId, host: fake }
+  }
+  const child = (body: string, meta = "") =>
+    `import { defineWorkflow, z } from "@opencode-ai/workflow"\nexport default defineWorkflow({ meta: { name: "child", description: "d"${meta} }, async run(ctx) { ${body} } })\n`
+
+  it("runs a saved Workflow as a step, sharing the Run, with prefixed labels and phases", async () => {
+    const { promise, store, runId } = await startWith(
+      wf(`const r = await ctx.workflow("kid", { n: 2 }); return { r }`),
+      { kid: child(`ctx.phase("inner"); return ctx.agent("hello " + ctx.args.n, { label: "greet" })`, `, args: z.object({ n: z.number() })`) },
+    )
+    expect((await promise).result).toEqual({ r: "hello 2" })
+    const run = store.get(runId)!
+    expect(run.units.map((u) => [u.label, u.phase, u.ordinal])).toEqual([["kid › greet", "kid › inner", 1]])
+    expect(run.logs.join("\n")).toContain("▸ kid")
+  })
+
+  it("invalid child args throw into the parent script; nesting deeper throws", async () => {
+    const { promise } = await startWith(
+      wf(`let a = "", b = ""; try { await ctx.workflow("kid", { n: "x" }) } catch (e) { a = String(e) } try { await ctx.workflow("deep") } catch (e) { b = String(e) } return { a, b }`),
+      { kid: child(`return 1`, `, args: z.object({ n: z.number() })`), deep: child(`return ctx.workflow("kid", { n: 1 })`) },
+    )
+    const { result } = (await promise) as { result: { a: string; b: string } }
+    expect(result.a).toContain("invalid args")
+    expect(result.b).toContain("one level only")
+  })
+})

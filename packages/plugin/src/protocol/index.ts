@@ -366,7 +366,14 @@ export const InfoOutput = z.object({
   opencode: z.string(),
   location: z.string(),
   capabilities: z.array(z.string()),
-  limits: z.object({ maxUnits: z.number(), maxItemsPerCall: z.number(), maxUnitSteps: z.number() }),
+  limits: z.object({
+    maxUnits: z.number(),
+    maxItemsPerCall: z.number(),
+    maxUnitSteps: z.number(),
+    /** Units in flight across all Runs of the process. */
+    maxConcurrentUnits: z.number().optional(),
+    providerConcurrency: z.record(z.string(), z.number()).optional(),
+  }),
   gateway: z.object({ url: z.string().nullable() }),
 })
 export type InfoOutput = z.infer<typeof InfoOutput>
@@ -457,6 +464,38 @@ export const EventsSinceOutput = z.object({
   epoch: z.string().optional(),
 })
 
+/** One message of a Unit's session, simplified for display. Large inputs and outputs are clipped. */
+export const TranscriptPart = z.object({
+  kind: z.enum(["text", "reasoning", "tool", "other"]),
+  text: z.string().optional(),
+  tool: z
+    .object({
+      name: z.string(),
+      status: z.string(),
+      input: z.string().optional(),
+      output: z.string().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
+})
+export type TranscriptPart = z.infer<typeof TranscriptPart>
+
+export const TranscriptMessage = z.object({
+  role: z.enum(["user", "assistant", "system", "other"]),
+  parts: z.array(TranscriptPart),
+  model: z.string().nullable(),
+  error: z.string().nullable(),
+})
+export type TranscriptMessage = z.infer<typeof TranscriptMessage>
+
+export const GetTranscriptOutput = z.object({
+  sessionID: z.string(),
+  messages: z.array(TranscriptMessage),
+  /** True when some parts were clipped for size. */
+  clipped: z.boolean(),
+})
+export type GetTranscriptOutput = z.infer<typeof GetTranscriptOutput>
+
 /** Every schema published as JSON Schema, by file name. */
 export const PUBLISHED_SCHEMAS = {
   Usage,
@@ -474,4 +513,6 @@ export const PUBLISHED_SCHEMAS = {
   ListRunsInput,
   StartRunInput,
   ReplyInteractionInput,
+  TranscriptMessage,
+  GetTranscriptOutput,
 } as const

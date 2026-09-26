@@ -9,6 +9,7 @@
  * The key carries the protocol major version. A future incompatible engine uses a new key and cannot misread
  * this one's state.
  */
+import { Semaphore } from "./scheduler"
 import { createUnitIndex, type UnitIndex } from "./units"
 
 const KEY = Symbol.for("opencode-dynamic-workflows.engine.v1")
@@ -48,6 +49,41 @@ export function locationSlot(location: string): LocationSlot {
     global.locations.set(location, slot)
   }
   return slot
+}
+
+/**
+ * Process-wide Unit limiters: one across every Run, and one per configured provider. OpenCode serves every
+ * session from one process, so a per-Run cap alone lets several Runs together flood a provider.
+ * A resize (a different config) makes a new limiter; Units holding the old one finish on it.
+ */
+export function configureLimits(total: number, perProvider: Record<string, number>): void {
+  const singletons = engineGlobal().singletons
+  const current = singletons.get("limit:global") as Semaphore | undefined
+  if (!current || current.size !== total) singletons.set("limit:global", new Semaphore(total))
+  const providers = (singletons.get("limit:providers") as Map<string, Semaphore> | undefined) ?? new Map<string, Semaphore>()
+  for (const [id, permits] of Object.entries(perProvider)) {
+    if (providers.get(id)?.size !== permits) providers.set(id, new Semaphore(permits))
+  }
+  for (const id of [...providers.keys()]) if (!(id in perProvider)) providers.delete(id)
+  singletons.set("limit:providers", providers)
+}
+
+/** Take a slot for one Unit: its provider's (when capped), then the process-wide one. Returns the release. */
+export async function unitSlot(providerID: string | undefined, signal: AbortSignal): Promise<() => void> {
+  const singletons = engineGlobal().singletons
+  const provider = providerID ? (singletons.get("limit:providers") as Map<string, Semaphore> | undefined)?.get(providerID) : undefined
+  const global = singletons.get("limit:global") as Semaphore | undefined
+  const releaseProvider = provider ? await provider.slot(signal) : () => {}
+  try {
+    const releaseGlobal = global ? await global.slot(signal) : () => {}
+    return () => {
+      releaseGlobal()
+      releaseProvider()
+    }
+  } catch (error) {
+    releaseProvider()
+    throw error
+  }
 }
 
 /** Test helper: forget all process-wide state. */

@@ -40,6 +40,8 @@ export interface LiveOptions {
   agents?: string[]
   /** Plugin spec to configure (default: `WF_LIVE_PLUGIN`, else this package by path). */
   plugin?: string
+  /** Commit the project files (worktrees check out the committed tree, so the plugin config must be in it). */
+  commit?: boolean
 }
 
 function freePort(): number {
@@ -74,6 +76,7 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
     await mkdir(path.dirname(path.join(project, file)), { recursive: true })
     await writeFile(path.join(project, file), contents)
   }
+  if (options.commit) await Bun.$`git add -A && git -c user.email=live@test -c user.name=live commit -qm fixture`.cwd(project).quiet()
   let output = ""
   const boot = async () => {
     const port = freePort()

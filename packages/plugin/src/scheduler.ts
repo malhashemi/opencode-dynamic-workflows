@@ -44,8 +44,11 @@ export class Semaphore {
   private available: number
   private readonly waiters: Array<() => void> = []
 
+  private readonly capacity: number
+
   constructor(permits: number) {
     this.available = Number.isFinite(permits) ? Math.max(1, Math.floor(permits)) : 1
+    this.capacity = this.available
   }
 
   private acquire(signal?: AbortSignal): Promise<void> {
@@ -76,6 +79,22 @@ export class Semaphore {
     // Hand the permit straight to the next waiter (no count bump); only return it to the pool if none waits.
     if (next) next()
     else this.available += 1
+  }
+
+  /** Acquire a permit and get its release function (call it exactly once). Rejects if `signal` aborts first. */
+  async slot(signal?: AbortSignal): Promise<() => void> {
+    await this.acquire(signal)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.release()
+    }
+  }
+
+  /** Permits in the pool (for resizing decisions and tests). */
+  get size(): number {
+    return this.capacity
   }
 
   /** Acquire a permit, run `fn`, and release the permit even if `fn` throws. Rejects if `signal` aborts first. */

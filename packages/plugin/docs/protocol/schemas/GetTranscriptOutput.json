@@ -1,0 +1,113 @@
+{
+  "$id": "https://opencode-dynamic-workflows/protocol/v1/GetTranscriptOutput.json",
+  "title": "GetTranscriptOutput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "sessionID": {
+      "type": "string"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant",
+              "system",
+              "other"
+            ]
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "reasoning",
+                    "tool",
+                    "other"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "input": {
+                      "type": "string"
+                    },
+                    "output": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "parts",
+          "model",
+          "error"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "clipped": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "sessionID",
+    "messages",
+    "clipped"
+  ],
+  "additionalProperties": false
+}

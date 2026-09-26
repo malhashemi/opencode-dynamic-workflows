@@ -27,6 +27,12 @@ export interface PluginConfig {
   inline: InlinePolicy
   /** Give inline (model-authored) Runs `ctx.$` / `ctx.file` / `ctx.fetch`. Durable Runs always have them. */
   inlineCapabilities: boolean
+  /** Post a message into the calling session when a background Run it started ends (the model then continues). */
+  notify: boolean
+  /** Units in flight across ALL Runs of this OpenCode process (per-Run caps are meta.concurrency). */
+  maxConcurrentUnits: number
+  /** Optional caps per provider id across all Runs, e.g. { "github-copilot": 4 }. */
+  providerConcurrency: Record<string, number>
   retention: Retention
   limits: RunLimits
   gateway: GatewayConfig
@@ -37,6 +43,9 @@ export const DEFAULT_GATEWAY_PORT = 4320
 export const DEFAULT_CONFIG: PluginConfig = {
   inline: "ask",
   inlineCapabilities: true,
+  notify: true,
+  maxConcurrentUnits: 16,
+  providerConcurrency: {},
   retention: "keep",
   limits: { ...DEFAULT_LIMITS },
   gateway: { enabled: true, bind: "loopback", port: DEFAULT_GATEWAY_PORT, allowedOrigins: [], auth: "token", web: true },
@@ -58,6 +67,11 @@ export function parseConfig(options: unknown): PluginConfig {
   return {
     inline,
     inlineCapabilities: input.inlineCapabilities !== false,
+    notify: input.notify !== false,
+    maxConcurrentUnits: positiveInt(input.maxConcurrentUnits, 16),
+    providerConcurrency: Object.fromEntries(
+      Object.entries(record(input.providerConcurrency)).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isInteger(entry[1]) && entry[1] > 0),
+    ),
     retention,
     limits: {
       maxUnits: positiveInt(limits.maxUnits, DEFAULT_LIMITS.maxUnits),
