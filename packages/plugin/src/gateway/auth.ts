@@ -5,8 +5,7 @@
  * expire in five minutes; tokens are stored as SHA-256 hashes in a 0600 file under the user's state directory.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
-import { readFileSync, statSync } from "node:fs"
-import { mkdir, rename, writeFile } from "node:fs/promises"
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -48,12 +47,15 @@ export async function createTokenStore(
   file = path.join(gatewayStateDir(), "gateway-tokens.json"),
 ): Promise<TokenStore> {
   let tokens: DeviceToken[] = []
-  /** The file's modification time and size at the last load: a change means someone edited it. */
+  /**
+   * The file's modification and status-change times, size and mode at the last load: a change means someone edited
+   * it, or changed its permissions (ctime moves on chmod), and it must be read again.
+   */
   let loadedStamp: string | null = null
   const stamp = (): string | null => {
     try {
       const stat = statSync(file)
-      return `${stat.mtimeMs}:${stat.size}`
+      return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.mode}`
     } catch {
       return null
     }
@@ -78,29 +80,37 @@ export async function createTokenStore(
   load()
   const codes = new Map<string, { expiresAt: number; scopes: Scope[] }>()
 
-  const persist = async () => {
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
-    const temp = `${file}.${randomBytes(6).toString("hex")}.tmp`
-    await writeFile(temp, `${JSON.stringify({ tokens }, null, 2)}\n`, { mode: 0o600 })
-    await rename(temp, file)
-    loadedStamp = stamp()
+  /**
+   * Change the tokens and write them back. Read, change and replace happen synchronously, with nothing awaited in
+   * between, so an edit made to the file meanwhile (a revocation) is never overwritten with a stale list.
+   */
+  const mutate = <T>(change: (current: DeviceToken[]) => { next: DeviceToken[]; value: T }): T => {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    load()
+    const { next, value } = change(tokens)
+    if (next !== tokens) {
+      tokens = next
+      const temp = `${file}.${randomBytes(6).toString("hex")}.tmp`
+      writeFileSync(temp, `${JSON.stringify({ tokens }, null, 2)}\n`, { mode: 0o600 })
+      renameSync(temp, file)
+      loadedStamp = stamp()
+    }
+    return value
   }
 
   const store: TokenStore = {
     async issue(name, scopes) {
-      load()
       const token = `wfg_${randomBytes(24).toString("base64url")}`
       const id = randomBytes(6).toString("hex")
-      tokens.push({
+      const entry: DeviceToken = {
         id,
         name: name.slice(0, 80) || "device",
         hash: hash(token),
         scopes,
         createdAt: Date.now(),
         lastUsedAt: null,
-      })
-      await persist()
-      return { token, id }
+      }
+      return mutate((current) => ({ next: [...current, entry], value: { token, id } }))
     },
     verify(token) {
       if (!token.startsWith("wfg_")) return null
@@ -111,12 +121,10 @@ export async function createTokenStore(
       return match ?? null
     },
     async revoke(id) {
-      load()
-      const before = tokens.length
-      tokens = tokens.filter((token) => token.id !== id)
-      if (tokens.length === before) return false
-      await persist()
-      return true
+      return mutate((current) => {
+        const next = current.filter((token) => token.id !== id)
+        return next.length === current.length ? { next: current, value: false } : { next, value: true }
+      })
     },
     list() {
       load()
