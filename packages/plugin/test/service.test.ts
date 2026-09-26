@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
 import { createBroker } from "../src/broker"
 import { createJournal, journalRoot, processStartedAt } from "../src/journal"
 import { newRun, createRunStore } from "../src/runs"
@@ -38,7 +39,12 @@ function service() {
 describe("audit round 4 — resume never duplicates a Run another process is running", () => {
   it("refuses while the journaled owner (another live process) still runs it", async () => {
     const { journal, service: svc } = service()
-    const run = newRun({ runId: "busy", workflow: { key: null, name: "w", description: "", provenance: "inline" }, location: project, parentSessionID: "p" })
+    const run = newRun({
+      runId: "busy",
+      workflow: { key: null, name: "w", description: "", provenance: "inline" },
+      location: project,
+      parentSessionID: "p",
+    })
     await journal.begin(run, { source: "export default 1", args: null, instance: "other" })
     const ppid = process.ppid
     await journal.update({ ...run, status: "running" })
@@ -62,7 +68,15 @@ describe("transcripts", () => {
         model: { providerID: "p", id: "m" },
         content: [
           { type: "reasoning", text: "thinking" },
-          { type: "tool", name: "read", state: { status: "completed", input: { path: "a.ts" }, content: [{ type: "text", text: "x".repeat(25_000) }] } },
+          {
+            type: "tool",
+            name: "read",
+            state: {
+              status: "completed",
+              input: { path: "a.ts" },
+              content: [{ type: "text", text: "x".repeat(25_000) }],
+            },
+          },
           { type: "text", text: "done" },
         ],
       },

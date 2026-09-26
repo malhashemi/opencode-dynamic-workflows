@@ -7,7 +7,7 @@ sources only (https://opencode.ai/v2/docs/, the installed `@opencode/*` 2.0.16 t
 ## Layout
 
 - `src/workflow/` — authoring API (`defineWorkflow`, `z`, context types). Published as `./workflow`; the loader
-  also maps the legacy `@opencode-ai/workflow` import.
+  points that import at the plugin's own copy.
 - `src/protocol/` — protocol v1 zod schemas: the single source for types, RPC validation and
   `docs/protocol/schemas/*.json` (`bun run script/protocol-schemas.ts`; a test fails when stale).
 - Engine (host-independent, tested with `test/fake-host.ts`): `host.ts` (the narrow OpenCode slice),

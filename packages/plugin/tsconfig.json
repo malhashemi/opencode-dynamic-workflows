@@ -9,12 +9,5 @@
     "jsx": "preserve",
     "jsxImportSource": "@opentui/solid"
   },
-  "include": [
-    "src",
-    "test",
-    "server.ts",
-    "rpc.ts",
-    "docs/examples",
-    "package.json"
-  ]
+  "include": ["src", "test", "server.ts", "rpc.ts", "docs/examples", "package.json"]
 }

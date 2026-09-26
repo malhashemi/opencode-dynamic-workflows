@@ -14,6 +14,7 @@
 import { existsSync, realpathSync } from "node:fs"
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
+
 import type { ShellResult, WorkflowCapabilities } from "./workflow"
 
 export interface CapabilityOptions {
@@ -74,7 +75,10 @@ export function createCapabilities(options: CapabilityOptions): WorkflowCapabili
     if (options.signal.aborted) throw new Error(`ctx.${name}: the Run was stopped`)
   }
 
-  const run = async (command: string, opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<ShellResult> => {
+  const run = async (
+    command: string,
+    opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
+  ): Promise<ShellResult> => {
     guard("$")
     const cwd = confine(options.location, opts.cwd ?? ".")
     options.audit(`$ ${clip(command)}`)
@@ -90,8 +94,13 @@ export function createCapabilities(options: CapabilityOptions): WorkflowCapabili
     const kill = () => child.kill()
     signal.addEventListener("abort", kill, { once: true })
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-      if (signal.aborted) throw new Error(options.signal.aborted ? "ctx.$: the Run was stopped" : `ctx.$: timed out after ${timeout}ms`)
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+      if (signal.aborted)
+        throw new Error(options.signal.aborted ? "ctx.$: the Run was stopped" : `ctx.$: timed out after ${timeout}ms`)
       return { stdout, stderr, exitCode }
     } finally {
       signal.removeEventListener("abort", kill)
@@ -101,7 +110,10 @@ export function createCapabilities(options: CapabilityOptions): WorkflowCapabili
   /** `ctx.$("ls -la")` or `ctx.$\`git log ${ref}\`` (interpolations are shell-quoted). */
   const $ = ((first: string | TemplateStringsArray, ...rest: unknown[]) => {
     if (typeof first === "string") return run(first, (rest[0] as Parameters<typeof run>[1]) ?? {})
-    const command = first.reduce((out, chunk, index) => out + chunk + (index < rest.length ? shellQuote(rest[index]) : ""), "")
+    const command = first.reduce(
+      (out, chunk, index) => out + chunk + (index < rest.length ? shellQuote(rest[index]) : ""),
+      "",
+    )
     return run(command)
   }) as WorkflowCapabilities["$"]
 

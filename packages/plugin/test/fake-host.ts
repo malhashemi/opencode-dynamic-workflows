@@ -149,7 +149,9 @@ export function createFakeHost(index: UnitIndex, options: FakeHostOptions = {}):
             new AbortController().signal,
           )
         : null
-      session.messages.push(assistant([{ type: "text", text: answer ? `ANSWER: ${answer.answers[0]?.[0]}` : "ANSWER: none" }]))
+      session.messages.push(
+        assistant([{ type: "text", text: answer ? `ANSWER: ${answer.answers[0]?.[0]}` : "ANSWER: none" }]),
+      )
       session.info.outcome = "succeeded"
       return
     }

@@ -8,17 +8,21 @@ export type Route =
   | { name: "not-found"; path: string }
 
 export function parseRoute(pathname: string): Route {
-  const parts = pathname.split("/").filter(Boolean).map((part) => {
-    try {
-      return decodeURIComponent(part)
-    } catch {
-      return part
-    }
-  })
+  const parts = pathname
+    .split("/")
+    .filter(Boolean)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part)
+      } catch {
+        return part
+      }
+    })
   if (parts.length === 0) return { name: "library" }
   if (parts[0] === "runs" && parts[1]) {
     if (parts.length === 2) return { name: "run", runId: parts[1] }
-    if (parts[2] === "units" && parts[3] && parts.length === 4) return { name: "unit", runId: parts[1], unitId: parts[3] }
+    if (parts[2] === "units" && parts[3] && parts.length === 4)
+      return { name: "unit", runId: parts[1], unitId: parts[3] }
   }
   return { name: "not-found", path: pathname }
 }
@@ -26,7 +30,9 @@ export function parseRoute(pathname: string): Route {
 export const runPath = (runId: string) => `/runs/${encodeURIComponent(runId)}`
 export const unitPath = (runId: string, unitId: string) => `${runPath(runId)}/units/${encodeURIComponent(unitId)}`
 
-const [location, setLocation] = createSignal(typeof window === "undefined" ? "/" : window.location.pathname + window.location.search)
+const [location, setLocation] = createSignal(
+  typeof window === "undefined" ? "/" : window.location.pathname + window.location.search,
+)
 
 export const currentPath = location
 

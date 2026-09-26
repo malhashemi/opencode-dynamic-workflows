@@ -1,5 +1,5 @@
 /**
- * The Workflow loader — turns Workflow source into a live `defineWorkflow` config, without `eval` (ADR-0001).
+ * The Workflow loader — turns Workflow source into a live `defineWorkflow` config, without `eval`.
  *
  * Proven in P0 spike S6 against an installed (non-workspace) package inside the host's embedded Bun:
  *
@@ -22,15 +22,11 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
+
 import type { DefineWorkflowConfig } from "./workflow"
 
-/** Import specifiers that mean "the authoring API" — current, and the V1 name older Workflows use. */
-export const AUTHORING_SPECIFIERS = [
-  "@malhashemi/opencode-dynamic-workflows/workflow",
-  // Earlier names: the unscoped working name and the V1 package.
-  "opencode-dynamic-workflows/workflow",
-  "@opencode-ai/workflow",
-] as const
+/** The import specifier that means "the authoring API". */
+export const AUTHORING_SPECIFIERS = ["@malhashemi/opencode-dynamic-workflows/workflow"] as const
 
 /** This plugin's own authoring module, wherever the host installed the package. */
 export const AUTHORING_PATH = path.join(import.meta.dir, "workflow", "index.ts")
@@ -53,7 +49,10 @@ const SPECIFIER_PATTERN = new RegExp(
 export function rewriteAuthoringImports(source: string, target = AUTHORING_PATH): string {
   // Forward slashes: a Windows path's backslashes would be read as escapes inside the string literal.
   const specifier = target.replaceAll("\\", "/")
-  return source.replace(SPECIFIER_PATTERN, (_match, lead: string, quote: string) => `${lead}${quote}${specifier}${quote}`)
+  return source.replace(
+    SPECIFIER_PATTERN,
+    (_match, lead: string, quote: string) => `${lead}${quote}${specifier}${quote}`,
+  )
 }
 
 export function hasRelativeImports(source: string): boolean {
@@ -107,7 +106,9 @@ async function bundle(sourcePath: string, outFile: string): Promise<void> {
       {
         name: "workflow-authoring",
         setup(builder) {
-          const filter = new RegExp(`^(${AUTHORING_SPECIFIERS.map((s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})$`)
+          const filter = new RegExp(
+            `^(${AUTHORING_SPECIFIERS.map((s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})$`,
+          )
           builder.onResolve({ filter }, () => ({ path: AUTHORING_PATH, external: true }))
         },
       },

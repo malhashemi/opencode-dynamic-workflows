@@ -1,12 +1,27 @@
-import type { InteractionQuestion, PendingInteraction, ResolvedInteraction, Run } from "@malhashemi/opencode-dynamic-workflows/protocol"
+import type {
+  InteractionQuestion,
+  PendingInteraction,
+  ResolvedInteraction,
+  Run,
+} from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createMemo, createSignal, For, Index, Show } from "solid-js"
+
 import { ActionButton, CodeBlock, Link, Tag } from "./components"
 import { useApp } from "./context"
 import { clockTime, formatDuration, relativeTime } from "./format"
 import { unitPath } from "./router"
 
-const KIND_LABEL: Record<string, string> = { question: "Question", permission: "Permission", approval: "Inline Workflow approval" }
-const ORIGIN_LABEL: Record<string, string> = { script: "from the Workflow", agent: "from a Unit's model", permission: "a Unit's tool call", engine: "from the engine" }
+const KIND_LABEL: Record<string, string> = {
+  question: "Question",
+  permission: "Permission",
+  approval: "Inline Workflow approval",
+}
+const ORIGIN_LABEL: Record<string, string> = {
+  script: "from the Workflow",
+  agent: "from a Unit's model",
+  permission: "a Unit's tool call",
+  engine: "from the engine",
+}
 
 function unitName(run: Run, unitId: string | null): string | null {
   if (!unitId) return null
@@ -17,7 +32,11 @@ function unitName(run: Run, unitId: string | null): string | null {
 export function InteractionsPanel(props: { run: Run }) {
   const pending = () => props.run.interactions
   return (
-    <section class="panel interactions" aria-labelledby="interactions-title" data-attention={pending().length > 0 ? "" : undefined}>
+    <section
+      class="panel interactions"
+      aria-labelledby="interactions-title"
+      data-attention={pending().length > 0 ? "" : undefined}
+    >
       <header class="panel-head">
         <h2 id="interactions-title">
           Interactions
@@ -33,7 +52,9 @@ export function InteractionsPanel(props: { run: Run }) {
         <details class="resolved">
           <summary>{props.run.resolved.length} resolved</summary>
           <ul class="resolved-list">
-            <For each={props.run.resolved.toReversed()}>{(record) => <ResolvedRow run={props.run} record={record} />}</For>
+            <For each={props.run.resolved.toReversed()}>
+              {(record) => <ResolvedRow run={props.run} record={record} />}
+            </For>
           </ul>
         </details>
       </Show>
@@ -48,7 +69,10 @@ function PendingCard(props: { run: Run; interaction: PendingInteraction }) {
   const readOnly = () => i().form !== undefined
   const oneClick = () => {
     const questions = i().questions
-    return i().kind !== "question" || (questions.length === 1 && !questions[0]!.multiple && !questions[0]!.custom && questions[0]!.options.length > 0)
+    return (
+      i().kind !== "question" ||
+      (questions.length === 1 && !questions[0]!.multiple && !questions[0]!.custom && questions[0]!.options.length > 0)
+    )
   }
   const reply = (answers: string[][]) => app.api.reply(props.run.runId, i().interactionId, answers)
   const titleId = () => `ix-${i().interactionId}`
@@ -89,7 +113,9 @@ function PendingCard(props: { run: Run; interaction: PendingInteraction }) {
               </ul>
             </Show>
             <Show when={permission().save.length > 0}>
-              <div class="muted small">"Always allow" saves: <span class="mono">{permission().save.join(", ")}</span></div>
+              <div class="muted small">
+                "Always allow" saves: <span class="mono">{permission().save.join(", ")}</span>
+              </div>
             </Show>
           </div>
         )}
@@ -115,7 +141,16 @@ function PendingCard(props: { run: Run; interaction: PendingInteraction }) {
           </div>
         }
       >
-        <Show when={oneClick()} fallback={<QuestionForm interaction={i()} onSubmit={reply} onCancel={() => app.api.cancel(props.run.runId, i().interactionId)} />}>
+        <Show
+          when={oneClick()}
+          fallback={
+            <QuestionForm
+              interaction={i()}
+              onSubmit={reply}
+              onCancel={() => app.api.cancel(props.run.runId, i().interactionId)}
+            />
+          }
+        >
           <For each={i().questions}>{(question) => <QuestionText question={question} hideOptions />}</For>
           <div class="ix-actions">
             <For each={i().questions[0]?.options ?? []}>
@@ -132,7 +167,12 @@ function PendingCard(props: { run: Run; interaction: PendingInteraction }) {
             </For>
             <Show when={i().kind === "question"}>
               <span class="spacer" />
-              <ActionButton tone="ghost" onAction={() => app.api.cancel(props.run.runId, i().interactionId)} title="Dismiss; the Workflow gets its fallback" done="Dismissed">
+              <ActionButton
+                tone="ghost"
+                onAction={() => app.api.cancel(props.run.runId, i().interactionId)}
+                title="Dismiss; the Workflow gets its fallback"
+                done="Dismissed"
+              >
                 Dismiss
               </ActionButton>
             </Show>
@@ -165,7 +205,11 @@ function QuestionText(props: { question: InteractionQuestion; hideOptions?: bool
   )
 }
 
-function QuestionForm(props: { interaction: PendingInteraction; onSubmit: (answers: string[][]) => Promise<unknown>; onCancel: () => Promise<unknown> }) {
+function QuestionForm(props: {
+  interaction: PendingInteraction
+  onSubmit: (answers: string[][]) => Promise<unknown>
+  onCancel: () => Promise<unknown>
+}) {
   const questions = () => props.interaction.questions
   const [chosen, setChosen] = createSignal<string[][]>(questions().map(() => []))
   const [custom, setCustom] = createSignal<string[]>(questions().map(() => ""))
@@ -179,7 +223,15 @@ function QuestionForm(props: { interaction: PendingInteraction; onSubmit: (answe
   const complete = () => answers().every((row) => row.length > 0)
   const toggle = (index: number, label: string, multiple: boolean) =>
     setChosen((rows) =>
-      rows.map((row, i) => (i !== index ? row : multiple ? (row.includes(label) ? row.filter((l) => l !== label) : [...row, label]) : [label])),
+      rows.map((row, i) =>
+        i !== index
+          ? row
+          : multiple
+            ? row.includes(label)
+              ? row.filter((l) => l !== label)
+              : [...row, label]
+            : [label],
+      ),
     )
   const base = `q-${props.interaction.interactionId}`
 
@@ -223,14 +275,17 @@ function QuestionForm(props: { interaction: PendingInteraction; onSubmit: (answe
             </div>
             <Show when={question().custom}>
               <label class="field">
-                <span class="field-label">{question().options.length > 0 ? "Or type your own answer" : "Your answer"}</span>
+                <span class="field-label">
+                  {question().options.length > 0 ? "Or type your own answer" : "Your answer"}
+                </span>
                 <textarea
                   rows={2}
                   value={custom()[index] ?? ""}
                   onInput={(event) => {
                     const value = event.currentTarget.value
                     setCustom((rows) => rows.map((row, i) => (i === index ? value : row)))
-                    if (!question().multiple && value.trim()) setChosen((rows) => rows.map((row, i) => (i === index ? [] : row)))
+                    if (!question().multiple && value.trim())
+                      setChosen((rows) => rows.map((row, i) => (i === index ? [] : row)))
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -245,11 +300,23 @@ function QuestionForm(props: { interaction: PendingInteraction; onSubmit: (answe
         )}
       </Index>
       <div class="ix-actions">
-        <ActionButton tone="primary" disabled={!complete()} onAction={() => props.onSubmit(answers())} done="Answer sent" class="submit" aria-keyshortcuts="Control+Enter">
+        <ActionButton
+          tone="primary"
+          disabled={!complete()}
+          onAction={() => props.onSubmit(answers())}
+          done="Answer sent"
+          class="submit"
+          aria-keyshortcuts="Control+Enter"
+        >
           Send answer
         </ActionButton>
         <span class="spacer" />
-        <ActionButton tone="ghost" onAction={props.onCancel} title="Dismiss; the Workflow gets its fallback" done="Dismissed">
+        <ActionButton
+          tone="ghost"
+          onAction={props.onCancel}
+          title="Dismiss; the Workflow gets its fallback"
+          done="Dismissed"
+        >
           Dismiss
         </ActionButton>
       </div>
@@ -259,12 +326,20 @@ function QuestionForm(props: { interaction: PendingInteraction; onSubmit: (answe
 
 function ResolvedRow(props: { run: Run; record: ResolvedInteraction }) {
   const r = () => props.record
-  const answer = () => r().answers.map((row) => row.join(", ")).join(" · ")
+  const answer = () =>
+    r()
+      .answers.map((row) => row.join(", "))
+      .join(" · ")
   return (
     <li class="resolved-row">
       <span class="mono muted">{clockTime(r().resolvedAt)}</span>
       <span>{KIND_LABEL[r().kind] ?? r().kind}</span>
-      <span class="truncate" title={r().questions.map((q) => q.prompt).join("\n")}>
+      <span
+        class="truncate"
+        title={r()
+          .questions.map((q) => q.prompt)
+          .join("\n")}
+      >
         {r().questions[0]?.header || r().questions[0]?.prompt}
       </span>
       <span>

@@ -74,7 +74,8 @@ export function beginResync(view: RunView): RunView {
   return { ...view, sync: view.run ? "syncing" : "loading", buffered: [] }
 }
 
-const activityKey = (entry: ActivityEntry) => `${entry.time}\u0000${entry.kind}\u0000${entry.unitId ?? ""}\u0000${entry.message}`
+const activityKey = (entry: ActivityEntry) =>
+  `${entry.time}\u0000${entry.kind}\u0000${entry.unitId ?? ""}\u0000${entry.message}`
 
 function mergeActivity(into: ActivityEntry[], add: ActivityEntry[]): ActivityEntry[] {
   if (add.length === 0) return into
@@ -93,7 +94,11 @@ function mergeActivity(into: ActivityEntry[], add: ActivityEntry[]): ActivityEnt
  * Install a snapshot (`GET /v1/runs/:id`, then `/activity`), then replay the buffered events that are newer.
  * Activity has no revision of its own, so entries are de-duplicated by content.
  */
-export function receiveSnapshot(view: RunView, snapshot: { run: Run; live: boolean }, activity: ActivityEntry[]): RunView {
+export function receiveSnapshot(
+  view: RunView,
+  snapshot: { run: Run; live: boolean },
+  activity: ActivityEntry[],
+): RunView {
   let next: RunView = {
     ...view,
     run: snapshot.run,
@@ -138,7 +143,14 @@ export function applyRunEvent(view: RunView, event: ProtocolEvent): RunView {
     case "run.updated":
     case "run.ended": {
       const header = event.data as RunHeader
-      run = { ...current, ...header, units: current.units, logs: current.logs, interactions: current.interactions, resolved: current.resolved }
+      run = {
+        ...current,
+        ...header,
+        units: current.units,
+        logs: current.logs,
+        interactions: current.interactions,
+        resolved: current.resolved,
+      }
       live = event.type === "run.ended" ? false : !isTerminal(run.status)
       break
     }
@@ -152,8 +164,12 @@ export function applyRunEvent(view: RunView, event: ProtocolEvent): RunView {
     }
     case "interaction.pending": {
       const interaction = event.data as PendingInteraction
-      const interactions = current.interactions.some((candidate) => candidate.interactionId === interaction.interactionId)
-        ? current.interactions.map((candidate) => (candidate.interactionId === interaction.interactionId ? interaction : candidate))
+      const interactions = current.interactions.some(
+        (candidate) => candidate.interactionId === interaction.interactionId,
+      )
+        ? current.interactions.map((candidate) =>
+            candidate.interactionId === interaction.interactionId ? interaction : candidate,
+          )
         : [...current.interactions, interaction]
       run = { ...current, interactions, waiting: true }
       break
@@ -161,7 +177,10 @@ export function applyRunEvent(view: RunView, event: ProtocolEvent): RunView {
     case "interaction.resolved": {
       const record = event.data as ResolvedInteraction
       const interactions = current.interactions.filter((candidate) => candidate.interactionId !== record.interactionId)
-      const resolved = [...current.resolved.filter((candidate) => candidate.interactionId !== record.interactionId), record]
+      const resolved = [
+        ...current.resolved.filter((candidate) => candidate.interactionId !== record.interactionId),
+        record,
+      ]
       run = { ...current, interactions, resolved, waiting: interactions.length > 0 }
       break
     }
@@ -184,7 +203,13 @@ export function withFullUnit(view: RunView, unit: Unit): RunView {
   const existing = view.run.units.find((candidate) => candidate.unitId === unit.unitId)
   // A newer event may have landed while the fetch was in flight; only fill the output in.
   if (existing && (existing.status !== unit.status || existing.attempts.length !== unit.attempts.length)) return view
-  return { ...view, run: { ...view.run, units: view.run.units.map((candidate) => (candidate.unitId === unit.unitId ? unit : candidate)) } }
+  return {
+    ...view,
+    run: {
+      ...view.run,
+      units: view.run.units.map((candidate) => (candidate.unitId === unit.unitId ? unit : candidate)),
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -194,10 +219,26 @@ export function withFullUnit(view: RunView, unit: Unit): RunView {
 export type UnitCounts = Record<Unit["status"], number> & { total: number; settled: number }
 
 export function unitCounts(units: Unit[]): UnitCounts {
-  const counts: UnitCounts = { queued: 0, running: 0, repairing: 0, succeeded: 0, failed: 0, stopped: 0, replayed: 0, total: units.length, settled: 0 }
+  const counts: UnitCounts = {
+    queued: 0,
+    running: 0,
+    repairing: 0,
+    succeeded: 0,
+    failed: 0,
+    stopped: 0,
+    replayed: 0,
+    total: units.length,
+    settled: 0,
+  }
   for (const unit of units) {
     counts[unit.status] += 1
-    if (unit.status === "succeeded" || unit.status === "failed" || unit.status === "stopped" || unit.status === "replayed") counts.settled += 1
+    if (
+      unit.status === "succeeded" ||
+      unit.status === "failed" ||
+      unit.status === "stopped" ||
+      unit.status === "replayed"
+    )
+      counts.settled += 1
   }
   return counts
 }
@@ -224,7 +265,11 @@ export function phaseRows(run: Run): { unphased: Unit[]; phases: PhaseRow[] } {
   const succeeded = run.status === "succeeded"
   const phases = run.phases.map((name, index) => ({
     name,
-    state: (index < current || (succeeded && index <= current) ? "done" : index === current ? "current" : "pending") as PhaseState,
+    state: (index < current || (succeeded && index <= current)
+      ? "done"
+      : index === current
+        ? "current"
+        : "pending") as PhaseState,
     units: run.units.filter((unit) => unit.phase === name),
   }))
   const known = new Set(run.phases)
@@ -247,11 +292,21 @@ export function filterLibrary(entries: LibraryEntry[], filter: LibraryFilter): L
     if (filter.location !== "all" && entry.location !== filter.location) return false
     if (filter.status === "live" && !entry.live) return false
     if (filter.status === "waiting" && !entry.waiting) return false
-    if (filter.status !== "all" && filter.status !== "live" && filter.status !== "waiting" && entry.status !== filter.status) return false
-    if (!needle) return true
-    return [entry.runId, entry.workflow.name, entry.workflow.key ?? "", entry.workflow.description, entry.location].some((field) =>
-      field.toLowerCase().includes(needle),
+    if (
+      filter.status !== "all" &&
+      filter.status !== "live" &&
+      filter.status !== "waiting" &&
+      entry.status !== filter.status
     )
+      return false
+    if (!needle) return true
+    return [
+      entry.runId,
+      entry.workflow.name,
+      entry.workflow.key ?? "",
+      entry.workflow.description,
+      entry.location,
+    ].some((field) => field.toLowerCase().includes(needle))
   })
 }
 

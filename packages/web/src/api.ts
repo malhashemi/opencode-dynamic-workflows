@@ -25,7 +25,13 @@ export class ApiError extends Error {
   readonly code: ProtocolErrorCode | "network"
   readonly retryable: boolean
   readonly details?: Record<string, unknown>
-  constructor(status: number, code: ApiError["code"], message: string, retryable = false, details?: Record<string, unknown>) {
+  constructor(
+    status: number,
+    code: ApiError["code"],
+    message: string,
+    retryable = false,
+    details?: Record<string, unknown>,
+  ) {
     super(message)
     this.name = "ApiError"
     this.status = status
@@ -46,7 +52,9 @@ export interface TokenStorage {
 
 export const TOKEN_KEY = "opencode-dynamic-workflows.gateway-token"
 
-export function localTokenStorage(storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined = globalThis.localStorage): TokenStorage {
+export function localTokenStorage(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined = globalThis.localStorage,
+): TokenStorage {
   let memory: string | null = null
   return {
     get() {
@@ -136,7 +144,12 @@ export function createApi(options: ApiOptions = {}): Api {
         cache: "no-store",
       })
     } catch (error) {
-      throw new ApiError(0, "network", `The Gateway is unreachable (${error instanceof Error ? error.message : String(error)}).`, true)
+      throw new ApiError(
+        0,
+        "network",
+        `The Gateway is unreachable (${error instanceof Error ? error.message : String(error)}).`,
+        true,
+      )
     }
   }
 
@@ -149,10 +162,15 @@ export function createApi(options: ApiOptions = {}): Api {
       parsed = undefined
     }
     if (!response.ok) {
-      const error = (parsed as { error?: { code?: string; message?: string; retryable?: boolean; details?: Record<string, unknown> } } | undefined)?.error
+      const error = (
+        parsed as
+          | { error?: { code?: string; message?: string; retryable?: boolean; details?: Record<string, unknown> } }
+          | undefined
+      )?.error
       throw new ApiError(
         response.status,
-        (error?.code as ProtocolErrorCode | undefined) ?? (response.status === 401 ? "unauthorized" : response.status === 404 ? "not_found" : "internal"),
+        (error?.code as ProtocolErrorCode | undefined) ??
+          (response.status === 401 ? "unauthorized" : response.status === 404 ? "not_found" : "internal"),
         error?.message ?? `HTTP ${response.status}`,
         error?.retryable ?? response.status >= 500,
         error?.details,
@@ -197,7 +215,11 @@ export function createApi(options: ApiOptions = {}): Api {
       await pairLocal()
     } catch (error) {
       if (error instanceof ApiError && (error.code === "forbidden" || error.code === "unauthorized")) {
-        throw new ApiError(401, "unauthorized", "This browser is not paired. Enter a pairing code from the TUI to control Runs.")
+        throw new ApiError(
+          401,
+          "unauthorized",
+          "This browser is not paired. Enter a pairing code from the TUI to control Runs.",
+        )
       }
       throw error
     }

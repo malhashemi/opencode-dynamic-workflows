@@ -46,7 +46,7 @@ export function parseStructured<S extends z.ZodType>(schema: S, payload: unknown
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// JSON Schema input (D7 alias): `agent({ schema: { type: "object", ... } })`
+// JSON Schema input: `agent({ schema: { type: "object", ... } })`
 // ---------------------------------------------------------------------------------------------------------------
 
 type JsonSchemaObject = Record<string, unknown>
@@ -55,7 +55,9 @@ type JsonSchemaObject = Record<string, unknown>
 const originals = new WeakMap<z.ZodType, JsonSchemaObject>()
 
 export function isZodSchema(value: unknown): value is z.ZodType {
-  return typeof value === "object" && value !== null && typeof (value as { safeParse?: unknown }).safeParse === "function"
+  return (
+    typeof value === "object" && value !== null && typeof (value as { safeParse?: unknown }).safeParse === "function"
+  )
 }
 
 /**
@@ -66,7 +68,8 @@ export function isZodSchema(value: unknown): value is z.ZodType {
 export function resolveJsonSchema(schema: unknown): z.ZodType | undefined {
   if (schema === undefined || schema === null) return undefined
   if (isZodSchema(schema)) return schema
-  if (typeof schema !== "object" || Array.isArray(schema)) throw new TypeError("expected a zod schema or a JSON Schema object")
+  if (typeof schema !== "object" || Array.isArray(schema))
+    throw new TypeError("expected a zod schema or a JSON Schema object")
   const built = fromJsonSchema(schema as JsonSchemaObject)
   originals.set(built, schema as JsonSchemaObject)
   return built
@@ -89,9 +92,12 @@ export function fromJsonSchema(node: JsonSchemaObject | boolean): z.ZodType {
   if (Array.isArray(node.enum)) {
     // `type` still applies next to `enum`: keep only the values of an allowed type.
     const types = node.type === undefined ? null : ([] as unknown[]).concat(node.type).map(String)
-    const values = (node.enum as unknown[]).filter((value) => !types || types.some((type) => JSON_TYPES[type]?.(value) ?? true))
+    const values = (node.enum as unknown[]).filter(
+      (value) => !types || types.some((type) => JSON_TYPES[type]?.(value) ?? true),
+    )
     if (values.length === 0) return z.never()
-    if (values.length > 0 && values.every((value) => typeof value === "string")) return z.enum(values as [string, ...string[]])
+    if (values.length > 0 && values.every((value) => typeof value === "string"))
+      return z.enum(values as [string, ...string[]])
     return z.union(values.map((value) => z.literal(value as never)) as unknown as [z.ZodType, z.ZodType])
   }
   if ("const" in node) return z.literal(node.const as never)
@@ -130,7 +136,11 @@ export function fromJsonSchema(node: JsonSchemaObject | boolean): z.ZodType {
       return z.null()
     case "array": {
       const items = node.items
-      let a = z.array(typeof items === "boolean" || (items && typeof items === "object") ? fromJsonSchema(items as JsonSchemaObject | boolean) : z.unknown())
+      let a = z.array(
+        typeof items === "boolean" || (items && typeof items === "object")
+          ? fromJsonSchema(items as JsonSchemaObject | boolean)
+          : z.unknown(),
+      )
       if (typeof node.minItems === "number") a = a.min(node.minItems)
       if (typeof node.maxItems === "number") a = a.max(node.maxItems)
       return a

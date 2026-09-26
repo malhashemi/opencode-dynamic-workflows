@@ -4,6 +4,7 @@
  *     bun test ./packages/plugin/test/live/core.live.ts --timeout 300000
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+
 import { drive, startLive, toolOutput, until, type LiveServer } from "./harness"
 
 const FANOUT = `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
@@ -42,7 +43,10 @@ export default defineWorkflow({
 
 let server: LiveServer
 beforeAll(async () => {
-  server = await startLive({ files: { ".opencode/workflows/fanout.ts": FANOUT, ".opencode/workflows/caps.ts": CAPS }, pluginOptions: { inline: "allow" } })
+  server = await startLive({
+    files: { ".opencode/workflows/fanout.ts": FANOUT, ".opencode/workflows/caps.ts": CAPS },
+    pluginOptions: { inline: "allow" },
+  })
 })
 afterAll(async () => {
   await server?.stop()
@@ -62,11 +66,26 @@ describe("live: core", () => {
 
   test("a durable Workflow runs from RPC: parallel text Units + a typed Unit", async () => {
     const { runId } = (await server.workflow.startRun({ name: "fanout", args: { topic: "octopuses" } })) as any
-    const run = await until(async () => {
-      const { run: current } = (await server.workflow.getRun({ runId })) as any
-      return current.status !== "running" && current.status !== "queued" ? current : undefined
-    }, 180_000, 1_000)
-    console.log(JSON.stringify({ status: run.status, units: run.units.map((u: any) => [u.label, u.status, u.resultPath, u.sessionID, u.model.resolved]), errors: run.errors, usage: run.usage }, null, 1))
+    const run = await until(
+      async () => {
+        const { run: current } = (await server.workflow.getRun({ runId })) as any
+        return current.status !== "running" && current.status !== "queued" ? current : undefined
+      },
+      180_000,
+      1_000,
+    )
+    console.log(
+      JSON.stringify(
+        {
+          status: run.status,
+          units: run.units.map((u: any) => [u.label, u.status, u.resultPath, u.sessionID, u.model.resolved]),
+          errors: run.errors,
+          usage: run.usage,
+        },
+        null,
+        1,
+      ),
+    )
     expect(run.status).toBe("succeeded")
     expect(run.units).toHaveLength(4)
     expect(run.units.every((u: any) => u.sessionID)).toBe(true)
@@ -82,7 +101,10 @@ describe("live: core", () => {
   }, 240_000)
 
   test("the workflow tool runs a durable Workflow in the foreground and relays the summary", async () => {
-    const { messages } = await drive(server, 'Call the workflow tool with {"name":"fanout","args":{"topic":"bees"}}. Then reply with its summary line only.')
+    const { messages } = await drive(
+      server,
+      'Call the workflow tool with {"name":"fanout","args":{"topic":"bees"}}. Then reply with its summary line only.',
+    )
     const output = toolOutput(messages, "workflow")
     console.log(output)
     expect(output).toContain("fanout · succeeded · 4/4 units")
@@ -91,7 +113,10 @@ describe("live: core", () => {
 
   test("workflow_inline runs model-authored source (inline allowed by option)", async () => {
     const source = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"\nexport default defineWorkflow({ meta: { name: "hello-inline", description: "one unit" }, async run({ agent }) { return agent("Reply with exactly: INLINE-OK") } })`
-    const { messages } = await drive(server, `Call the workflow_inline tool with this exact source and no args:\n\n${source}\n\nThen reply with its output.`)
+    const { messages } = await drive(
+      server,
+      `Call the workflow_inline tool with this exact source and no args:\n\n${source}\n\nThen reply with its output.`,
+    )
     const output = toolOutput(messages, "workflow_inline")
     console.log(output)
     expect(output).toContain("INLINE-OK")
@@ -100,15 +125,23 @@ describe("live: core", () => {
 
   test("capabilities run confined to the project and are audited", async () => {
     const { runId } = (await server.workflow.startRun({ name: "caps" })) as any
-    await until(async () => {
-      const { run: current } = (await server.workflow.getRun({ runId })) as any
-      return current.status !== "running" && current.status !== "queued" ? current : undefined
-    }, 60_000, 300)
+    await until(
+      async () => {
+        const { run: current } = (await server.workflow.getRun({ runId })) as any
+        return current.status !== "running" && current.status !== "queued" ? current : undefined
+      },
+      60_000,
+      300,
+    )
     const { result } = (await server.workflow.getResult({ runId })) as any
     expect(result.pwd).toBe(server.project)
     expect(result.wrote).toBe("hi")
     expect(result.escaped).toContain("escapes the project")
     const { entries } = (await server.workflow.getActivity({ runId })) as any
-    expect(entries.filter((e: any) => e.kind === "capability").map((e: any) => e.message)).toEqual(["$ pwd", "write out/hello.txt (2 bytes)", "read out/hello.txt"])
+    expect(entries.filter((e: any) => e.kind === "capability").map((e: any) => e.message)).toEqual([
+      "$ pwd",
+      "write out/hello.txt (2 bytes)",
+      "read out/hello.txt",
+    ])
   })
 })

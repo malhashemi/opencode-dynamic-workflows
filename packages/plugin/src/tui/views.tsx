@@ -3,16 +3,30 @@
  * panel), the answer panel, the composer strip and the sidebar block.
  *
  * All logic lives in the plain modules beside this file; components only read state, lay out text and route keys
- * and clicks to actions. Colour comes only from the active theme (D4). Selection is `background.raised.high` plus
+ * and clicks to actions. Colour comes only from the active theme. Selection is `background.raised.high` plus
  * a `▸` marker (the theme's "selected" action fill is transparent — P0 S4), and every status is a glyph and a word.
  */
 import type { Context, KeymapCommand, PanelInput } from "@opencode/plugin/tui/context"
 import type { BoxRenderable, InputRenderable, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type Accessor } from "solid-js"
+
+import { formatElapsed, formatTokens } from "../progress"
 import type { LibraryEntry, PendingInteraction, Run, Unit } from "../protocol"
 import { isTerminal } from "../runs"
-import { back, confirm, currentQuestion, move, pick, rows, startAnswer, submitText, toggle, type AnswerState, type AnswerStep } from "./answer"
+import {
+  back,
+  confirm,
+  currentQuestion,
+  move,
+  pick,
+  rows,
+  startAnswer,
+  submitText,
+  toggle,
+  type AnswerState,
+  type AnswerStep,
+} from "./answer"
 import {
   LIBRARY_COLUMNS,
   UNIT_COLUMNS,
@@ -34,9 +48,21 @@ import {
   wrapLines,
   type Tone,
 } from "./format"
-import { current, cursor, cycleFilter, filterEntries, initialNav, moveCursor, pop, push, setCursor, visibleWindow, type Nav, type View } from "./nav"
+import {
+  current,
+  cursor,
+  cycleFilter,
+  filterEntries,
+  initialNav,
+  moveCursor,
+  pop,
+  push,
+  setCursor,
+  visibleWindow,
+  type Nav,
+  type View,
+} from "./nav"
 import { sessionEntries, type SyncState } from "./state"
-import { formatElapsed, formatTokens } from "../progress"
 
 export interface Actions {
   stopRun(run: Run): Promise<void>
@@ -116,12 +142,26 @@ function Hints(props: { wf: Wf; hints: readonly Hint[] }) {
 }
 
 /** One selectable row: marker, a coloured status cell, then the rest of the columns. */
-function Row(props: { wf: Wf; selected: boolean; status: string; statusWidth: number; tone: Tone; rest: string; onClick: () => void }) {
+function Row(props: {
+  wf: Wf
+  selected: boolean
+  status: string
+  statusWidth: number
+  tone: Tone
+  rest: string
+  onClick: () => void
+}) {
   const th = () => props.wf.context.theme
   return (
-    <box flexDirection="row" backgroundColor={props.selected ? th().background.raised.high : undefined} onMouseDown={() => props.onClick()}>
+    <box
+      flexDirection="row"
+      backgroundColor={props.selected ? th().background.raised.high : undefined}
+      onMouseDown={() => props.onClick()}
+    >
       <text fg={th().text.base}>{props.selected ? MARKER : "  "}</text>
-      <text fg={toneColor(props.wf.context, props.tone)}>{truncate(props.status, props.statusWidth).padEnd(props.statusWidth)}</text>
+      <text fg={toneColor(props.wf.context, props.tone)}>
+        {truncate(props.status, props.statusWidth).padEnd(props.statusWidth)}
+      </text>
       <text fg={props.selected ? th().text.base : th().text.base}>{` ${props.rest}`}</text>
     </box>
   )
@@ -152,7 +192,11 @@ export function WorkflowsScreen(props: ScreenProps) {
   const th = () => context.theme
   const initial = () => {
     const start = props.start()
-    return initialNav({ ...(start?.runId ? { runId: start.runId } : {}), ...(start?.unitId ? { unitId: start.unitId } : {}), root: props.root })
+    return initialNav({
+      ...(start?.runId ? { runId: start.runId } : {}),
+      ...(start?.unitId ? { unitId: start.unitId } : {}),
+      root: props.root,
+    })
   }
   const [nav, setNav] = createSignal<Nav>(initial())
   const [answer, setAnswer] = createSignal<AnswerState | null>(null)
@@ -267,7 +311,11 @@ export function WorkflowsScreen(props: ScreenProps) {
     const error = await wf.actions.dismiss(target, interaction)
     setSending(false)
     setAnswer(null)
-    setNote(error ? { text: `Not dismissed: ${error}`, tone: "error" } : { text: "Dismissed; the Run continues without an answer.", tone: "muted" })
+    setNote(
+      error
+        ? { text: `Not dismissed: ${error}`, tone: "error" }
+        : { text: "Dismissed; the Run continues without an answer.", tone: "muted" },
+    )
   }
 
   // --- navigation --------------------------------------------------------------------------------------------
@@ -344,7 +392,9 @@ export function WorkflowsScreen(props: ScreenProps) {
 
   const hints = (): Hint[] => {
     const v = view()
-    const common: Hint[] = [{ key: props.escapeBack ? "esc" : "⌫", label: nav().stack.length > 1 ? "back" : "close", run: goBack }]
+    const common: Hint[] = [
+      { key: props.escapeBack ? "esc" : "⌫", label: nav().stack.length > 1 ? "back" : "close", run: goBack },
+    ]
     if (v.kind === "library") {
       return [
         { key: "↵", label: "open", run: openSelected },
@@ -409,17 +459,83 @@ export function WorkflowsScreen(props: ScreenProps) {
       { title: "Back", group: "Workflows", bind: "backspace", run: goBack },
       ...(props.escapeBack ? [{ title: "Back", group: "Workflows", bind: "escape", run: goBack }] : []),
       { title: "Answer", group: "Workflows", bind: "a", enabled: inView("any"), run: answerFirst },
-      { title: "Filter", group: "Workflows", bind: "f", enabled: inView("library"), run: () => void setNav(cycleFilter(nav())) },
-      { title: "Clean up finished Runs", group: "Workflows", bind: "d", enabled: inView("library"), run: () => void wf.actions.cleanupPending() },
-      { title: "Pair a browser", group: "Workflows", bind: "p", enabled: inView("library"), run: () => void wf.actions.pair() },
-      { title: "Refresh", group: "Workflows", bind: "r", enabled: inView("library"), run: () => void wf.actions.refresh() },
-      { title: "Open transcript", group: "Workflows", bind: "o", enabled: () => view().kind !== "library", run: openUnitTranscript },
-      { title: "Parent session", group: "Workflows", bind: "p", enabled: inView("run"), run: withRun((t) => wf.actions.openTranscript(t.parentSessionID)) },
-      { title: "Stop Run", group: "Workflows", bind: "s", enabled: () => view().kind === "run" && !!run() && !isTerminal(run()!.status), run: withRun((t) => wf.actions.stopRun(t)) },
-      { title: "Stop Unit", group: "Workflows", bind: "x", enabled: () => view().kind !== "library" && !!run() && !isTerminal(run()!.status), run: withUnit((t, u) => wf.actions.stopUnit(t, u)) },
-      { title: "Restart Unit", group: "Workflows", bind: "r", enabled: () => view().kind !== "library" && !!run() && !isTerminal(run()!.status), run: withUnit((t, u) => wf.actions.restartUnit(t, u)) },
-      { title: "Resume Run", group: "Workflows", bind: "e", enabled: () => view().kind === "run" && !!run() && isTerminal(run()!.status), run: resume },
-      { title: "Save Run", group: "Workflows", bind: "w", enabled: () => view().kind === "run" && !!run() && isTerminal(run()!.status), run: withRun((t) => wf.actions.saveRun(t)) },
+      {
+        title: "Filter",
+        group: "Workflows",
+        bind: "f",
+        enabled: inView("library"),
+        run: () => void setNav(cycleFilter(nav())),
+      },
+      {
+        title: "Clean up finished Runs",
+        group: "Workflows",
+        bind: "d",
+        enabled: inView("library"),
+        run: () => void wf.actions.cleanupPending(),
+      },
+      {
+        title: "Pair a browser",
+        group: "Workflows",
+        bind: "p",
+        enabled: inView("library"),
+        run: () => void wf.actions.pair(),
+      },
+      {
+        title: "Refresh",
+        group: "Workflows",
+        bind: "r",
+        enabled: inView("library"),
+        run: () => void wf.actions.refresh(),
+      },
+      {
+        title: "Open transcript",
+        group: "Workflows",
+        bind: "o",
+        enabled: () => view().kind !== "library",
+        run: openUnitTranscript,
+      },
+      {
+        title: "Parent session",
+        group: "Workflows",
+        bind: "p",
+        enabled: inView("run"),
+        run: withRun((t) => wf.actions.openTranscript(t.parentSessionID)),
+      },
+      {
+        title: "Stop Run",
+        group: "Workflows",
+        bind: "s",
+        enabled: () => view().kind === "run" && !!run() && !isTerminal(run()!.status),
+        run: withRun((t) => wf.actions.stopRun(t)),
+      },
+      {
+        title: "Stop Unit",
+        group: "Workflows",
+        bind: "x",
+        enabled: () => view().kind !== "library" && !!run() && !isTerminal(run()!.status),
+        run: withUnit((t, u) => wf.actions.stopUnit(t, u)),
+      },
+      {
+        title: "Restart Unit",
+        group: "Workflows",
+        bind: "r",
+        enabled: () => view().kind !== "library" && !!run() && !isTerminal(run()!.status),
+        run: withUnit((t, u) => wf.actions.restartUnit(t, u)),
+      },
+      {
+        title: "Resume Run",
+        group: "Workflows",
+        bind: "e",
+        enabled: () => view().kind === "run" && !!run() && isTerminal(run()!.status),
+        run: resume,
+      },
+      {
+        title: "Save Run",
+        group: "Workflows",
+        bind: "w",
+        enabled: () => view().kind === "run" && !!run() && isTerminal(run()!.status),
+        run: withRun((t) => wf.actions.saveRun(t)),
+      },
       {
         title: "Delete Unit sessions",
         group: "Workflows",
@@ -444,7 +560,12 @@ export function WorkflowsScreen(props: ScreenProps) {
       { title: "Dismiss", group: "Answer", bind: "x", run: () => void dismiss() },
       { title: "Back", group: "Answer", bind: "escape", run: () => void setAnswer(back(answer()!)) },
       { title: "Back", group: "Answer", bind: "backspace", run: () => void setAnswer(back(answer()!)) },
-      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((number) => ({ title: `Pick ${number}`, group: "Answer", bind: String(number), run: () => void step(pick(answer()!, number)) })),
+      ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((number) => ({
+        title: `Pick ${number}`,
+        group: "Answer",
+        bind: String(number),
+        run: () => void step(pick(answer()!, number)),
+      })),
     ],
   }))
 
@@ -524,7 +645,15 @@ export function WorkflowsScreen(props: ScreenProps) {
           </Match>
           <Match when={view().kind === "unit"}>
             <Show when={run() && viewUnit()} fallback={<text fg={th().text.muted}>Loading the Unit…</text>}>
-              <UnitPane wf={wf} run={run()!} unit={viewUnit()!} width={innerWidth()} height={props.height() - 5} scroll={scroll()} onScroll={setScroll} />
+              <UnitPane
+                wf={wf}
+                run={run()!}
+                unit={viewUnit()!}
+                width={innerWidth()}
+                height={props.height() - 5}
+                scroll={scroll()}
+                onScroll={setScroll}
+              />
             </Show>
           </Match>
         </Switch>
@@ -540,7 +669,16 @@ export function WorkflowsScreen(props: ScreenProps) {
 // Library
 // ---------------------------------------------------------------------------------------------------------------
 
-function LibraryPane(props: { wf: Wf; entries: LibraryEntry[]; total: number; filter: string; cursor: number; width: number; height: number; onPick: (index: number) => void }) {
+function LibraryPane(props: {
+  wf: Wf
+  entries: LibraryEntry[]
+  total: number
+  filter: string
+  cursor: number
+  width: number
+  height: number
+  onPick: (index: number) => void
+}) {
   const th = () => props.wf.context.theme
   const columns = () => layout(LIBRARY_COLUMNS, props.width - MARKER.length)
   const statusColumn = () => columns().find((column) => column.id === "status")!
@@ -552,7 +690,12 @@ function LibraryPane(props: { wf: Wf; entries: LibraryEntry[]; total: number; fi
     <box flexDirection="column">
       <text fg={th().text.muted}>
         {truncate(
-          [`${props.total} runs`, live() ? `${live()} live` : "", waiting() ? `${waiting()} waiting` : "", props.filter !== "all" ? `showing ${props.filter} (${props.entries.length})` : ""]
+          [
+            `${props.total} runs`,
+            live() ? `${live()} live` : "",
+            waiting() ? `${waiting()} waiting` : "",
+            props.filter !== "all" ? `showing ${props.filter} (${props.entries.length})` : "",
+          ]
             .filter(Boolean)
             .join(" · "),
           props.width,
@@ -562,7 +705,9 @@ function LibraryPane(props: { wf: Wf; entries: LibraryEntry[]; total: number; fi
         when={props.entries.length > 0}
         fallback={
           <text fg={th().text.muted}>
-            {props.total === 0 ? "No Runs in this project yet. Ask the agent to run a workflow, or type /workflow <name>." : "No Runs match this filter (f to change it)."}
+            {props.total === 0
+              ? "No Runs in this project yet. Ask the agent to run a workflow, or type /workflow <name>."
+              : "No Runs match this filter (f to change it)."}
           </text>
         }
       >
@@ -602,7 +747,8 @@ function phaseLine(run: Run): Array<{ text: string; tone: Tone }> {
   const index = run.currentPhase ? run.phases.indexOf(run.currentPhase) : -1
   const finished = isTerminal(run.status)
   return run.phases.map((phase, position) => {
-    if (position < index || (finished && position === index && run.status === "succeeded")) return { text: `✓ ${phase}`, tone: "success" as Tone }
+    if (position < index || (finished && position === index && run.status === "succeeded"))
+      return { text: `✓ ${phase}`, tone: "success" as Tone }
     if (position === index) return { text: `● ${phase}`, tone: finished ? ("warning" as Tone) : ("info" as Tone) }
     return { text: `○ ${phase}`, tone: "muted" as Tone }
   })
@@ -630,18 +776,34 @@ function RunPane(props: {
   const statusColumn = () => columns().find((column) => column.id === "status")!
   const rest = () => columns().filter((column) => column.id !== "status")
   const activityLines = () => {
-    const entries = props.activity ?? props.run.logs.map((message) => ({ message, kind: "log", time: props.run.startedAt }))
+    const entries =
+      props.activity ?? props.run.logs.map((message) => ({ message, kind: "log", time: props.run.startedAt }))
     return entries.slice(-3)
   }
-  const answerRows = () => (props.answer && props.interaction ? Math.min(props.height - 6, 8 + (props.interaction.approval ? 12 : 0) + rows(props.answer).length) : 0)
-  const unitRows = () => Math.max(3, props.height - 5 - answerRows() - (props.run.errors.length ? 2 : 0) - (props.run.resultPreview ? 1 : 0) - activityLines().length - 1)
+  const answerRows = () =>
+    props.answer && props.interaction
+      ? Math.min(props.height - 6, 8 + (props.interaction.approval ? 12 : 0) + rows(props.answer).length)
+      : 0
+  const unitRows = () =>
+    Math.max(
+      3,
+      props.height -
+        5 -
+        answerRows() -
+        (props.run.errors.length ? 2 : 0) -
+        (props.run.resultPreview ? 1 : 0) -
+        activityLines().length -
+        1,
+    )
   const window = () => visibleWindow(props.run.units.length, props.cursor, unitRows())
 
   return (
     <box flexDirection="column">
       <box flexDirection="row">
         <text fg={toneColor(context, look().tone)}>{`${look().glyph} ${look().word}`}</text>
-        <text fg={th().text.base}>{truncate(`  ${runSummary(props.run, props.wf.now())}`, props.width - look().word.length - 2)}</text>
+        <text fg={th().text.base}>
+          {truncate(`  ${runSummary(props.run, props.wf.now())}`, props.width - look().word.length - 2)}
+        </text>
       </box>
       <Show when={props.run.workflow.description}>
         <text fg={th().text.muted}>{truncate(props.run.workflow.description, props.width)}</text>
@@ -650,7 +812,9 @@ function RunPane(props: {
         <box flexDirection="row" flexWrap="wrap">
           <For each={phaseLine(props.run)}>
             {(part, index) => (
-              <text fg={toneColor(context, part.tone)}>{`${part.text}${index() < phaseLine(props.run).length - 1 ? "  ›  " : ""}`}</text>
+              <text
+                fg={toneColor(context, part.tone)}
+              >{`${part.text}${index() < phaseLine(props.run).length - 1 ? "  ›  " : ""}`}</text>
             )}
           </For>
         </box>
@@ -682,7 +846,7 @@ function RunPane(props: {
         />
       </Show>
       <text fg={th().text.muted}>{`  ${renderHeader([statusColumn()])} ${renderHeader(rest())}`}</text>
-      <Show when={props.run.units.length > 0} fallback={<text fg={th().text.muted}>  No Units yet.</text>}>
+      <Show when={props.run.units.length > 0} fallback={<text fg={th().text.muted}> No Units yet.</text>}>
         <For each={props.run.units.slice(window().start, window().end)}>
           {(unit, index) => {
             const absolute = () => window().start + index()
@@ -703,13 +867,18 @@ function RunPane(props: {
       </Show>
       <Show when={props.run.errors.length > 0}>
         <text fg={th().text.feedback.error.base}>
-          {truncate(`✗ ${props.run.errors.length} error${props.run.errors.length === 1 ? "" : "s"} — last: ${props.run.errors[props.run.errors.length - 1]!.error}`, props.width)}
+          {truncate(
+            `✗ ${props.run.errors.length} error${props.run.errors.length === 1 ? "" : "s"} — last: ${props.run.errors[props.run.errors.length - 1]!.error}`,
+            props.width,
+          )}
         </text>
       </Show>
       <Show when={props.run.resultPreview}>
         <text fg={th().text.base}>{truncate(`result: ${props.run.resultPreview}`, props.width)}</text>
       </Show>
-      <For each={activityLines()}>{(entry) => <text fg={th().text.muted}>{truncate(`· ${entry.message}`, props.width)}</text>}</For>
+      <For each={activityLines()}>
+        {(entry) => <text fg={th().text.muted}>{truncate(`· ${entry.message}`, props.width)}</text>}
+      </For>
     </box>
   )
 }
@@ -735,11 +904,16 @@ function AnswerPanel(props: {
     const interaction = props.interaction
     if (interaction.kind === "approval") return "Approval"
     if (interaction.kind === "permission") return "Permission"
-    return interaction.form ? "Question (OpenCode form)" : interaction.origin === "script" ? "Question from the workflow" : "Question from a Unit"
+    return interaction.form
+      ? "Question (OpenCode form)"
+      : interaction.origin === "script"
+        ? "Question from the workflow"
+        : "Question from a Unit"
   }
   const width = () => props.width - 2
   let input: InputRenderable | undefined
-  const previewLines = () => (props.interaction.approval ? wrapLines(props.interaction.approval.preview, width() - 2).slice(0, 10) : [])
+  const previewLines = () =>
+    props.interaction.approval ? wrapLines(props.interaction.approval.preview, width() - 2).slice(0, 10) : []
   return (
     <box flexDirection="column" backgroundColor={th().background.raised.base} paddingLeft={1} paddingRight={1}>
       <text fg={th().text.feedback.warning.base}>
@@ -748,14 +922,24 @@ function AnswerPanel(props: {
           width(),
         )}
       </text>
-      <For each={wrapLines(question()?.prompt ?? "", width()).slice(0, 3)}>{(line) => <text fg={th().text.base}>{line}</text>}</For>
+      <For each={wrapLines(question()?.prompt ?? "", width()).slice(0, 3)}>
+        {(line) => <text fg={th().text.base}>{line}</text>}
+      </For>
       <Show when={props.interaction.permission}>
         <text fg={th().text.muted}>
-          {truncate(`${props.interaction.permission!.action}: ${props.interaction.permission!.resources.join(", ") || "(no resource)"}`, width())}
+          {truncate(
+            `${props.interaction.permission!.action}: ${props.interaction.permission!.resources.join(", ") || "(no resource)"}`,
+            width(),
+          )}
         </text>
       </Show>
       <Show when={props.interaction.approval}>
-        <text fg={th().text.muted}>{truncate(`sha256 ${props.interaction.approval!.sha256} · ${props.interaction.approval!.bytes} bytes`, width())}</text>
+        <text fg={th().text.muted}>
+          {truncate(
+            `sha256 ${props.interaction.approval!.sha256} · ${props.interaction.approval!.bytes} bytes`,
+            width(),
+          )}
+        </text>
         <box flexDirection="column" backgroundColor={th().background.raised.high} paddingLeft={1}>
           <For each={previewLines()}>{(line) => <text fg={th().text.base}>{line || " "}</text>}</For>
         </box>
@@ -763,13 +947,26 @@ function AnswerPanel(props: {
       <For each={rows(props.state)}>
         {(row, index) => {
           const selected = () => index() === props.state.cursor && !props.state.typing
-          const box = () => (row.kind === "custom" ? "✎" : question()?.multiple ? (row.checked ? "[x]" : "[ ]") : row.checked ? "(•)" : "( )")
+          const box = () =>
+            row.kind === "custom"
+              ? "✎"
+              : question()?.multiple
+                ? row.checked
+                  ? "[x]"
+                  : "[ ]"
+                : row.checked
+                  ? "(•)"
+                  : "( )"
           const text = () =>
             row.kind === "custom"
               ? `${index() + 1}. ${box()} ${row.label}${row.typed.length ? `: ${row.typed.join(", ")}` : ""}`
               : `${index() + 1}. ${box()} ${row.label}${row.description ? ` — ${row.description}` : ""}`
           return (
-            <box flexDirection="row" backgroundColor={selected() ? th().background.raised.high : undefined} onMouseDown={() => props.onPickOption(index())}>
+            <box
+              flexDirection="row"
+              backgroundColor={selected() ? th().background.raised.high : undefined}
+              onMouseDown={() => props.onPickOption(index())}
+            >
               <text fg={th().text.base}>{selected() ? MARKER : "  "}</text>
               <text fg={selected() ? th().text.base : th().text.base}>{truncate(text(), width() - 2)}</text>
             </box>
@@ -790,7 +987,9 @@ function AnswerPanel(props: {
             focusedTextColor={th().text.formfield.focused}
             placeholderColor={th().text.muted}
             // OpenTUI types `onSubmit` as both a SubmitEvent and a value handler; read the value either way.
-            onSubmit={((value: unknown) => props.onText(typeof value === "string" ? value : (input?.value ?? ""))) as never}
+            onSubmit={
+              ((value: unknown) => props.onText(typeof value === "string" ? value : (input?.value ?? ""))) as never
+            }
           />
         </box>
       </Show>
@@ -812,7 +1011,15 @@ function AnswerPanel(props: {
 // Unit
 // ---------------------------------------------------------------------------------------------------------------
 
-function UnitPane(props: { wf: Wf; run: Run; unit: Unit; width: number; height: number; scroll: number; onScroll: (value: number) => void }) {
+function UnitPane(props: {
+  wf: Wf
+  run: Run
+  unit: Unit
+  width: number
+  height: number
+  scroll: number
+  onScroll: (value: number) => void
+}) {
   const context = props.wf.context
   const th = () => context.theme
   const [full, setFull] = createSignal<string | null>(null)
@@ -831,7 +1038,13 @@ function UnitPane(props: { wf: Wf; run: Run; unit: Unit; width: number; height: 
     const unit = props.unit
     const model = unit.model.resolved ?? unit.model.requested
     return [
-      [`agent ${unit.subagent}`, model ? `model ${model}${unit.model.requested && unit.model.resolved && unit.model.requested !== unit.model.resolved ? ` (asked ${unit.model.requested})` : ""}` : "", unit.phase ? `phase ${unit.phase}` : ""]
+      [
+        `agent ${unit.subagent}`,
+        model
+          ? `model ${model}${unit.model.requested && unit.model.resolved && unit.model.requested !== unit.model.resolved ? ` (asked ${unit.model.requested})` : ""}`
+          : "",
+        unit.phase ? `phase ${unit.phase}` : "",
+      ]
         .filter(Boolean)
         .join(" · "),
       [
@@ -843,28 +1056,52 @@ function UnitPane(props: { wf: Wf; run: Run; unit: Unit; width: number; height: 
       ]
         .filter(Boolean)
         .join(" · "),
-      ...unit.attempts.map((attempt) => `attempt ${attempt.turn}: ${attempt.path} ${attempt.ok ? "✓" : `✗ ${attempt.error ?? ""}`}`),
+      ...unit.attempts.map(
+        (attempt) => `attempt ${attempt.turn}: ${attempt.path} ${attempt.ok ? "✓" : `✗ ${attempt.error ?? ""}`}`,
+      ),
       ...(unit.error ? [`error: ${unit.error}`] : []),
     ]
   }
-  const output = () => full() ?? props.unit.output ?? (props.unit.outputElided ? "Loading the full output…" : props.unit.status === "running" || props.unit.status === "queued" ? "(no output yet)" : "(no output)")
+  const output = () =>
+    full() ??
+    props.unit.output ??
+    (props.unit.outputElided
+      ? "Loading the full output…"
+      : props.unit.status === "running" || props.unit.status === "queued"
+        ? "(no output yet)"
+        : "(no output)")
   const promptLines = () => wrapLines(props.unit.prompt, props.width - 2).slice(0, 4)
   const outputLines = () => wrapLines(output(), props.width)
   const room = () => Math.max(3, props.height - 3 - meta().length - promptLines().length)
   const offset = () => Math.max(0, Math.min(props.scroll, Math.max(0, outputLines().length - room())))
   return (
-    <box flexDirection="column" onMouseScroll={(event: { scroll?: { direction?: string } }) => props.onScroll(offset() + (event.scroll?.direction === "up" ? -3 : 3))}>
+    <box
+      flexDirection="column"
+      onMouseScroll={(event: { scroll?: { direction?: string } }) =>
+        props.onScroll(offset() + (event.scroll?.direction === "up" ? -3 : 3))
+      }
+    >
       <box flexDirection="row">
         <text fg={toneColor(context, look().tone)}>{`${look().glyph} ${look().word}`}</text>
         <text fg={th().text.base}>{truncate(`  ${unitName(props.unit)}`, props.width - look().word.length - 2)}</text>
       </box>
-      <For each={meta()}>{(line) => <text fg={line.startsWith("error:") ? th().text.feedback.error.base : th().text.muted}>{truncate(line, props.width)}</text>}</For>
+      <For each={meta()}>
+        {(line) => (
+          <text fg={line.startsWith("error:") ? th().text.feedback.error.base : th().text.muted}>
+            {truncate(line, props.width)}
+          </text>
+        )}
+      </For>
       <For each={promptLines()}>{(line) => <text fg={th().text.muted}>{`> ${line}`}</text>}</For>
       <box flexDirection="column" backgroundColor={th().background.raised.base}>
-        <For each={outputLines().slice(offset(), offset() + room())}>{(line) => <text fg={th().text.base}>{line || " "}</text>}</For>
+        <For each={outputLines().slice(offset(), offset() + room())}>
+          {(line) => <text fg={th().text.base}>{line || " "}</text>}
+        </For>
       </box>
       <Show when={outputLines().length > room()}>
-        <text fg={th().text.muted}>{`lines ${offset() + 1}-${Math.min(outputLines().length, offset() + room())} of ${outputLines().length} (j/k scroll)`}</text>
+        <text
+          fg={th().text.muted}
+        >{`lines ${offset() + 1}-${Math.min(outputLines().length, offset() + room())} of ${outputLines().length} (j/k scroll)`}</text>
       </Show>
     </box>
   )
@@ -943,7 +1180,12 @@ export function SidebarRuns(props: { wf: Wf; sessionID: string }) {
 }
 
 /** The session panel: the Workflows screen scoped to this session's Runs. */
-export function RunPanel(props: { wf: Wf; panel: PanelInput; target: () => { runId?: string; answer?: boolean } | undefined; focusOnOpen: () => boolean }) {
+export function RunPanel(props: {
+  wf: Wf
+  panel: PanelInput
+  target: () => { runId?: string; answer?: boolean } | undefined
+  focusOnOpen: () => boolean
+}) {
   const dims = useTerminalDimensions()
   onMount(() => {
     if (props.focusOnOpen()) props.panel.focus()
@@ -965,12 +1207,20 @@ export function RunPanel(props: { wf: Wf; panel: PanelInput; target: () => { run
 }
 
 /** The `/workflows` page: every Run of the location. */
-export function LibraryPage(props: { wf: Wf; data: () => { runId?: string; unitId?: string; answer?: boolean } | undefined; onExit: () => void }) {
+export function LibraryPage(props: {
+  wf: Wf
+  data: () => { runId?: string; unitId?: string; answer?: boolean } | undefined
+  onExit: () => void
+}) {
   const dims = useTerminalDimensions()
   return (
     <WorkflowsScreen
       wf={props.wf}
-      entries={() => Object.values(props.wf.state().runs).map((slot) => slot.entry).toSorted((a, b) => b.startedAt - a.startedAt)}
+      entries={() =>
+        Object.values(props.wf.state().runs)
+          .map((slot) => slot.entry)
+          .toSorted((a, b) => b.startedAt - a.startedAt)
+      }
       start={props.data}
       root="library"
       title="Workflows"

@@ -25,7 +25,10 @@ export function alreadyGone(error: unknown): boolean {
 }
 
 /** Delete one terminal Run's Unit sessions and record the result on the Run. */
-export async function cleanupRun(run: Run, deps: { api: WorkflowApi; remove: (sessionID: string) => Promise<void> }): Promise<CleanupOutcome> {
+export async function cleanupRun(
+  run: Run,
+  deps: { api: WorkflowApi; remove: (sessionID: string) => Promise<void> },
+): Promise<CleanupOutcome> {
   if (!isTerminal(run.status)) throw new Error("Stop the Run before deleting its Unit sessions.")
   const deleted: string[] = []
   const failures: Array<{ sessionID: string; error: string }> = []

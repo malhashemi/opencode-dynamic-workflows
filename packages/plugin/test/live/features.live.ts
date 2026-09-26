@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import path from "node:path"
+
 import { startLive, until, type LiveServer } from "./harness"
 
 const CHILD = `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
@@ -47,7 +48,8 @@ beforeAll(async () => {
 const kept: string[] = []
 afterAll(async () => {
   // Kept worktrees live outside the scratch project (OpenCode's worktree dir): remove what this suite made.
-  for (const directory of kept) await Bun.$`git -C ${server.project} worktree remove --force ${directory}`.quiet().nothrow()
+  for (const directory of kept)
+    await Bun.$`git -C ${server.project} worktree remove --force ${directory}`.quiet().nothrow()
   const { rmdir } = await import("node:fs/promises")
   for (const directory of kept) await rmdir(path.dirname(directory)).catch(() => {}) // only if now empty
   await server?.stop()
@@ -55,10 +57,14 @@ afterAll(async () => {
 
 const w = () => server.workflow as any
 const settled = (runId: string) =>
-  until(async () => {
-    const { run } = await w().getRun({ runId })
-    return run.status !== "running" && run.status !== "queued" ? run : undefined
-  }, 240_000, 500)
+  until(
+    async () => {
+      const { run } = await w().getRun({ runId })
+      return run.status !== "running" && run.status !== "queued" ? run : undefined
+    },
+    240_000,
+    500,
+  )
 
 describe("live: features", () => {
   test("ctx.workflow runs a saved Workflow as a step", async () => {
@@ -91,19 +97,36 @@ describe("live: features", () => {
     const unit = run.units[0]
     const viaRpc = await w().getTranscript({ runId: run.runId, unitId: unit.unitId })
     expect(viaRpc.messages.some((m: any) => m.role === "assistant")).toBe(true)
-    const viaHttp = (await (await fetch(`http://127.0.0.1:${server.gatewayPort}/v1/runs/${run.runId}/units/${unit.unitId}/transcript`)).json()) as any
+    const viaHttp = (await (
+      await fetch(`http://127.0.0.1:${server.gatewayPort}/v1/runs/${run.runId}/units/${unit.unitId}/transcript`)
+    ).json()) as any
     expect(viaHttp.sessionID).toBe(unit.sessionID)
   })
 
   test("a background Run started by the model posts a notification into its session", async () => {
-    const [providerID, id] = (process.env.WF_LIVE_MODEL ?? "claude-work/claude-opus-5-5").split("/", 2) as [string, string]
-    const session = (await server.client.session.create({ title: "bg driver", agent: "build", model: { providerID, id }, location: { directory: server.project } } as never)) as any
-    await server.client.session.prompt({ sessionID: session.id, text: 'Call the workflow tool with {"name":"child","args":{"word":"later"},"background":true}. Then reply with exactly: STARTED' } as never)
+    const [providerID, id] = (process.env.WF_LIVE_MODEL ?? "claude-work/claude-opus-5-5").split("/", 2) as [
+      string,
+      string,
+    ]
+    const session = (await server.client.session.create({
+      title: "bg driver",
+      agent: "build",
+      model: { providerID, id },
+      location: { directory: server.project },
+    } as never)) as any
+    await server.client.session.prompt({
+      sessionID: session.id,
+      text: 'Call the workflow tool with {"name":"child","args":{"word":"later"},"background":true}. Then reply with exactly: STARTED',
+    } as never)
     await server.client.session.wait({ sessionID: session.id })
-    const notice = await until(async () => {
-      const messages = (await server.client.session.context({ sessionID: session.id })) as any[]
-      return messages.find((m) => m.type === "user" && String(m.text ?? "").includes("[workflow notification]"))
-    }, 120_000, 1_000)
+    const notice = await until(
+      async () => {
+        const messages = (await server.client.session.context({ sessionID: session.id })) as any[]
+        return messages.find((m) => m.type === "user" && String(m.text ?? "").includes("[workflow notification]"))
+      },
+      120_000,
+      1_000,
+    )
     const text = String(notice.text)
     console.log(text)
     expect(text).toContain("ended `succeeded`")

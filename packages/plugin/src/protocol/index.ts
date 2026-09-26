@@ -78,7 +78,11 @@ export class WorkflowProtocolError extends Error {
   readonly code: ProtocolErrorCode
   readonly retryable: boolean
   readonly details?: Record<string, unknown>
-  constructor(code: ProtocolErrorCode, message: string, options: { retryable?: boolean; details?: Record<string, unknown> } = {}) {
+  constructor(
+    code: ProtocolErrorCode,
+    message: string,
+    options: { retryable?: boolean; details?: Record<string, unknown> } = {},
+  ) {
     super(message)
     this.name = "WorkflowProtocolError"
     this.code = code
@@ -86,7 +90,12 @@ export class WorkflowProtocolError extends Error {
     this.details = options.details
   }
   toJSON(): ProtocolError {
-    return { code: this.code, message: this.message, retryable: this.retryable, ...(this.details ? { details: this.details } : {}) }
+    return {
+      code: this.code,
+      message: this.message,
+      retryable: this.retryable,
+      ...(this.details ? { details: this.details } : {}),
+    }
   }
 }
 

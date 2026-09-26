@@ -1,23 +1,23 @@
+import { createCapabilities } from "./capabilities"
+import { formatModel, toHostModel, type EngineHost, type HostPermissionRule } from "./host"
+import { emptyUsage, type Unit, type Usage } from "./protocol"
+import { DEFAULT_SUBAGENT, runUnit, stringifyError, type UnitRunResult } from "./runner"
+import { toUnitOutput } from "./runs"
+import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
+import { resolveJsonSchema } from "./schema-bridge"
+import type { UnitBinding, UnitIndex } from "./units"
 /**
  * The context factory — assembles the {@link WorkflowContext} handed to a Workflow's `run`.
  *
- * Semantics carried from V1 (and pinned by the tests): one shared {@link Semaphore} caps in-flight Units across
+ * Semantics (pinned by the tests): one shared {@link Semaphore} caps in-flight Units across
  * the whole Run, so `parallel` (a barrier) and `pipeline` (no barrier between items) draw from the same limiter
- * (D5); a failed Unit resolves to `null` and is recorded in `ctx.errors` rather than throwing (D9); the budget is
- * advisory unless the Workflow asks for a hard one (D10); the Run's signal stops queued AND in-flight Units (D11).
+ *; a failed Unit resolves to `null` and is recorded in `ctx.errors` rather than throwing; the budget is
+ * advisory unless the Workflow asks for a hard one; the Run's signal stops queued AND in-flight Units.
  *
  * New on V2: Units run through {@link runUnit} on public session APIs; hard limits stop a runaway script with a
  * legible error; and a resumed Run replays the Units a previous Run already finished (start-order replay).
  */
 import type { AgentOpts, AskOptions, AskQuestion, WorkflowContext, WorkflowError, z } from "./workflow"
-import { formatModel, toHostModel, type EngineHost, type HostPermissionRule } from "./host"
-import { emptyUsage, type Unit, type Usage } from "./protocol"
-import { DEFAULT_SUBAGENT, runUnit, stringifyError, type UnitRunResult } from "./runner"
-import { toUnitOutput } from "./runs"
-import { createCapabilities } from "./capabilities"
-import { AbortError, defaultConcurrency, Semaphore } from "./scheduler"
-import { resolveJsonSchema } from "./schema-bridge"
-import type { UnitBinding, UnitIndex } from "./units"
 
 export interface EngineEvents {
   onLog?: (message: string) => void
@@ -44,7 +44,17 @@ export interface EngineState {
 }
 
 export function createEngineState(): EngineState {
-  return { logs: [], phases: [], currentPhase: null, errors: [], unitCount: 0, tokensSpent: 0, usage: emptyUsage(), inflight: new Set(), worktrees: [] }
+  return {
+    logs: [],
+    phases: [],
+    currentPhase: null,
+    errors: [],
+    unitCount: 0,
+    tokensSpent: 0,
+    usage: emptyUsage(),
+    inflight: new Set(),
+    worktrees: [],
+  }
 }
 
 export interface RunLimits {
@@ -252,7 +262,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
         emit(current)
         let worktree: { directory: string; branch: string | null; base: string | null } | null = null
         if (opts.isolation === "worktree" && !opts.location) {
-          if (!input.host.worktree) throw new UnitSetupError("isolation: \"worktree\" is not available on this host")
+          if (!input.host.worktree) throw new UnitSetupError('isolation: "worktree" is not available on this host')
           try {
             worktree = await input.host.worktree.create(`wf-${input.runId.slice(0, 8)}-${ordinal}`)
           } catch (error) {
@@ -282,7 +292,7 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           ...(withVariant ? { model: withVariant } : {}),
           ...(schema ? { schema } : {}),
           ...(opts.retries !== undefined ? { retries: opts.retries } : {}),
-          ...(opts.timeoutMs ?? input.unitTimeout ? { timeoutMs: opts.timeoutMs ?? input.unitTimeout } : {}),
+          ...((opts.timeoutMs ?? input.unitTimeout) ? { timeoutMs: opts.timeoutMs ?? input.unitTimeout } : {}),
           signal,
           ...(input.slot ? { slot: input.slot } : {}),
           maxSteps: limits.maxUnitSteps,
@@ -315,7 +325,9 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
           const changed = await input.host.worktree.changed(tree.directory, tree.base).catch(() => true)
           if (changed) {
             state.worktrees.push({ unit: label ?? subagent, directory: tree.directory, branch: tree.branch })
-            events?.onLog?.(`kept worktree ${tree.directory}${tree.branch ? ` (branch ${tree.branch})` : ""} for ${label ?? subagent}`)
+            events?.onLog?.(
+              `kept worktree ${tree.directory}${tree.branch ? ` (branch ${tree.branch})` : ""} for ${label ?? subagent}`,
+            )
           } else {
             await input.host.worktree.remove(tree.directory).catch(() => {})
           }
@@ -376,7 +388,9 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
 
   const checkItems = (count: number, what: string) => {
     if (count > limits.maxItemsPerCall) {
-      throw new Error(`limit reached: ${what} got ${count} items; the limit is ${limits.maxItemsPerCall} (limits.maxItemsPerCall)`)
+      throw new Error(
+        `limit reached: ${what} got ${count} items; the limit is ${limits.maxItemsPerCall} (limits.maxItemsPerCall)`,
+      )
     }
   }
 
@@ -395,7 +409,10 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
     })
   }
 
-  const pipeline = (async (items: unknown[], ...stages: Array<(prev: unknown, item: unknown, index: number) => unknown>) => {
+  const pipeline = (async (
+    items: unknown[],
+    ...stages: Array<(prev: unknown, item: unknown, index: number) => unknown>
+  ) => {
     checkItems(items.length, "pipeline")
     const runItem = async (item: unknown, index: number) => {
       let value: unknown = item
@@ -443,13 +460,17 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
       const coerced = coerceAnswers(toInteractionQuestions(questions), recorded ?? options.fallback)
       if (coerced) return coerced
       plan.diverged = true
-      plan.onDiverge?.("resume diverged at a ctx.ask: the recorded answer does not fit the question; asking live from here")
+      plan.onDiverge?.(
+        "resume diverged at a ctx.ask: the recorded answer does not fit the question; asking live from here",
+      )
     }
     if (!input.ask) {
       const { coerceAnswers, toInteractionQuestions } = await import("./broker")
       const fallback = coerceAnswers(toInteractionQuestions(questions), options.fallback)
       if (!fallback) {
-        throw new Error("ctx.ask: `fallback` must have one entry per question, each drawn from that question's offered labels")
+        throw new Error(
+          "ctx.ask: `fallback` must have one entry per question, each drawn from that question's offered labels",
+        )
       }
       return fallback
     }
@@ -457,7 +478,12 @@ export function createWorkflowContext<A>(input: CreateContextInput<A>): Workflow
   }
 
   return {
-    ...createCapabilities({ location: input.location, signal, audit: () => {}, disabled: "capabilities are only available inside a Run" }),
+    ...createCapabilities({
+      location: input.location,
+      signal,
+      audit: () => {},
+      disabled: "capabilities are only available inside a Run",
+    }),
     ...input.extend,
     agent,
     ask,

@@ -78,7 +78,11 @@ export function resetSeq(value = 0) {
   seq = value
 }
 
-export function event(type: ProtocolEvent["type"], data: unknown, options: { runId?: string; revision?: number; seq?: number; location?: string } = {}): ProtocolEvent {
+export function event(
+  type: ProtocolEvent["type"],
+  data: unknown,
+  options: { runId?: string; revision?: number; seq?: number; location?: string } = {},
+): ProtocolEvent {
   return {
     protocol: 1,
     seq: options.seq ?? ++seq,

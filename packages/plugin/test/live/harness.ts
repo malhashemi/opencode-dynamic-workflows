@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+
 /**
  * Live harness for OpenCode V2 (2.0.16+): a private `opencode serve` with its own database, a throwaway project
  * that loads THIS plugin, and an authenticated client. No user configuration is touched.
@@ -9,9 +13,7 @@
  * - `WF_LIVE_KEEP=1` — keep the project and database after the run.
  */
 import { OpenCode } from "@opencode/client"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
+
 import { WorkflowRpc } from "../../src/service/rpc"
 
 export const LIVE_MODEL = process.env.WF_LIVE_MODEL ?? "claude-work/claude-opus-5-5"
@@ -57,7 +59,9 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
   await mkdir(project, { recursive: true })
   await Bun.$`git init -q`.cwd(project).quiet()
   const gatewayPort = freePort()
-  const agents = Object.fromEntries((options.agents ?? ["build", "general", "explore", "plan"]).map((agent) => [agent, { model: LIVE_MODEL }]))
+  const agents = Object.fromEntries(
+    (options.agents ?? ["build", "general", "explore", "plan"]).map((agent) => [agent, { model: LIVE_MODEL }]),
+  )
   const plugin = options.plugin ?? process.env.WF_LIVE_PLUGIN ?? PLUGIN_PATH
   await writeFile(
     path.join(project, "opencode.json"),
@@ -76,13 +80,19 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
     await mkdir(path.dirname(path.join(project, file)), { recursive: true })
     await writeFile(path.join(project, file), contents)
   }
-  if (options.commit) await Bun.$`git add -A && git -c user.email=live@test -c user.name=live commit -qm fixture`.cwd(project).quiet()
+  if (options.commit)
+    await Bun.$`git add -A && git -c user.email=live@test -c user.name=live commit -qm fixture`.cwd(project).quiet()
   let output = ""
   const boot = async () => {
     const port = freePort()
     const child = Bun.spawn(["opencode", "serve", "--hostname", "127.0.0.1", "--port", String(port), "--print-logs"], {
       cwd: project,
-      env: { ...process.env, OPENCODE_DB: path.join(root, "opencode.db"), XDG_CACHE_HOME: path.join(root, "cache"), XDG_STATE_HOME: path.join(root, "state") },
+      env: {
+        ...process.env,
+        OPENCODE_DB: path.join(root, "opencode.db"),
+        XDG_CACHE_HOME: path.join(root, "cache"),
+        XDG_STATE_HOME: path.join(root, "state"),
+      },
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -111,7 +121,10 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
     const url = `http://127.0.0.1:${port}`
     const client = OpenCode.make({
       baseUrl: url,
-      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-opencode-directory": project },
+      headers: {
+        authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+        "x-opencode-directory": project,
+      },
     })
     return { child, url, password, client, workflow: client.rpc(WorkflowRpc as never) }
   }
@@ -129,7 +142,12 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
       current.child.kill(kill)
       await current.child.exited
       current = await boot()
-      Object.assign(server, { url: current.url, password: current.password, client: current.client, workflow: current.workflow })
+      Object.assign(server, {
+        url: current.url,
+        password: current.password,
+        client: current.client,
+        workflow: current.workflow,
+      })
     },
     async stop() {
       current.child.kill()
@@ -149,9 +167,18 @@ async function realTmp(): Promise<string> {
 }
 
 /** Create a driver session, prompt it, wait, and return its transcript. */
-export async function drive(server: LiveServer, text: string, title = "live driver"): Promise<{ sessionID: string; messages: any[] }> {
+export async function drive(
+  server: LiveServer,
+  text: string,
+  title = "live driver",
+): Promise<{ sessionID: string; messages: any[] }> {
   const [providerID, id] = LIVE_MODEL.split("/", 2) as [string, string]
-  const session = await server.client.session.create({ title, agent: "build", model: { providerID, id }, location: { directory: server.project } } as never)
+  const session = await server.client.session.create({
+    title,
+    agent: "build",
+    model: { providerID, id },
+    location: { directory: server.project },
+  } as never)
   await server.client.session.prompt({ sessionID: session.id, text } as never)
   await server.client.session.wait({ sessionID: session.id })
   const messages = await server.client.session.context({ sessionID: session.id })
@@ -164,7 +191,9 @@ export function toolOutput(messages: any[], name: string): string | undefined {
     for (const part of messages[i]?.content ?? []) {
       if (part.type === "tool" && part.name === name) {
         const content = part.state?.content
-        return Array.isArray(content) ? content.map((c: any) => c.text ?? "").join("") : String(content ?? part.state?.error?.message ?? "")
+        return Array.isArray(content)
+          ? content.map((c: any) => c.text ?? "").join("")
+          : String(content ?? part.state?.error?.message ?? "")
       }
     }
   }
@@ -172,7 +201,11 @@ export function toolOutput(messages: any[], name: string): string | undefined {
 }
 
 /** Poll until `check` returns a value (or throw after `ms`). */
-export async function until<T>(check: () => Promise<T | undefined | null | false> | T | undefined | null | false, ms = 60_000, every = 250): Promise<T> {
+export async function until<T>(
+  check: () => Promise<T | undefined | null | false> | T | undefined | null | false,
+  ms = 60_000,
+  every = 250,
+): Promise<T> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
     const value = await check()

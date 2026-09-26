@@ -42,7 +42,11 @@ export function toolTitle(tool: TranscriptTool): string {
 
 /** A one-line preview of a reasoning block for its collapsed summary. */
 export function reasoningSummary(text: string, max = 80): string {
-  const line = text.split("\n").find((candidate) => candidate.trim() !== "")?.trim() ?? ""
+  const line =
+    text
+      .split("\n")
+      .find((candidate) => candidate.trim() !== "")
+      ?.trim() ?? ""
   if (!line) return "Reasoning"
   return `Reasoning — ${line.length > max ? `${line.slice(0, max - 1)}…` : line}`
 }
@@ -54,7 +58,9 @@ export function partItem(part: TranscriptPart): TranscriptItem | null {
     case "reasoning":
       return part.text?.trim() ? { kind: "reasoning", text: part.text, summary: reasoningSummary(part.text) } : null
     case "tool":
-      return part.tool ? { kind: "tool", tool: part.tool, title: toolTitle(part.tool), failed: toolFailed(part.tool) } : null
+      return part.tool
+        ? { kind: "tool", tool: part.tool, title: toolTitle(part.tool), failed: toolFailed(part.tool) }
+        : null
     default:
       return part.text?.trim() ? { kind: "other", text: part.text } : null
   }

@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { current, cursor, cycleFilter, filterEntries, initialNav, moveCursor, pop, push, setCursor, visibleWindow } from "../../src/tui/nav"
+
+import {
+  current,
+  cursor,
+  cycleFilter,
+  filterEntries,
+  initialNav,
+  moveCursor,
+  pop,
+  push,
+  setCursor,
+  visibleWindow,
+} from "../../src/tui/nav"
 import { entry, run } from "./fixtures"
 
 describe("navigation", () => {
@@ -32,7 +44,11 @@ describe("navigation", () => {
   })
 
   test("filters cycle and select Runs", () => {
-    const entries = [entry(run({ runId: "live" })), { ...entry(run({ runId: "wait" })), waiting: true }, entry(run({ runId: "bad", status: "failed" }), false)]
+    const entries = [
+      entry(run({ runId: "live" })),
+      { ...entry(run({ runId: "wait" })), waiting: true },
+      entry(run({ runId: "bad", status: "failed" }), false),
+    ]
     let nav = initialNav()
     nav = cycleFilter(nav)
     expect(nav.filter).toBe("live")

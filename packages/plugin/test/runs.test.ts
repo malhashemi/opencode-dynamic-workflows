@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+
 import { emptyUsage, type PendingInteraction, type ProtocolEvent, type Unit } from "../src/protocol"
 import { EVENT_WINDOW, createRunStore, elideEvent, newRun, toLibraryEntry } from "../src/runs"
 
@@ -76,7 +77,11 @@ describe("run store", () => {
     const usage = { tokens: { input: 1, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0.1 }
     store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ unitId: "b", ordinal: 2, usage }) })
     store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ unitId: "a", ordinal: 1, usage }) })
-    store.apply({ type: "unit.upsert", runId: "r1", unit: unit({ unitId: "a", ordinal: 1, status: "succeeded", usage }) })
+    store.apply({
+      type: "unit.upsert",
+      runId: "r1",
+      unit: unit({ unitId: "a", ordinal: 1, status: "succeeded", usage }),
+    })
     const current = store.get("r1")!
     expect(current.units.map((u) => `${u.unitId}:${u.status}`)).toEqual(["a:succeeded", "b:queued"])
     expect(current.usage.tokens.output).toBe(4)

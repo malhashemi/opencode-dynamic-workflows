@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
 import {
   buildRegistry,
   configDirs,
@@ -13,7 +14,7 @@ import {
 
 /** A minimal real durable Workflow module (imports defineWorkflow from our workspace). */
 const wf = (name: string, ret = "x") =>
-  `import { defineWorkflow } from "@opencode-ai/workflow"\n` +
+  `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"\n` +
   `export default defineWorkflow({ meta: { name: ${JSON.stringify(name)}, description: "d" }, async run() { return ${JSON.stringify(ret)} } })\n`
 
 async function tmp(prefix: string): Promise<string> {
@@ -46,7 +47,12 @@ describe("namespaceSegments / workflowKey (pure)", () => {
 })
 
 describe("configDirs (scope resolution, mirrors ConfigPaths.directories)", () => {
-  const KEYS = ["OPENCODE_TEST_HOME", "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG_DIR"] as const
+  const KEYS = [
+    "OPENCODE_TEST_HOME",
+    "XDG_CONFIG_HOME",
+    "OPENCODE_DISABLE_PROJECT_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+  ] as const
   const saved: Record<string, string | undefined> = {}
   for (const k of KEYS) saved[k] = process.env[k]
   afterEach(() => {
@@ -69,7 +75,7 @@ describe("configDirs (scope resolution, mirrors ConfigPaths.directories)", () =>
       await mkdir(path.join(worktree, "sub"), { recursive: true })
       await mkdir(path.join(home, ".opencode"), { recursive: true })
 
-      const dirs = configDirs(path.join(worktree, "sub"), worktree)
+      const dirs = configDirs(path.join(worktree, "sub"))
 
       expect(dirs[0]).toBe(path.join(home, ".config", "opencode")) // global config always first
       expect(globalConfigDir()).toBe(path.join(home, ".config", "opencode"))
@@ -94,7 +100,7 @@ describe("configDirs (scope resolution, mirrors ConfigPaths.directories)", () =>
       const worktree = path.join(home, "proj")
       await mkdir(path.join(worktree, ".opencode"), { recursive: true })
 
-      const dirs = configDirs(worktree, worktree)
+      const dirs = configDirs(worktree)
       expect(dirs).not.toContain(path.join(worktree, ".opencode")) // project config disabled
       expect(dirs[dirs.length - 1]).toBe(envDir) // env override appended last (highest precedence)
     } finally {
@@ -162,7 +168,6 @@ describe("buildRegistry (discovery → keying → precedence)", () => {
 
       const reg = await buildRegistry({
         directory: projectScope,
-        worktree: projectScope,
         dirs: [globalScope, projectScope], // explicit precedence: global first, project second (wins)
       })
 
@@ -198,7 +203,7 @@ describe("buildRegistry (discovery → keying → precedence)", () => {
     try {
       const aFile = await write(scope, "workflows/aaa.ts", wf("twin", "AAA"))
       const zFile = await write(scope, "workflows/zzz.ts", wf("twin", "ZZZ"))
-      const reg = await buildRegistry({ directory: scope, worktree: scope, dirs: [scope] })
+      const reg = await buildRegistry({ directory: scope, dirs: [scope] })
       // scan is sorted ascending + last-wins, so the alphabetically-last file wins deterministically
       expect(reg.entries.get("twin")?.absPath).toBe(zFile)
       expect(reg.collisions).toContainEqual({

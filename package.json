@@ -3,10 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "description": "Deterministic multi-subagent Workflow orchestration for OpenCode V2, as a plugin (no core changes).",
-  "type": "module",
   "workspaces": [
     "packages/*"
   ],
+  "type": "module",
   "scripts": {
     "check": "bun run format:check && bun run lint && bun run typecheck && bun test",
     "format": "oxfmt",
@@ -24,8 +24,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.9.3",
     "oxfmt": "0.70.0",
-    "oxlint": "1.85.0"
+    "oxlint": "1.85.0",
+    "typescript": "^5.9.3"
   }
 }

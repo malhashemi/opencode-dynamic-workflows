@@ -18,6 +18,7 @@
  */
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+
 import type { LibraryEntry, ProtocolEvent, ResolvedInteraction, Run, Unit } from "./protocol"
 import { addUsage, emptyUsage } from "./protocol"
 import { newRun, toLibraryEntry, type RunStore } from "./runs"
@@ -69,10 +70,14 @@ const SCRIPT_FILE = "script.ts"
 const RESULT_FILE = "result.json"
 const RECORD_VERSION = 2
 
-const RUN_STATUSES: ReadonlySet<Run["status"]> = new Set(["queued", "running", "succeeded", "failed", "stopped", "interrupted"])
-/** V1 records (`done`/`aborted`) still read back. */
-const LEGACY_STATUS: Record<string, Run["status"]> = { done: "succeeded", aborted: "stopped" }
-const LEGACY_UNIT_STATUS: Record<string, Unit["status"]> = { ok: "succeeded" }
+const RUN_STATUSES: ReadonlySet<Run["status"]> = new Set([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "stopped",
+  "interrupted",
+])
 
 interface RunDocument {
   version: number
@@ -94,7 +99,7 @@ function normalizeUnit(value: unknown, runId: string): Unit | null {
   if (typeof value !== "object" || value === null) return null
   const unit = value as Partial<Unit> & { status?: string; output?: unknown }
   if (typeof unit.unitId !== "string" || typeof unit.ordinal !== "number") return null
-  const status = (LEGACY_UNIT_STATUS[unit.status ?? ""] ?? unit.status) as Unit["status"]
+  const status = unit.status as Unit["status"]
   return {
     unitId: unit.unitId,
     runId: typeof unit.runId === "string" ? unit.runId : runId,
@@ -102,7 +107,9 @@ function normalizeUnit(value: unknown, runId: string): Unit | null {
     label: typeof unit.label === "string" ? unit.label : null,
     subagent: typeof unit.subagent === "string" ? unit.subagent : "general",
     phase: typeof unit.phase === "string" ? unit.phase : null,
-    status: ["queued", "running", "repairing", "succeeded", "failed", "stopped", "replayed"].includes(status) ? status : "failed",
+    status: ["queued", "running", "repairing", "succeeded", "failed", "stopped", "replayed"].includes(status)
+      ? status
+      : "failed",
     sessionID: typeof unit.sessionID === "string" ? unit.sessionID : null,
     location: typeof unit.location === "string" ? unit.location : null,
     prompt: typeof unit.prompt === "string" ? unit.prompt : "",
@@ -121,25 +128,19 @@ function normalizeUnit(value: unknown, runId: string): Unit | null {
   }
 }
 
-/** The narrowest check that makes a parsed `run.json` usable; older records fill in defaults. */
+/** The narrowest check that makes a parsed `run.json` usable (this record version only). */
 function parseRunDocument(value: unknown): RunDocument | null {
   if (typeof value !== "object" || value === null) return null
   const document = value as { version?: number; run?: Record<string, unknown>; args?: unknown; owner?: unknown }
   const run = document.run
   if (!run || typeof run !== "object") return null
   if (typeof run.runId !== "string" || run.runId.length === 0) return null
-  const status = (LEGACY_STATUS[String(run.status)] ?? run.status) as Run["status"]
+  if (document.version !== RECORD_VERSION) return null
+  const status = run.status as Run["status"]
   if (!RUN_STATUSES.has(status)) return null
   if (typeof run.startedAt !== "number" || !Number.isFinite(run.startedAt)) return null
-  const workflow =
-    typeof run.workflow === "object" && run.workflow !== null
-      ? (run.workflow as Run["workflow"])
-      : {
-          key: null,
-          name: typeof run.workflow === "string" ? run.workflow : "workflow",
-          description: "",
-          provenance: run.provenance === "durable" ? ("durable" as const) : ("inline" as const),
-        }
+  if (typeof run.workflow !== "object" || run.workflow === null) return null
+  const workflow = run.workflow as Run["workflow"]
   const base = newRun({
     runId: run.runId,
     workflow,
@@ -159,7 +160,9 @@ function parseRunDocument(value: unknown): RunDocument | null {
       phases: Array.isArray(run.phases) ? run.phases.filter((phase): phase is string => typeof phase === "string") : [],
       phasesDeclared: run.phasesDeclared === true,
       currentPhase: typeof run.currentPhase === "string" ? run.currentPhase : null,
-      units: Array.isArray(run.units) ? run.units.map((unit) => normalizeUnit(unit, base.runId)).filter((unit): unit is Unit => !!unit) : [],
+      units: Array.isArray(run.units)
+        ? run.units.map((unit) => normalizeUnit(unit, base.runId)).filter((unit): unit is Unit => !!unit)
+        : [],
       logs: Array.isArray(run.logs) ? run.logs.filter((log): log is string => typeof log === "string") : [],
       errors: Array.isArray(run.errors) ? (run.errors as Run["errors"]) : [],
       interactions: [],
@@ -194,7 +197,10 @@ function foldTransitions(run: Run, transitions: ProtocolEvent[]): Run {
     }
   }
   const folded = Array.from(units.values()).toSorted((a, b) => a.ordinal - b.ordinal)
-  const newest = transitions.reduce((max, event) => (typeof event.revision === "number" && event.revision > max ? event.revision : max), run.revision)
+  const newest = transitions.reduce(
+    (max, event) => (typeof event.revision === "number" && event.revision > max ? event.revision : max),
+    run.revision,
+  )
   return {
     ...run,
     units: folded,
@@ -262,11 +268,7 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
-        const parsed = JSON.parse(trimmed) as ProtocolEvent & { unit?: unknown }
-        // V1 lines were `{ type: "unit.settled", runId, unit }`; read them as `unit.updated`.
-        if (parsed.type !== "unit.updated" && parsed.type !== "interaction.resolved" && parsed.unit) {
-          transitions.push({ ...(parsed as ProtocolEvent), type: "unit.updated", data: parsed.unit })
-        } else transitions.push(parsed)
+        transitions.push(JSON.parse(trimmed) as ProtocolEvent)
       } catch {
         // A torn final line is the normal shape of a killed process.
       }
@@ -299,7 +301,11 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
         event.runId,
         async () => {
           const lead = torn.delete(event.runId) ? "\n" : ""
-          await appendFile(path.join(runDirectory(event.runId), UNITS_FILE), `${lead}${JSON.stringify(event)}\n`, "utf8")
+          await appendFile(
+            path.join(runDirectory(event.runId), UNITS_FILE),
+            `${lead}${JSON.stringify(event)}\n`,
+            "utf8",
+          )
         },
         "append",
       )
@@ -345,17 +351,28 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
       } catch {
         // No result: the Run never settled, or settled without one.
       }
-      return { run: foldTransitions(document.run, transitions), source, args: document.args, result, transitions, owner: document.owner }
+      return {
+        run: foldTransitions(document.run, transitions),
+        source,
+        args: document.args,
+        result,
+        transitions,
+        owner: document.owner,
+      }
     },
 
     async list(listOptions = {}) {
       let entries: string[]
       try {
-        entries = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+        entries = (await readdir(root, { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name)
       } catch {
         return []
       }
-      const documents = (await Promise.all(entries.map(readDocument))).filter((document): document is RunDocument => !!document)
+      const documents = (await Promise.all(entries.map(readDocument))).filter(
+        (document): document is RunDocument => !!document,
+      )
       const folded = await Promise.all(
         documents.map(async (document) =>
           document.run.units.length > 0 || document.run.status !== "running"
@@ -366,7 +383,8 @@ export function createJournal(root: string, options: JournalOptions = {}): Journ
       const wanted = listOptions.status
       const filtered = wanted && wanted.length > 0 ? folded.filter((run) => wanted.includes(run.status)) : folded
       filtered.sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
-      const limited = listOptions.limit !== undefined && listOptions.limit >= 0 ? filtered.slice(0, listOptions.limit) : filtered
+      const limited =
+        listOptions.limit !== undefined && listOptions.limit >= 0 ? filtered.slice(0, listOptions.limit) : filtered
       return limited.map((run) => toLibraryEntry(run, false))
     },
 
@@ -392,7 +410,9 @@ export function processStartedAtSelf(): number {
 export function processStartedAt(pid: number): number | null {
   try {
     // `lstart` is printed in the TZ of `ps`: pin it to UTC so the parse does not depend on anyone's timezone.
-    const out = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, TZ: "UTC" } }).stdout.toString().trim()
+    const out = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { env: { ...process.env, TZ: "UTC" } })
+      .stdout.toString()
+      .trim()
     const time = out ? Date.parse(`${out} GMT`) : Number.NaN
     return Number.isFinite(time) ? time : null
   } catch {

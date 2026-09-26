@@ -1,23 +1,20 @@
 /**
- * The Workflow registry — discovers durable Workflow files across opencode's config-dir scopes and keys each
- * by `[...namespace folders, meta.name].join(":")`.
+ * The Workflow registry — discovers durable Workflow files across OpenCode's config scopes and keys each by
+ * `[...namespace folders, meta.name].join(":")`.
  *
- * Scope resolution mirrors opencode's `ConfigPaths.directories(directory, worktree)` (config/paths.ts:23-41):
- * the global config dir, then every existing project `.opencode` walked UP from `directory` to `worktree`,
- * then `~/.opencode`, then `$OPENCODE_CONFIG_DIR`. Within each scope we recursively glob `.ts` files under a
- * `workflow/` or `workflows/` root (see WORKFLOW_GLOB) — dot-dirs included, symlinks followed — the recursive
- * analog of opencode's custom-tool discovery (`tool/registry.ts:199-213`). A subfolder becomes a `:`-joined
- * namespace, so a file at `workflows/deep-research/x.ts` (meta.name `dr`) keys as `deep-research:dr`.
+ * Scopes (see {@link configDirs}): the global config dir, every `.opencode` from the filesystem root down to the
+ * project, then `$OPENCODE_CONFIG_DIR`. Within each scope, `.ts` files under a `workflow/` or `workflows/` root are
+ * found recursively (dot-dirs included, symlinks followed). A subfolder becomes a `:`-joined namespace, so a file at
+ * `workflows/deep-research/x.ts` (meta.name `dr`) keys as `deep-research:dr`.
  *
- * Collision precedence mirrors opencode's own `mergeDeep` over that directory list (config/config.ts:620-663):
- * LATER scopes override earlier ones, so a project workflow shadows a same-keyed global one. Shadowed entries
- * and load failures are SURFACED (collisions/failures), never silently dropped. See the verified research
- * notes discovery-dispatcher-surface + workflow-permission-listing.
+ * Later scopes win a key collision, so a project Workflow shadows a same-keyed global one. Shadowed entries and load
+ * failures are reported (collisions/failures), never silently dropped.
  */
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
 import { loadWorkflowConfig } from "./loader"
 import { stringifyError } from "./runner"
 import type { DefineWorkflowConfig, WorkflowMeta } from "./workflow"
@@ -77,10 +74,9 @@ function unique(xs: string[]): string[] {
 /**
  * The ordered config-dir scopes to scan, mirroring OpenCode V2 discovery: the global config dir first (lowest
  * precedence), then every existing `.opencode` from the filesystem root DOWN to `directory` (so the nearest one
- * is scanned last and wins a key collision), then `$OPENCODE_CONFIG_DIR`. `worktree` is accepted for callers
- * that pass it but no longer stops the walk: V2 searches every ancestor (opencode.ai/v2/docs/config).
+ * is scanned last and wins a key collision), then `$OPENCODE_CONFIG_DIR` (opencode.ai/v2/docs/config).
  */
-export function configDirs(directory: string, _worktree?: string): string[] {
+export function configDirs(directory: string): string[] {
   const dirs: string[] = [globalConfigDir()]
   if (!envFlag("OPENCODE_DISABLE_PROJECT_CONFIG")) dirs.push(...upExisting(".opencode", directory).toReversed())
   const envDir = process.env.OPENCODE_CONFIG_DIR
@@ -159,14 +155,20 @@ export interface Registry {
    * A key re-seen and overridden — surfaced, not silent. `sameScope` distinguishes the expected cross-scope
    * shadow (project over global) from an author error (two files in ONE scope declaring the same key).
    */
-  collisions: Array<{ key: string; kept: string; keptScope: string; shadowed: string; shadowedScope: string; sameScope: boolean }>
+  collisions: Array<{
+    key: string
+    kept: string
+    keptScope: string
+    shadowed: string
+    shadowedScope: string
+    sameScope: boolean
+  }>
   /** Files that failed to load (import/shape error) — surfaced, not silent. */
   failures: Array<{ absPath: string; error: string }>
 }
 
 export interface BuildRegistryInput {
   directory: string
-  worktree?: string
   /** Override the scanned scopes (tests). Defaults to {@link configDirs}. */
   dirs?: string[]
   /** Load a workflow module's config from its file path (tests). Defaults to read-bytes → {@link loadWorkflowConfig}. */
@@ -183,10 +185,13 @@ export interface BuildRegistryInput {
  * global; the shadowed file and any load failure are recorded, not dropped.
  */
 export async function buildRegistry(input: BuildRegistryInput): Promise<Registry> {
-  const dirs = input.dirs ?? configDirs(input.directory, input.worktree)
+  const dirs = input.dirs ?? configDirs(input.directory)
   const load =
     input.loadConfig ??
-    ((absPath: string) => readFile(absPath, "utf8").then((source) => loadWorkflowConfig(source, { sourcePath: absPath, ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}) })))
+    ((absPath: string) =>
+      readFile(absPath, "utf8").then((source) =>
+        loadWorkflowConfig(source, { sourcePath: absPath, ...(input.cacheDir ? { cacheDir: input.cacheDir } : {}) }),
+      ))
   const entries = new Map<string, RegistryEntry>()
   const collisions: Registry["collisions"] = []
   const failures: Registry["failures"] = []
@@ -202,7 +207,15 @@ export async function buildRegistry(input: BuildRegistryInput): Promise<Registry
       }
       const key = workflowKey(relMatch, config.meta.name)
       const prev = entries.get(key)
-      if (prev) collisions.push({ key, kept: absPath, keptScope: dir, shadowed: prev.absPath, shadowedScope: prev.scope, sameScope: prev.scope === dir })
+      if (prev)
+        collisions.push({
+          key,
+          kept: absPath,
+          keptScope: dir,
+          shadowed: prev.absPath,
+          shadowedScope: prev.scope,
+          sameScope: prev.scope === dir,
+        })
       entries.set(key, { key, absPath, scope: dir, meta: config.meta })
     }
   }

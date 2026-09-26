@@ -1,13 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": [
-    "typescript",
-    "unicorn",
-    "oxc",
-    "import",
-    "promise",
-    "node"
-  ],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node"],
   "env": {
     "node": true,
     "es2024": true
@@ -31,10 +24,7 @@
         "fixStyle": "inline-type-imports"
       }
     ],
-    "eslint/eqeqeq": [
-      "error",
-      "smart"
-    ],
+    "eslint/eqeqeq": ["error", "smart"],
     "eslint/no-var": "error",
     "eslint/prefer-const": "error",
     "eslint/no-await-in-loop": "off",
@@ -43,25 +33,16 @@
     "oxc/no-map-spread": "off",
     "promise/always-return": "off"
   },
-  "ignorePatterns": [
-    "**/dist/**",
-    "**/dist-types/**",
-    "packages/plugin/docs/protocol/schemas/**",
-    ".opencode/**"
-  ],
+  "ignorePatterns": ["**/dist/**", "**/dist-types/**", "packages/plugin/docs/protocol/schemas/**", ".opencode/**"],
   "overrides": [
     {
-      "files": [
-        "**/*.tsx"
-      ],
+      "files": ["**/*.tsx"],
       "rules": {
         "eslint/no-unassigned-vars": "off"
       }
     },
     {
-      "files": [
-        "packages/web/src/index.tsx"
-      ],
+      "files": ["packages/web/src/index.tsx"],
       "rules": {
         "import/no-unassigned-import": "off"
       }

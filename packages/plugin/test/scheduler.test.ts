@@ -4,6 +4,7 @@
  * of stranding a slot (no deadlock), FIFO ordering of queued waiters, and the default cap — all without opencode.
  */
 import { describe, expect, test } from "bun:test"
+
 import { defaultConcurrency, Semaphore } from "../src/scheduler"
 
 describe("Semaphore", () => {
@@ -31,9 +32,11 @@ describe("Semaphore", () => {
 
   test("a throwing task releases its permit (no deadlock) — later tasks still run", async () => {
     const sem = new Semaphore(1)
-    await expect(sem.run(async () => {
-      throw new Error("boom")
-    })).rejects.toThrow("boom")
+    await expect(
+      sem.run(async () => {
+        throw new Error("boom")
+      }),
+    ).rejects.toThrow("boom")
     // With permits=1, if the throw had stranded the slot this would hang; it must resolve.
     expect(await sem.run(async () => "after")).toBe("after")
   })
@@ -42,10 +45,12 @@ describe("Semaphore", () => {
     const sem = new Semaphore(1)
     const order: number[] = []
     // First task holds the only permit; the next three queue and must resume in the order they asked.
-    const tasks = [0, 1, 2, 3].map((n) => sem.run(async () => {
-      order.push(n)
-      await new Promise((r) => setTimeout(r, 1))
-    }))
+    const tasks = [0, 1, 2, 3].map((n) =>
+      sem.run(async () => {
+        order.push(n)
+        await new Promise((r) => setTimeout(r, 1))
+      }),
+    )
     await Promise.all(tasks)
     expect(order).toEqual([0, 1, 2, 3])
   })

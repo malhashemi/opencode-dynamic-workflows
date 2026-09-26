@@ -8,6 +8,7 @@
  * `answers` array `replyInteraction` expects (one entry per question).
  */
 import type { FormField, FormInfo } from "@opencode/client"
+
 import type { InteractionQuestion, PendingInteraction } from "../protocol"
 
 export interface AnswerState {
@@ -33,7 +34,9 @@ export interface AnswerStep {
   readonly submit?: string[][]
 }
 
-export function startAnswer(interaction: Pick<PendingInteraction, "interactionId" | "runId" | "questions">): AnswerState {
+export function startAnswer(
+  interaction: Pick<PendingInteraction, "interactionId" | "runId" | "questions">,
+): AnswerState {
   return {
     interactionId: interaction.interactionId,
     runId: interaction.runId,
@@ -84,7 +87,8 @@ function withChosen(state: AnswerState, labels: readonly string[]): AnswerState 
 
 /** The next question, or the finished reply when this was the last one. */
 function advance(state: AnswerState): AnswerStep {
-  if (state.index + 1 < state.questions.length) return { state: { ...state, index: state.index + 1, cursor: 0, typing: false } }
+  if (state.index + 1 < state.questions.length)
+    return { state: { ...state, index: state.index + 1, cursor: 0, typing: false } }
   return { state: { ...state, typing: false }, submit: state.chosen.map((row) => [...row]) }
 }
 
@@ -96,7 +100,10 @@ export function toggle(state: AnswerState): AnswerState {
   if (row.kind === "custom") return { ...state, typing: true }
   const chosen = state.chosen[state.index] ?? []
   if (!question.multiple) return withChosen(state, [row.label])
-  return withChosen(state, chosen.includes(row.label) ? chosen.filter((label) => label !== row.label) : [...chosen, row.label])
+  return withChosen(
+    state,
+    chosen.includes(row.label) ? chosen.filter((label) => label !== row.label) : [...chosen, row.label],
+  )
 }
 
 /**
@@ -159,7 +166,10 @@ function optionValue(field: { options?: ReadonlyArray<{ label: string; value: st
  * questions from `form.fields`) to a native form answer keyed by field. Returns an error for an answer the field
  * cannot take.
  */
-export function formAnswer(fields: readonly FormField[], answers: readonly (readonly string[])[]): { answer: Record<string, FormAnswerValue> } | { error: string } {
+export function formAnswer(
+  fields: readonly FormField[],
+  answers: readonly (readonly string[])[],
+): { answer: Record<string, FormAnswerValue> } | { error: string } {
   const answer: Record<string, FormAnswerValue> = {}
   for (const [index, field] of fields.entries()) {
     const given = answers[index] ?? []
@@ -182,7 +192,8 @@ export function formAnswer(fields: readonly FormField[], answers: readonly (read
       case "number":
       case "integer": {
         const value = Number(first)
-        if (!Number.isFinite(value) || (field.type === "integer" && !Number.isInteger(value))) return { error: `"${field.title ?? field.key}" needs a number` }
+        if (!Number.isFinite(value) || (field.type === "integer" && !Number.isInteger(value)))
+          return { error: `"${field.title ?? field.key}" needs a number` }
         answer[field.key] = value
         break
       }

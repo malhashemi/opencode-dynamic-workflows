@@ -82,7 +82,9 @@ export function filterEntries(entries: readonly LibraryEntry[], filter: LibraryF
     case "waiting":
       return entries.filter((entry) => entry.waiting)
     case "failed":
-      return entries.filter((entry) => entry.status === "failed" || entry.status === "interrupted" || entry.failedUnits > 0)
+      return entries.filter(
+        (entry) => entry.status === "failed" || entry.status === "interrupted" || entry.failedUnits > 0,
+      )
   }
 }
 

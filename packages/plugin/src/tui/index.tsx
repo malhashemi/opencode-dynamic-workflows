@@ -4,6 +4,7 @@
  * not render (P0 spike S4).
  */
 import { Plugin } from "@opencode/plugin/tui"
+
 import { setupWorkflowsTui } from "./app"
 
 export default Plugin.define({

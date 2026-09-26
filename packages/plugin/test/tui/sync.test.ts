@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import type { ProtocolEvent, Run } from "../../src/protocol"
 import { runHeader } from "../../src/runs"
 import type { WorkflowApi } from "../../src/tui/api"
@@ -14,7 +15,18 @@ function fakeService(runs: Run[] = []) {
   const calls: string[] = []
   const gate = { resolve: null as null | (() => void), blocked: false }
   const api = {
-    info: async () => (calls.push("info"), { protocol: 1, plugin: { name: "p", version: "0" }, opencode: "2", location: LOCATION, capabilities: [], limits: { maxUnits: 1, maxItemsPerCall: 1, maxUnitSteps: 1 }, gateway: { url: null } }),
+    info: async () => (
+      calls.push("info"),
+      {
+        protocol: 1,
+        plugin: { name: "p", version: "0" },
+        opencode: "2",
+        location: LOCATION,
+        capabilities: [],
+        limits: { maxUnits: 1, maxItemsPerCall: 1, maxUnitSteps: 1 },
+        gateway: { url: null },
+      }
+    ),
     eventsSince: async ({ after = 0 }: { after?: number }) => {
       calls.push(`eventsSince:${after === Number.MAX_SAFE_INTEGER ? "max" : after}`)
       return { events: log.filter((e) => e.seq > after), complete: after >= windowStart, latest }
@@ -27,7 +39,12 @@ function fakeService(runs: Run[] = []) {
     getRun: async ({ runId }: { runId: string }) => {
       calls.push(`getRun:${runId}`)
       const r = table.get(runId)
-      if (!r) throw { type: "workflow", message: "nope", data: { code: "not_found", message: `No Run "${runId}"`, retryable: false } }
+      if (!r)
+        throw {
+          type: "workflow",
+          message: "nope",
+          data: { code: "not_found", message: `No Run "${runId}"`, retryable: false },
+        }
       return { run: r, live: r.status === "running" }
     },
     getActivity: async () => ({ entries: [] }),
@@ -85,7 +102,10 @@ describe("WorkflowSync", () => {
     const sync = new WorkflowSync({ api: service.api, events: noEvents, onState: () => {} })
     await sync.resync("start")
     const missed = event("run.updated", runHeader(run({ currentPhase: "work", revision: 2 })), { seq: 4, revision: 2 })
-    const next = event("run.updated", runHeader(run({ currentPhase: "work", status: "running", revision: 3 })), { seq: 5, revision: 3 })
+    const next = event("run.updated", runHeader(run({ currentPhase: "work", status: "running", revision: 3 })), {
+      seq: 5,
+      revision: 3,
+    })
     service.publish(missed)
     service.publish(next)
     sync.receive(next)
@@ -116,7 +136,12 @@ describe("WorkflowSync", () => {
     const service = fakeService([run()])
     service.setLatest(1)
     const notices: string[] = []
-    const sync = new WorkflowSync({ api: service.api, events: noEvents, onState: () => {}, onNotice: (n) => notices.push(`${n.kind}:${n.runId}`) })
+    const sync = new WorkflowSync({
+      api: service.api,
+      events: noEvents,
+      onState: () => {},
+      onNotice: (n) => notices.push(`${n.kind}:${n.runId}`),
+    })
     await sync.resync("start")
     sync.receive(event("interaction.pending", question(), { seq: 2, revision: 2 }))
     expect(notices).toEqual(["waiting:run-1"])
@@ -136,7 +161,13 @@ describe("WorkflowSync", () => {
       const current = subscriptions
       return {
         async *[Symbol.asyncIterator]() {
-          if (current === 1) yield { data: event("run.updated", runHeader(run({ currentPhase: "work", revision: 2 })), { seq: 2, revision: 2 }) }
+          if (current === 1)
+            yield {
+              data: event("run.updated", runHeader(run({ currentPhase: "work", revision: 2 })), {
+                seq: 2,
+                revision: 2,
+              }),
+            }
         },
       }
     }

@@ -1,3 +1,13 @@
+import {
+  formatClock,
+  formatDay,
+  formatElapsed,
+  formatTokens,
+  meter,
+  phasePosition,
+  phaseProgress,
+  settledUnits,
+} from "../progress"
 /**
  * Pure text for every TUI surface: status glyphs and words, column layouts with density tiers, the composer
  * strip, sidebar lines.
@@ -7,7 +17,6 @@
  * can make every feedback colour equal the text colour); never print a figure the system does not know.
  */
 import type { LibraryEntry, Run, RunStatus, Unit, UnitStatus, Usage } from "../protocol"
-import { formatClock, formatDay, formatElapsed, formatTokens, meter, phasePosition, phaseProgress, settledUnits } from "../progress"
 
 export type Tone = "success" | "error" | "warning" | "info" | "muted" | "base"
 
@@ -75,7 +84,10 @@ export function workflowName(run: Pick<LibraryEntry, "workflow">): string {
 /** A Unit's display name: its label, else the first line of its prompt. */
 export function unitName(unit: Pick<Unit, "label" | "prompt" | "ordinal">): string {
   if (unit.label) return unit.label
-  const line = unit.prompt.split("\n").find((candidate) => candidate.trim().length > 0)?.trim()
+  const line = unit.prompt
+    .split("\n")
+    .find((candidate) => candidate.trim().length > 0)
+    ?.trim()
   return line ? line : `unit ${unit.ordinal + 1}`
 }
 
@@ -118,7 +130,8 @@ export interface Column<Id extends string> {
 /** Pick columns for `width` cells (one space between columns), dropping the lowest priority first. */
 export function layout<Id extends string>(specs: readonly ColumnSpec<Id>[], width: number): Column<Id>[] {
   let chosen = [...specs]
-  const need = (columns: readonly ColumnSpec<Id>[]) => columns.reduce((sum, column) => sum + column.width, 0) + Math.max(0, columns.length - 1)
+  const need = (columns: readonly ColumnSpec<Id>[]) =>
+    columns.reduce((sum, column) => sum + column.width, 0) + Math.max(0, columns.length - 1)
   while (need(chosen) > width && chosen.length > 1) {
     const drop = chosen.filter((column) => !column.flex).toSorted((a, b) => a.priority - b.priority)[0]
     if (!drop) break
@@ -133,12 +146,18 @@ export function layout<Id extends string>(specs: readonly ColumnSpec<Id>[], widt
   }))
 }
 
-export function renderRow<Id extends string>(columns: readonly Column<Id>[], cells: Partial<Record<Id, string>>): string {
+export function renderRow<Id extends string>(
+  columns: readonly Column<Id>[],
+  cells: Partial<Record<Id, string>>,
+): string {
   return columns.map((column) => fit(cells[column.id] ?? "", column.width, column.align)).join(" ")
 }
 
 export function renderHeader<Id extends string>(columns: readonly Column<Id>[]): string {
-  return renderRow(columns, Object.fromEntries(columns.map((column) => [column.id, column.title])) as Partial<Record<Id, string>>)
+  return renderRow(
+    columns,
+    Object.fromEntries(columns.map((column) => [column.id, column.title])) as Partial<Record<Id, string>>,
+  )
 }
 
 export type LibraryColumn = "status" | "workflow" | "phase" | "units" | "tokens" | "cost" | "elapsed" | "started"
@@ -248,7 +267,12 @@ export function stripText(entries: readonly LibraryEntry[], now: number, width: 
 export function sidebarLines(entry: LibraryEntry, now: number, width: number): [string, string] {
   const look = runStatus(entry)
   const first = `${look.glyph} ${workflowName(entry)}`
-  const second = [phasePosition(entry), `${entry.settledUnits}/${entry.units} units`, formatElapsed(elapsedOf(entry, now)), entry.waiting ? "waiting" : ""]
+  const second = [
+    phasePosition(entry),
+    `${entry.settledUnits}/${entry.units} units`,
+    formatElapsed(elapsedOf(entry, now)),
+    entry.waiting ? "waiting" : "",
+  ]
     .filter(Boolean)
     .join(" · ")
   return [truncate(first, width), truncate(`  ${second}`, width)]
@@ -262,7 +286,9 @@ export function runSummary(run: Run, now: number): string {
     formatTokens(totalTokens(run.usage)) + " tok",
     formatCost(run.usage.cost),
     formatElapsed(elapsedOf(run, now)),
-    run.budget.total !== null ? `budget ${formatTokens(run.tokensSpent)}/${formatTokens(run.budget.total)}${run.budget.hard ? " (hard)" : ""}` : "",
+    run.budget.total !== null
+      ? `budget ${formatTokens(run.tokensSpent)}/${formatTokens(run.budget.total)}${run.budget.hard ? " (hard)" : ""}`
+      : "",
   ]
     .filter(Boolean)
     .join(" · ")

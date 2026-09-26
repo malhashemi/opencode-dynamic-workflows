@@ -69,7 +69,8 @@ export class SseParser {
 
   private line(line: string, out: SseMessage[]): void {
     if (line === "") {
-      if (this.hasData) out.push({ event: this.eventType || "message", data: this.data.join("\n"), id: this.lastEventId })
+      if (this.hasData)
+        out.push({ event: this.eventType || "message", data: this.data.join("\n"), id: this.lastEventId })
       this.data = []
       this.hasData = false
       this.eventType = ""
@@ -125,10 +126,14 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve()
     const timer = setTimeout(resolve, ms)
-    signal.addEventListener("abort", () => {
-      clearTimeout(timer)
-      resolve()
-    }, { once: true })
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true },
+    )
   })
 }
 

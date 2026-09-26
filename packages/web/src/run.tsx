@@ -1,11 +1,33 @@
 import type { ActivityEntry, Run } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js"
-import { ActionButton, CopyButton, Empty, ErrorNote, Link, Meter, rowKeys, Stat, StatusBadge, Tag, ValueBlock } from "./components"
+
+import {
+  ActionButton,
+  CopyButton,
+  Empty,
+  ErrorNote,
+  Link,
+  Meter,
+  rowKeys,
+  Stat,
+  StatusBadge,
+  Tag,
+  ValueBlock,
+} from "./components"
 import { useApp } from "./context"
-import { clockTime, elapsed, formatCost, formatCount, shortId, shortLocation, tokenBreakdown, totalTokens } from "./format"
+import {
+  clockTime,
+  elapsed,
+  formatCost,
+  formatCount,
+  shortId,
+  shortLocation,
+  tokenBreakdown,
+  totalTokens,
+} from "./format"
 import { InteractionsPanel } from "./interactions"
-import { createRunData, type RunData } from "./run-data"
 import { navigate, runPath, unitPath } from "./router"
+import { createRunData, type RunData } from "./run-data"
 import { phasePosition, phaseRows, unitCounts } from "./state"
 import { UnitControls, UnitDetail } from "./unit"
 
@@ -38,7 +60,9 @@ export function RunPage(props: { runId: string; unitId?: string }) {
             <ErrorNote error={data.error()} retry={() => void data.refresh()} />
           </Show>
           <Show when={data.view().sync === "syncing"}>
-            <div class="note" role="status">Re-reading the Run after missed events…</div>
+            <div class="note" role="status">
+              Re-reading the Run after missed events…
+            </div>
           </Show>
           <Show when={props.unitId} fallback={<RunBody run={current()} data={data} />}>
             {(unitId) => <UnitDetail run={current()} unitId={unitId()} data={data} />}
@@ -55,12 +79,21 @@ function Breadcrumb(props: { runId: string; run?: Run; unitId?: string }) {
     <nav class="crumbs" aria-label="Breadcrumb">
       <Link href="/">Library</Link>
       <span aria-hidden="true">/</span>
-      <Show when={props.unitId} fallback={<span aria-current="page">{props.run?.workflow.name ?? "Run"} <span class="mono muted">{shortId(props.runId)}</span></span>}>
+      <Show
+        when={props.unitId}
+        fallback={
+          <span aria-current="page">
+            {props.run?.workflow.name ?? "Run"} <span class="mono muted">{shortId(props.runId)}</span>
+          </span>
+        }
+      >
         <Link href={runPath(props.runId)}>
           {props.run?.workflow.name ?? "Run"} <span class="mono muted">{shortId(props.runId)}</span>
         </Link>
         <span aria-hidden="true">/</span>
-        <span aria-current="page">{unit() ? (unit()!.label ?? `${unit()!.subagent} #${unit()!.ordinal}`) : props.unitId}</span>
+        <span aria-current="page">
+          {unit() ? (unit()!.label ?? `${unit()!.subagent} #${unit()!.ordinal}`) : props.unitId}
+        </span>
       </Show>
     </nav>
   )
@@ -72,7 +105,11 @@ function RunBody(props: { run: Run; data: RunData }) {
     <>
       <RunHeader run={props.run} live={props.data.view().live} />
       <InteractionsPanel run={props.run} />
-      <Phases run={props.run} selected={phaseFilter()} onSelect={(phase) => setPhaseFilter((current) => (current === phase ? null : phase))} />
+      <Phases
+        run={props.run}
+        selected={phaseFilter()}
+        onSelect={(phase) => setPhaseFilter((current) => (current === phase ? null : phase))}
+      />
       <UnitsTable run={props.run} phase={phaseFilter()} />
       <div class="grid-2">
         <ResultPanel run={props.run} />
@@ -105,7 +142,10 @@ function RunHeader(props: { run: Run; live: boolean }) {
         <Show when={r().waiting}>
           <Tag tone="attention">waiting on you</Tag>
         </Show>
-        <Tag tone="muted" title={r().workflow.provenance === "durable" ? "A saved Workflow" : "An Ad-hoc Workflow, authored inline"}>
+        <Tag
+          tone="muted"
+          title={r().workflow.provenance === "durable" ? "A saved Workflow" : "An Ad-hoc Workflow, authored inline"}
+        >
           {r().workflow.provenance === "durable" ? `durable · ${r().workflow.key ?? r().workflow.name}` : "ad-hoc"}
         </Tag>
         <Show when={r().background}>
@@ -124,7 +164,12 @@ function RunHeader(props: { run: Run; live: boolean }) {
               <span class="num">
                 {counts().settled}/{counts().total}
               </span>
-              <Meter value={counts().settled} total={counts().total} failed={counts().failed + counts().stopped} label="Units settled" />
+              <Meter
+                value={counts().settled}
+                total={counts().total}
+                failed={counts().failed + counts().stopped}
+                label="Units settled"
+              />
               <Show when={counts().running + counts().repairing > 0}>
                 <span class="muted small">{counts().running + counts().repairing} active</span>
               </Show>
@@ -134,8 +179,16 @@ function RunHeader(props: { run: Run; live: boolean }) {
             </span>
           }
         />
-        <Stat label="Elapsed" value={<span class="num">{elapsed(r().startedAt, r().endedAt, app.now())}</span>} title={`Started ${new Date(r().startedAt).toLocaleString()}`} />
-        <Stat label="Tokens" value={<span class="num">{formatCount(totalTokens(r().usage))}</span>} title={tokenBreakdown(r().usage)} />
+        <Stat
+          label="Elapsed"
+          value={<span class="num">{elapsed(r().startedAt, r().endedAt, app.now())}</span>}
+          title={`Started ${new Date(r().startedAt).toLocaleString()}`}
+        />
+        <Stat
+          label="Tokens"
+          value={<span class="num">{formatCount(totalTokens(r().usage))}</span>}
+          title={tokenBreakdown(r().usage)}
+        />
         <Stat label="Cost" value={<span class="num">{formatCost(r().usage.cost)}</span>} />
         <Show when={r().budget.total !== null}>
           <Stat
@@ -148,12 +201,31 @@ function RunHeader(props: { run: Run; live: boolean }) {
             title="Output tokens counted against the budget"
           />
         </Show>
-        <Stat label="Location" value={<span class="mono" title={r().location}>{shortLocation(r().location)}</span>} />
-        <Stat label="Run" value={<span class="mono" title={r().runId}>{shortId(r().runId)}</span>} />
+        <Stat
+          label="Location"
+          value={
+            <span class="mono" title={r().location}>
+              {shortLocation(r().location)}
+            </span>
+          }
+        />
+        <Stat
+          label="Run"
+          value={
+            <span class="mono" title={r().runId}>
+              {shortId(r().runId)}
+            </span>
+          }
+        />
       </div>
       <div class="controls" role="toolbar" aria-label="Run controls">
         <Show when={!terminal()}>
-          <ActionButton tone="danger" confirm="Stop this Run? Running Units are interrupted." onAction={() => app.api.stopRun(r().runId)} done="Stop requested">
+          <ActionButton
+            tone="danger"
+            confirm="Stop this Run? Running Units are interrupted."
+            onAction={() => app.api.stopRun(r().runId)}
+            done="Stop requested"
+          >
             Stop Run
           </ActionButton>
         </Show>
@@ -170,7 +242,11 @@ function RunHeader(props: { run: Run; live: boolean }) {
               Resume
             </ActionButton>
             <label class="check small">
-              <input type="checkbox" checked={rerunFailed()} onChange={(event) => setRerunFailed(event.currentTarget.checked)} />
+              <input
+                type="checkbox"
+                checked={rerunFailed()}
+                onChange={(event) => setRerunFailed(event.currentTarget.checked)}
+              />
               re-run failed Units
             </label>
           </span>
@@ -201,7 +277,11 @@ function RunHeader(props: { run: Run; live: boolean }) {
               confirm="Mark this Run's Unit sessions for cleanup?"
               onAction={async () => {
                 const result = await app.api.cleanupRun(r().runId)
-                app.announce(result.pending > 0 ? `${result.pending} Unit sessions marked for cleanup (the TUI deletes them).` : "Nothing left to clean up.")
+                app.announce(
+                  result.pending > 0
+                    ? `${result.pending} Unit sessions marked for cleanup (the TUI deletes them).`
+                    : "Nothing left to clean up.",
+                )
               }}
               title="Apply retention to this Run's Unit sessions"
             >
@@ -216,7 +296,10 @@ function RunHeader(props: { run: Run; live: boolean }) {
         <Show when={r().resumeOf}>
           {(of) => (
             <span class="small muted">
-              resumes <Link href={runPath(of())} class="mono">{shortId(of())}</Link>
+              resumes{" "}
+              <Link href={runPath(of())} class="mono">
+                {shortId(of())}
+              </Link>
             </span>
           )}
         </Show>
@@ -247,8 +330,18 @@ function Phases(props: { run: Run; selected: string | null; onSelect: (phase: st
             {(phase, index) => {
               const counts = () => unitCounts(phase.units)
               return (
-                <li class="phase" data-state={phase.state} data-selected={props.selected === phase.name ? "" : undefined}>
-                  <button type="button" class="phase-btn" aria-pressed={props.selected === phase.name} onClick={() => props.onSelect(phase.name)} title="Show only this phase's Units">
+                <li
+                  class="phase"
+                  data-state={phase.state}
+                  data-selected={props.selected === phase.name ? "" : undefined}
+                >
+                  <button
+                    type="button"
+                    class="phase-btn"
+                    aria-pressed={props.selected === phase.name}
+                    onClick={() => props.onSelect(phase.name)}
+                    title="Show only this phase's Units"
+                  >
                     <span class="phase-index num">{index() + 1}</span>
                     <span class="phase-name">{phase.name}</span>
                     <span class="phase-units num muted">
@@ -272,7 +365,9 @@ function Phases(props: { run: Run; selected: string | null; onSelect: (phase: st
 
 function UnitsTable(props: { run: Run; phase: string | null }) {
   const app = useApp()
-  const units = createMemo(() => (props.phase ? props.run.units.filter((unit) => unit.phase === props.phase) : props.run.units))
+  const units = createMemo(() =>
+    props.phase ? props.run.units.filter((unit) => unit.phase === props.phase) : props.run.units,
+  )
   return (
     <section class="panel" aria-labelledby="units-title">
       <header class="panel-head">
@@ -315,14 +410,23 @@ function UnitsTable(props: { run: Run; phase: string | null }) {
                       </Link>
                       <span class="muted small"> {unit.label ? unit.subagent : ""}</span>
                       <Show when={unit.schema}>
-                        <Tag tone="muted" title="Asked for a typed result">typed</Tag>
+                        <Tag tone="muted" title="Asked for a typed result">
+                          typed
+                        </Tag>
                       </Show>
                     </td>
                     <td class="muted">{unit.phase ?? "—"}</td>
                     <td>
                       <StatusBadge status={unit.status} title={unit.error} />
                     </td>
-                    <td class="mono small truncate" title={unit.model.requested && unit.model.requested !== unit.model.resolved ? `requested ${unit.model.requested}` : undefined}>
+                    <td
+                      class="mono small truncate"
+                      title={
+                        unit.model.requested && unit.model.requested !== unit.model.resolved
+                          ? `requested ${unit.model.requested}`
+                          : undefined
+                      }
+                    >
                       {unit.model.resolved ?? unit.model.requested ?? "—"}
                     </td>
                     <td class="mono small">{unit.resultPath ?? "—"}</td>
@@ -358,9 +462,14 @@ function ResultPanel(props: { run: Run }) {
     () => (terminal() ? props.run.runId : null),
     (runId) => app.api.getResult(runId),
   )
-  createEffect(on(() => props.run.status, (status, previous) => {
-    if (previous !== undefined && status !== previous && terminal()) void refetch()
-  }))
+  createEffect(
+    on(
+      () => props.run.status,
+      (status, previous) => {
+        if (previous !== undefined && status !== previous && terminal()) void refetch()
+      },
+    ),
+  )
   return (
     <section class="panel" aria-labelledby="result-title">
       <header class="panel-head">
@@ -377,7 +486,14 @@ function ResultPanel(props: { run: Run }) {
         >
           <Show when={!result.error} fallback={<ErrorNote error={result.error} retry={() => void refetch()} />}>
             <Show when={!result.loading} fallback={<p class="muted">Loading…</p>}>
-              <Show when={result()?.result !== null && result()?.result !== undefined} fallback={<p class="muted">No result{props.run.status === "succeeded" ? "." : ` (the Run ${props.run.status}).`}</p>}>
+              <Show
+                when={result()?.result !== null && result()?.result !== undefined}
+                fallback={
+                  <p class="muted">
+                    No result{props.run.status === "succeeded" ? "." : ` (the Run ${props.run.status}).`}
+                  </p>
+                }
+              >
                 <ValueBlock value={result()?.result} maxHeight="32rem" />
               </Show>
             </Show>
@@ -399,12 +515,20 @@ function ActivityPanel(props: { run: Run; activity: ActivityEntry[] }) {
   const entries = createMemo(() => {
     const needle = filter().trim().toLowerCase()
     if (!needle) return props.activity
-    return props.activity.filter((entry) => entry.message.toLowerCase().includes(needle) || (unitLabel(entry.unitId) ?? "").toLowerCase().includes(needle))
+    return props.activity.filter(
+      (entry) =>
+        entry.message.toLowerCase().includes(needle) || (unitLabel(entry.unitId) ?? "").toLowerCase().includes(needle),
+    )
   })
   let stick = true
-  createEffect(on(() => entries().length, () => {
-    if (list && stick) queueMicrotask(() => list && (list.scrollTop = list.scrollHeight))
-  }))
+  createEffect(
+    on(
+      () => entries().length,
+      () => {
+        if (list && stick) queueMicrotask(() => list && (list.scrollTop = list.scrollHeight))
+      },
+    ),
+  )
   return (
     <section class="panel" aria-labelledby="activity-title">
       <header class="panel-head">
@@ -414,9 +538,19 @@ function ActivityPanel(props: { run: Run; activity: ActivityEntry[] }) {
         <label class="sr-only" for="activity-filter">
           Filter activity
         </label>
-        <input id="activity-filter" class="input input-sm" type="search" placeholder="Filter" value={filter()} onInput={(event) => setFilter(event.currentTarget.value)} />
+        <input
+          id="activity-filter"
+          class="input input-sm"
+          type="search"
+          placeholder="Filter"
+          value={filter()}
+          onInput={(event) => setFilter(event.currentTarget.value)}
+        />
       </header>
-      <Show when={entries().length > 0} fallback={<p class="muted pad">No activity{filter() ? " matches" : " yet"}.</p>}>
+      <Show
+        when={entries().length > 0}
+        fallback={<p class="muted pad">No activity{filter() ? " matches" : " yet"}.</p>}
+      >
         <ol
           class="activity"
           ref={list}

@@ -2,9 +2,10 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
+import { WORKFLOW_INLINE_DESCRIPTION, WORKFLOW_TOOL_DESCRIPTION } from "../src/host/description"
 import { SKILL_PATH, parseSkill } from "../src/host/skill"
 import { loadWorkflow } from "../src/loader"
-import { WORKFLOW_INLINE_DESCRIPTION, WORKFLOW_TOOL_DESCRIPTION } from "../src/host/description"
 
 const cacheDir = await mkdtemp(path.join(os.tmpdir(), "wf-skill-"))
 afterAll(() => rm(cacheDir, { recursive: true, force: true }))

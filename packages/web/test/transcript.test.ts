@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
+
 import type { TranscriptMessage } from "@malhashemi/opencode-dynamic-workflows/protocol"
+
 import { createApi } from "../src/api"
 import { messageView, partItem, reasoningSummary, summarizeTranscript, summaryLine, toolTitle } from "../src/transcript"
 
@@ -66,7 +68,9 @@ describe("transcript", () => {
       tokens: { get: () => null, set: () => {} },
       fetch: (async (url: string) => {
         urls.push(url)
-        return new Response(JSON.stringify({ error: { code: "not_found", message: "Unit u/1 has no session" } }), { status: 404 })
+        return new Response(JSON.stringify({ error: { code: "not_found", message: "Unit u/1 has no session" } }), {
+          status: 404,
+        })
       }) as unknown as typeof fetch,
     })
     const caught = await api.getTranscript("r", "u/1").catch((error) => error)

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+
 import { defineWorkflow, z } from "../../src/workflow"
 
 describe("defineWorkflow", () => {
@@ -25,9 +26,7 @@ describe("defineWorkflow", () => {
   })
 
   it("throws when meta.name is missing or empty", () => {
-    expect(() => defineWorkflow({ meta: { name: "", description: "d" }, run: async () => {} })).toThrow(
-      /meta\.name/,
-    )
+    expect(() => defineWorkflow({ meta: { name: "", description: "d" }, run: async () => {} })).toThrow(/meta\.name/)
     // @ts-expect-error — name omitted on purpose
     expect(() => defineWorkflow({ meta: { description: "d" }, run: async () => {} })).toThrow(/meta\.name/)
   })

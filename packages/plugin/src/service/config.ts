@@ -51,7 +51,14 @@ export const DEFAULT_CONFIG: PluginConfig = {
   providerConcurrency: {},
   retention: "keep",
   limits: { ...DEFAULT_LIMITS },
-  gateway: { enabled: true, bind: "loopback", port: DEFAULT_GATEWAY_PORT, allowedOrigins: [], auth: "token", web: true },
+  gateway: {
+    enabled: true,
+    bind: "loopback",
+    port: DEFAULT_GATEWAY_PORT,
+    allowedOrigins: [],
+    auth: "token",
+    web: true,
+  },
 }
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -66,7 +73,10 @@ export function parseConfig(options: unknown): PluginConfig {
   const gateway = record(input.gateway)
   const inline = input.inline === "allow" || input.inline === "deny" ? input.inline : "ask"
   const retention = input.retention === "delete-on-success" ? "delete-on-success" : "keep"
-  const port = typeof gateway.port === "number" && Number.isInteger(gateway.port) && gateway.port >= 0 && gateway.port <= 65_535 ? gateway.port : DEFAULT_GATEWAY_PORT
+  const port =
+    typeof gateway.port === "number" && Number.isInteger(gateway.port) && gateway.port >= 0 && gateway.port <= 65_535
+      ? gateway.port
+      : DEFAULT_GATEWAY_PORT
   return {
     inline,
     inlineCapabilities: input.inlineCapabilities !== false,
@@ -74,7 +84,10 @@ export function parseConfig(options: unknown): PluginConfig {
     maxConcurrentUnits: positiveInt(input.maxConcurrentUnits, 5),
     maxConcurrentRuns: positiveInt(input.maxConcurrentRuns, 5),
     providerConcurrency: Object.fromEntries(
-      Object.entries(record(input.providerConcurrency)).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isInteger(entry[1]) && entry[1] > 0),
+      Object.entries(record(input.providerConcurrency)).filter(
+        (entry): entry is [string, number] =>
+          typeof entry[1] === "number" && Number.isInteger(entry[1]) && entry[1] > 0,
+      ),
     ),
     retention,
     limits: {
@@ -86,7 +99,9 @@ export function parseConfig(options: unknown): PluginConfig {
       enabled: gateway.enabled !== false,
       bind: typeof gateway.bind === "string" && gateway.bind.length > 0 ? gateway.bind : "loopback",
       port,
-      allowedOrigins: Array.isArray(gateway.allowedOrigins) ? gateway.allowedOrigins.filter((o): o is string => typeof o === "string") : [],
+      allowedOrigins: Array.isArray(gateway.allowedOrigins)
+        ? gateway.allowedOrigins.filter((o): o is string => typeof o === "string")
+        : [],
       auth: gateway.auth === "none" ? "none" : "token",
       web: gateway.web !== false,
     },

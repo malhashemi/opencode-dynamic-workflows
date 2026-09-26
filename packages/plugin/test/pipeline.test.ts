@@ -4,6 +4,7 @@
  * parallel draw Units from ONE shared limiter (D5).
  */
 import { describe, expect, test } from "bun:test"
+
 import { makeCtx } from "./helpers"
 
 describe("ctx.pipeline", () => {

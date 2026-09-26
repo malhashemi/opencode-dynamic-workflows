@@ -32,7 +32,9 @@ export function loadAuthoringSkill(): AuthoringSkill | null {
   try {
     return parseSkill(readFileSync(SKILL_PATH, "utf8"))
   } catch (error) {
-    console.warn(`[workflow] the authoring skill did not load: ${error instanceof Error ? error.message : String(error)}`)
+    console.warn(
+      `[workflow] the authoring skill did not load: ${error instanceof Error ? error.message : String(error)}`,
+    )
     return null
   }
 }

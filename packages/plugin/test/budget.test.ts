@@ -3,6 +3,7 @@
  * completed Units' output tokens, `remaining()` floors at 0. A hard budget stops the Run once spent.
  */
 import { describe, expect, test } from "bun:test"
+
 import { makeCtx } from "./helpers"
 
 describe("ctx.budget", () => {

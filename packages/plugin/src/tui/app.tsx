@@ -6,8 +6,9 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import { createSignal } from "solid-js"
 import { Show } from "solid-js"
-import type { PendingInteraction, Run, Unit } from "../protocol"
+
 import { formatClock } from "../progress"
+import type { PendingInteraction, Run, Unit } from "../protocol"
 import { isTerminal } from "../runs"
 import { WorkflowRpc } from "../service/rpc"
 import { formAnswer, findForm } from "./answer"
@@ -34,8 +35,11 @@ export function setupWorkflowsTui(context: Context): () => void {
   const [panelFocus, setPanelFocus] = createSignal(false)
   let returnTo: ReturnType<Context["ui"]["router"]["current"]> | null = null
 
-  const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "info", extra: { title?: string; sessionID?: string; duration?: number } = {}) =>
-    context.ui.toast.show({ message, variant, ...extra })
+  const toast = (
+    message: string,
+    variant: "info" | "success" | "warning" | "error" = "info",
+    extra: { title?: string; sessionID?: string; duration?: number } = {},
+  ) => context.ui.toast.show({ message, variant, ...extra })
 
   const runOf = (runId: string): Run | null => sync.current.runs[runId]?.run ?? null
 
@@ -46,16 +50,41 @@ export function setupWorkflowsTui(context: Context): () => void {
     if (effect.kind === "waiting") {
       const interaction = effect.interaction
       const question = interaction.questions[0]
-      const what = interaction.kind === "approval" ? "wants approval to run an inline workflow" : interaction.kind === "permission" ? `needs a permission: ${interaction.permission?.action ?? ""}` : `asks: ${question?.prompt ?? question?.header ?? ""}`
-      toast(`${name} ${what} — /workflows answer`, "warning", { title: "Workflow waiting", sessionID: run.parentSessionID, duration: 10_000 })
+      const what =
+        interaction.kind === "approval"
+          ? "wants approval to run an inline workflow"
+          : interaction.kind === "permission"
+            ? `needs a permission: ${interaction.permission?.action ?? ""}`
+            : `asks: ${question?.prompt ?? question?.header ?? ""}`
+      toast(`${name} ${what} — /workflows answer`, "warning", {
+        title: "Workflow waiting",
+        sessionID: run.parentSessionID,
+        duration: 10_000,
+      })
       void context.attention
-        .notify({ title: `Workflow ${name}`, message: `${name} ${what}`, sound: { name: interaction.kind === "question" ? "question" : "permission" }, notification: { when: "blurred" } })
+        .notify({
+          title: `Workflow ${name}`,
+          message: `${name} ${what}`,
+          sound: { name: interaction.kind === "question" ? "question" : "permission" },
+          notification: { when: "blurred" },
+        })
         .catch(() => {})
       return
     }
     const ok = run.status === "succeeded"
-    toast(`${name} ${run.status}${run.resultPreview ? ` — ${run.resultPreview}` : ""}`, ok ? "success" : run.status === "failed" ? "error" : "info", { title: "Workflow finished", sessionID: run.parentSessionID })
-    void context.attention.notify({ title: `Workflow ${name}`, message: `${name} ${run.status}`, sound: { name: ok ? "done" : "error", when: "blurred" }, notification: { when: "blurred" } }).catch(() => {})
+    toast(
+      `${name} ${run.status}${run.resultPreview ? ` — ${run.resultPreview}` : ""}`,
+      ok ? "success" : run.status === "failed" ? "error" : "info",
+      { title: "Workflow finished", sessionID: run.parentSessionID },
+    )
+    void context.attention
+      .notify({
+        title: `Workflow ${name}`,
+        message: `${name} ${run.status}`,
+        sound: { name: ok ? "done" : "error", when: "blurred" },
+        notification: { when: "blurred" },
+      })
+      .catch(() => {})
   }
 
   const sync = new WorkflowSync({ api, events, onState: setState, onNotice, onError: setError })
@@ -78,7 +107,12 @@ export function setupWorkflowsTui(context: Context): () => void {
   void heartbeat()
   void sync.start().then(() => {
     const waiting = waitingRuns(sync.current)
-    if (waiting.length > 0) toast(`${waiting.length} workflow${waiting.length === 1 ? " is" : "s are"} waiting for an answer — /workflows answer`, "warning", { title: "Workflows" })
+    if (waiting.length > 0)
+      toast(
+        `${waiting.length} workflow${waiting.length === 1 ? " is" : "s are"} waiting for an answer — /workflows answer`,
+        "warning",
+        { title: "Workflows" },
+      )
   })
   const beat = setInterval(() => void heartbeat(), HEARTBEAT_MS)
   const tick = setInterval(() => {
@@ -119,7 +153,8 @@ export function setupWorkflowsTui(context: Context): () => void {
   /** The Run a session panel should show: waiting first, then live, then the latest. */
   const bestRunFor = (sessionID: string): string | undefined => {
     const entries = sessionEntries(state(), sessionID)
-    return (entries.find((entry) => entry.live && entry.waiting) ?? entries.find((entry) => entry.live) ?? entries[0])?.runId
+    return (entries.find((entry) => entry.live && entry.waiting) ?? entries.find((entry) => entry.live) ?? entries[0])
+      ?.runId
   }
 
   const openPanel = (runId?: string, sessionID?: string, answer = false) => {
@@ -150,7 +185,11 @@ export function setupWorkflowsTui(context: Context): () => void {
     openPanel(first.runId, first.parentSessionID, true)
   }
 
-  const replyForm = async (run: Run, interaction: PendingInteraction, answers: string[][] | null): Promise<string | null> => {
+  const replyForm = async (
+    run: Run,
+    interaction: PendingInteraction,
+    answers: string[][] | null,
+  ): Promise<string | null> => {
     const formID = interaction.form!.formID
     const unit = run.units.find((candidate) => candidate.unitId === interaction.unitId)
     const at = { directory: unit?.location ?? run.location }
@@ -169,12 +208,23 @@ export function setupWorkflowsTui(context: Context): () => void {
 
   const actions: Actions = {
     async stopRun(run) {
-      if (!(await ask("Stop Run?", `Stop ${workflowName(run)} (${shortId(run.runId)})? Running Units are interrupted.`, "Stop"))) return
+      if (
+        !(await ask(
+          "Stop Run?",
+          `Stop ${workflowName(run)} (${shortId(run.runId)})? Running Units are interrupted.`,
+          "Stop",
+        ))
+      )
+        return
       if (await attempt("Stop", () => api.stopRun({ runId: run.runId }))) toast(`Stopping ${workflowName(run)}.`)
     },
     async resumeRun(run) {
       const out = await attempt("Resume", () => api.resumeRun({ runId: run.runId }))
-      if (out) toast(`Resumed ${workflowName(run)} as ${shortId(out.runId)}: finished Units replay, the rest run live.`, "success")
+      if (out)
+        toast(
+          `Resumed ${workflowName(run)} as ${shortId(out.runId)}: finished Units replay, the rest run live.`,
+          "success",
+        )
       return out?.runId ?? null
     },
     async saveRun(run) {
@@ -198,10 +248,20 @@ export function setupWorkflowsTui(context: Context): () => void {
         toast("This Run has no Unit sessions to delete.")
         return
       }
-      if (!(await ask("Delete Unit sessions?", `Delete the ${targets.length} Unit session${targets.length === 1 ? "" : "s"} of ${workflowName(run)}? Their transcripts leave OpenCode; the Run's record stays.`, "Delete"))) return
+      if (
+        !(await ask(
+          "Delete Unit sessions?",
+          `Delete the ${targets.length} Unit session${targets.length === 1 ? "" : "s"} of ${workflowName(run)}? Their transcripts leave OpenCode; the Run's record stays.`,
+          "Delete",
+        ))
+      )
+        return
       const outcome = await attempt("Clean up", () => cleanupRun(run, { api, remove: removeSession }))
       if (!outcome) return
-      toast(`Deleted ${outcome.deleted} Unit session${outcome.deleted === 1 ? "" : "s"}${outcome.failures.length ? `; ${outcome.failures.length} failed (${outcome.failures[0]!.error})` : ""}.`, outcome.failures.length ? "warning" : "success")
+      toast(
+        `Deleted ${outcome.deleted} Unit session${outcome.deleted === 1 ? "" : "s"}${outcome.failures.length ? `; ${outcome.failures.length} failed (${outcome.failures[0]!.error})` : ""}.`,
+        outcome.failures.length ? "warning" : "success",
+      )
       await sync.hydrate(run.runId)
     },
     async cleanupPending() {
@@ -210,19 +270,33 @@ export function setupWorkflowsTui(context: Context): () => void {
         toast("No finished Runs.")
         return
       }
-      if (!(await ask("Clean up finished Runs?", "Delete the Unit sessions of finished Runs marked for cleanup (retention: pending). Runs not marked are left alone.", "Clean up"))) return
+      if (
+        !(await ask(
+          "Clean up finished Runs?",
+          "Delete the Unit sessions of finished Runs marked for cleanup (retention: pending). Runs not marked are left alone.",
+          "Clean up",
+        ))
+      )
+        return
       const outcomes = await attempt("Clean up", () => cleanupPending(finished, { api, remove: removeSession }))
       if (!outcomes) return
       const deleted = outcomes.reduce((sum, outcome) => sum + outcome.deleted, 0)
       const failed = outcomes.reduce((sum, outcome) => sum + outcome.failures.length, 0)
-      toast(outcomes.length === 0 ? "No finished Run is marked for cleanup." : `Cleaned up ${outcomes.length} Run${outcomes.length === 1 ? "" : "s"}: ${deleted} session${deleted === 1 ? "" : "s"} deleted${failed ? `, ${failed} failed` : ""}.`, failed ? "warning" : "success")
+      toast(
+        outcomes.length === 0
+          ? "No finished Run is marked for cleanup."
+          : `Cleaned up ${outcomes.length} Run${outcomes.length === 1 ? "" : "s"}: ${deleted} session${deleted === 1 ? "" : "s"} deleted${failed ? `, ${failed} failed` : ""}.`,
+        failed ? "warning" : "success",
+      )
       await sync.resync("cleanup")
     },
     async stopUnit(run, unit: Unit) {
-      if (await attempt("Stop Unit", () => api.stopUnit({ runId: run.runId, unitId: unit.unitId }))) toast("Unit stopped.")
+      if (await attempt("Stop Unit", () => api.stopUnit({ runId: run.runId, unitId: unit.unitId })))
+        toast("Unit stopped.")
     },
     async restartUnit(run, unit: Unit) {
-      if (await attempt("Restart Unit", () => api.restartUnit({ runId: run.runId, unitId: unit.unitId }))) toast("Unit restarting in its own session.")
+      if (await attempt("Restart Unit", () => api.restartUnit({ runId: run.runId, unitId: unit.unitId })))
+        toast("Unit restarting in its own session.")
     },
     openTranscript(sessionID) {
       if (context.ui.tabs.enabled() && context.ui.tabs.focus(sessionID)) return
@@ -297,9 +371,18 @@ export function setupWorkflowsTui(context: Context): () => void {
         return
       default: {
         const needle = [sub, ...rest].join(" ").toLowerCase()
-        const match = libraryEntries(state()).find((entry) => entry.runId.startsWith(needle) || entry.runId.replace(/-/g, "").startsWith(needle) || workflowName(entry).toLowerCase() === needle)
+        const match = libraryEntries(state()).find(
+          (entry) =>
+            entry.runId.startsWith(needle) ||
+            entry.runId.replace(/-/g, "").startsWith(needle) ||
+            workflowName(entry).toLowerCase() === needle,
+        )
         if (match) openRoute({ runId: match.runId })
-        else toast(`/workflows [panel | answer | cleanup | pair | refresh | <run id or workflow>] — no Run matches "${needle}".`, "warning")
+        else
+          toast(
+            `/workflows [panel | answer | cleanup | pair | refresh | <run id or workflow>] — no Run matches "${needle}".`,
+            "warning",
+          )
       }
     }
   }
@@ -318,19 +401,59 @@ export function setupWorkflowsTui(context: Context): () => void {
           slash: { name: "workflows", arguments: true },
           run: (input) => void runCommand(input),
         },
-        { id: "workflows.panel", title: "Workflows: open the run panel", group: "Workflows", palette: true, run: () => openPanel() },
-        { id: "workflows.answer", title: "Workflows: answer a waiting question", group: "Workflows", palette: true, suggested: () => waitingRuns(state()).length > 0, run: answerFirst },
-        { id: "workflows.cleanup", title: "Workflows: delete Unit sessions of finished runs", group: "Workflows", palette: true, run: () => void actions.cleanupPending() },
-        { id: "workflows.pair", title: "Workflows: pair a browser (web app)", group: "Workflows", palette: true, run: () => void actions.pair() },
+        {
+          id: "workflows.panel",
+          title: "Workflows: open the run panel",
+          group: "Workflows",
+          palette: true,
+          run: () => openPanel(),
+        },
+        {
+          id: "workflows.answer",
+          title: "Workflows: answer a waiting question",
+          group: "Workflows",
+          palette: true,
+          suggested: () => waitingRuns(state()).length > 0,
+          run: answerFirst,
+        },
+        {
+          id: "workflows.cleanup",
+          title: "Workflows: delete Unit sessions of finished runs",
+          group: "Workflows",
+          palette: true,
+          run: () => void actions.cleanupPending(),
+        },
+        {
+          id: "workflows.pair",
+          title: "Workflows: pair a browser (web app)",
+          group: "Workflows",
+          palette: true,
+          run: () => void actions.pair(),
+        },
       ],
     }))
     return null
   }
 
   const disposers = [
-    context.ui.router.register({ name: ROUTE, render: (input) => <LibraryPage wf={wf} data={() => input.data as { runId?: string; unitId?: string; answer?: boolean } | undefined} onExit={leaveRoute} /> }),
-    context.ui.slot({ append: "session.composer.top", render: (input) => <Strip wf={wf} sessionID={input.sessionID} /> }),
-    context.ui.slot({ append: "sidebar.content", render: (input) => <SidebarRuns wf={wf} sessionID={input.sessionID} /> }),
+    context.ui.router.register({
+      name: ROUTE,
+      render: (input) => (
+        <LibraryPage
+          wf={wf}
+          data={() => input.data as { runId?: string; unitId?: string; answer?: boolean } | undefined}
+          onExit={leaveRoute}
+        />
+      ),
+    }),
+    context.ui.slot({
+      append: "session.composer.top",
+      render: (input) => <Strip wf={wf} sessionID={input.sessionID} />,
+    }),
+    context.ui.slot({
+      append: "sidebar.content",
+      render: (input) => <SidebarRuns wf={wf} sessionID={input.sessionID} />,
+    }),
     context.ui.slot({
       append: "session.panel",
       render: (panel) => (
@@ -338,10 +461,13 @@ export function setupWorkflowsTui(context: Context): () => void {
           <RunPanel
             wf={wf}
             panel={panel}
-            target={() => panelTarget() ?? (() => {
-              const runId = bestRunFor(panel.sessionID)
-              return runId ? { runId } : undefined
-            })()}
+            target={() =>
+              panelTarget() ??
+              (() => {
+                const runId = bestRunFor(panel.sessionID)
+                return runId ? { runId } : undefined
+              })()
+            }
             focusOnOpen={() => {
               const focus = panelFocus()
               setPanelFocus(false)

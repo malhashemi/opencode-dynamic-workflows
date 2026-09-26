@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
 import { createBroker } from "../src/broker"
 import { createJournal, journalRoot, subscribeJournal } from "../src/journal"
 import { loadWorkflow } from "../src/loader"
@@ -26,7 +27,10 @@ afterAll(async () => {
   await rm(project, { recursive: true, force: true })
 })
 
-async function start(source: string, options: { args?: unknown; host?: FakeHostOptions; journal?: boolean; attached?: boolean } = {}) {
+async function start(
+  source: string,
+  options: { args?: unknown; host?: FakeHostOptions; journal?: boolean; attached?: boolean } = {},
+) {
   const index = createUnitIndex()
   const host = createFakeHost(index, options.host)
   const store = createRunStore(project)
@@ -58,11 +62,13 @@ async function start(source: string, options: { args?: unknown; host?: FakeHostO
 }
 
 const wf = (body: string, meta = "") =>
-  `import { defineWorkflow, z } from "@opencode-ai/workflow"\nexport default defineWorkflow({ meta: { name: "t", description: "d"${meta} }, async run(ctx) { ${body} } })\n`
+  `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"\nexport default defineWorkflow({ meta: { name: "t", description: "d"${meta} }, async run(ctx) { ${body} } })\n`
 
 describe("runWorkflow", () => {
   it("runs, records Units, ends succeeded with a result preview", async () => {
-    const { promise, store, runId, events } = await start(wf(`const a = await ctx.agent("one"); ctx.log("did one"); return { a }`))
+    const { promise, store, runId, events } = await start(
+      wf(`const a = await ctx.agent("one"); ctx.log("did one"); return { a }`),
+    )
     const out = await promise
     expect(out.result).toEqual({ a: "one" })
     const run = store.get(runId)!
@@ -75,7 +81,10 @@ describe("runWorkflow", () => {
   })
 
   it("validates args before any Unit launches", async () => {
-    const { promise, store, runId, host } = await start(wf(`return ctx.agent("x")`, `, args: z.object({ n: z.number() })`), { args: { n: "no" } })
+    const { promise, store, runId, host } = await start(
+      wf(`return ctx.agent("x")`, `, args: z.object({ n: z.number() })`),
+      { args: { n: "no" } },
+    )
     await expect(promise).rejects.toBeInstanceOf(InvalidArgsError)
     expect(host.creates).toHaveLength(0)
     expect(store.get(runId)!.status).toBe("failed")
@@ -95,7 +104,9 @@ describe("runWorkflow", () => {
   })
 
   it("stop ends the Run as stopped and interrupts in-flight Units", async () => {
-    const { promise, store, runId, host, stop } = await start(wf(`return ctx.agent("hang")`), { host: { reply: { hang: true } } })
+    const { promise, store, runId, host, stop } = await start(wf(`return ctx.agent("hang")`), {
+      host: { reply: { hang: true } },
+    })
     await new Promise((resolve) => setTimeout(resolve, 10))
     stop()
     await promise
@@ -105,7 +116,9 @@ describe("runWorkflow", () => {
   })
 
   it("limits.maxUnits fails a runaway loop with a legible error", async () => {
-    const { promise, store, runId } = await start(wf(`for (let i = 0; i < 50; i++) await ctx.agent("x" + i); return "done"`, `, limits: { maxUnits: 3 }`))
+    const { promise, store, runId } = await start(
+      wf(`for (let i = 0; i < 50; i++) await ctx.agent("x" + i); return "done"`, `, limits: { maxUnits: 3 }`),
+    )
     await promise.catch(() => {})
     const run = store.get(runId)!
     expect(run.status).toBe("failed")
@@ -131,9 +144,8 @@ describe("policy resolution", () => {
     expect(resolveAskGrace(undefined)).toBeNull()
     expect(resolveAskGrace(-5)).toBe(0)
   })
-  it("permission policy defaults to ask; `human` is a legacy alias", () => {
+  it("permission policy defaults to ask", () => {
     expect(resolvePermissionPolicy({})).toBe("ask")
-    expect(resolvePermissionPolicy({ interaction: { permissions: "human" } })).toBe("ask")
     expect(resolvePermissionPolicy({ interaction: { permissions: "auto" } })).toBe("auto")
   })
   it("budget: numbers are advisory, objects may be hard", () => {
@@ -149,7 +161,10 @@ describe("policy resolution", () => {
 
 describe("audit round 3 — a Run owns every Unit it started", () => {
   it("Units the script did not await are stopped and settled before run.ended", async () => {
-    const { promise, store, runId, host, events } = await start(wf(`ctx.agent("stray"); await new Promise((r) => setTimeout(r, 10)); return "done"`), { host: { reply: { hang: true } } })
+    const { promise, store, runId, host, events } = await start(
+      wf(`ctx.agent("stray"); await new Promise((r) => setTimeout(r, 10)); return "done"`),
+      { host: { reply: { hang: true } } },
+    )
     expect((await promise).result).toBe("done")
     const run = store.get(runId)!
     expect(run.status).toBe("succeeded")
@@ -167,8 +182,22 @@ describe("audit round 5 — nothing outlives the Run", () => {
     const host = createFakeHost(index)
     const store = createRunStore(project)
     const broker = createBroker({ store, attached: () => false })
-    const { config } = await loadWorkflow(wf(`setTimeout(() => { (globalThis as any).__late = ctx.agent("late") }, 20); return "done"`), { cacheDir })
-    await runWorkflow({ config, source: "", identity: { key: null, name: "t", description: "", provenance: "inline" }, host, index, broker, store, runId: "late-run", parentSessionID: "p", location: project })
+    const { config } = await loadWorkflow(
+      wf(`setTimeout(() => { (globalThis as any).__late = ctx.agent("late") }, 20); return "done"`),
+      { cacheDir },
+    )
+    await runWorkflow({
+      config,
+      source: "",
+      identity: { key: null, name: "t", description: "", provenance: "inline" },
+      host,
+      index,
+      broker,
+      store,
+      runId: "late-run",
+      parentSessionID: "p",
+      location: project,
+    })
     await new Promise((resolve) => setTimeout(resolve, 40))
     const late: Promise<unknown> = (globalThis as any).__late
     expect(await late).toBeNull()
@@ -185,8 +214,16 @@ describe("nested Workflows — ctx.workflow", () => {
     const { config } = await loadWorkflow(parent, { cacheDir })
     const runId = crypto.randomUUID()
     const promise = runWorkflow({
-      config, source: parent, identity: { key: null, name: config.meta.name, description: "", provenance: "inline" },
-      host: fake, index, broker, store, runId, parentSessionID: "p", location: project,
+      config,
+      source: parent,
+      identity: { key: null, name: config.meta.name, description: "", provenance: "inline" },
+      host: fake,
+      index,
+      broker,
+      store,
+      runId,
+      parentSessionID: "p",
+      location: project,
       resolveWorkflow: async (name) => {
         if (!children[name]) throw new Error(`no saved Workflow named "${name}"`)
         return (await loadWorkflow(children[name]!, { cacheDir })).config
@@ -195,12 +232,17 @@ describe("nested Workflows — ctx.workflow", () => {
     return { promise, store, runId, host: fake }
   }
   const child = (body: string, meta = "") =>
-    `import { defineWorkflow, z } from "@opencode-ai/workflow"\nexport default defineWorkflow({ meta: { name: "child", description: "d"${meta} }, async run(ctx) { ${body} } })\n`
+    `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"\nexport default defineWorkflow({ meta: { name: "child", description: "d"${meta} }, async run(ctx) { ${body} } })\n`
 
   it("runs a saved Workflow as a step, sharing the Run, with prefixed labels and phases", async () => {
     const { promise, store, runId } = await startWith(
       wf(`const r = await ctx.workflow("kid", { n: 2 }); return { r }`),
-      { kid: child(`ctx.phase("inner"); return ctx.agent("hello " + ctx.args.n, { label: "greet" })`, `, args: z.object({ n: z.number() })`) },
+      {
+        kid: child(
+          `ctx.phase("inner"); return ctx.agent("hello " + ctx.args.n, { label: "greet" })`,
+          `, args: z.object({ n: z.number() })`,
+        ),
+      },
     )
     expect((await promise).result).toEqual({ r: "hello 2" })
     const run = store.get(runId)!
@@ -210,8 +252,13 @@ describe("nested Workflows — ctx.workflow", () => {
 
   it("invalid child args throw into the parent script; nesting deeper throws", async () => {
     const { promise } = await startWith(
-      wf(`let a = "", b = ""; try { await ctx.workflow("kid", { n: "x" }) } catch (e) { a = String(e) } try { await ctx.workflow("deep") } catch (e) { b = String(e) } return { a, b }`),
-      { kid: child(`return 1`, `, args: z.object({ n: z.number() })`), deep: child(`return ctx.workflow("kid", { n: 1 })`) },
+      wf(
+        `let a = "", b = ""; try { await ctx.workflow("kid", { n: "x" }) } catch (e) { a = String(e) } try { await ctx.workflow("deep") } catch (e) { b = String(e) } return { a, b }`,
+      ),
+      {
+        kid: child(`return 1`, `, args: z.object({ n: z.number() })`),
+        deep: child(`return ctx.workflow("kid", { n: 1 })`),
+      },
     )
     const { result } = (await promise) as { result: { a: string; b: string } }
     expect(result.a).toContain("invalid args")

@@ -59,7 +59,10 @@ export interface RunStore {
   subscribe(subscriber: RunSubscriber): () => void
   subscribers(): number
   /** Events after `seq`, oldest first. `complete` is false when some were already dropped from the window. */
-  eventsSince(seq: number, epoch?: string): { events: ProtocolEvent[]; complete: boolean; latest: number; epoch: string }
+  eventsSince(
+    seq: number,
+    epoch?: string,
+  ): { events: ProtocolEvent[]; complete: boolean; latest: number; epoch: string }
   /** Random per store instance (per service process): tells clients the seq sequence started again. */
   readonly epoch: string
   /** Emit a location-wide event (no Run). */
@@ -206,7 +209,12 @@ export function toLibraryEntry(run: Run, live: boolean): LibraryEntry {
 /** Fold a pending interaction and its outcome into the record that outlives it. */
 export function toResolvedInteraction(
   interaction: PendingInteraction,
-  outcome: { answers?: string[][]; by: ResolvedInteraction["by"]; outcome?: ResolvedInteraction["outcome"]; now?: number },
+  outcome: {
+    answers?: string[][]
+    by: ResolvedInteraction["by"]
+    outcome?: ResolvedInteraction["outcome"]
+    now?: number
+  },
 ): ResolvedInteraction {
   const { graceEndsAt: _graceEndsAt, ...record } = clonePendingInteraction(interaction)
   const answers = (outcome.answers ?? []).map((row) => [...row])
@@ -386,7 +394,11 @@ export function createRunStore(location: string): RunStore {
         // Idempotent: the first resolver files the record; any later observer of the same resolution is a no-op.
         if (!settled) return cloneRun(run)
         run.interactions = run.interactions.filter((candidate) => candidate.interactionId !== change.interactionId)
-        const record = toResolvedInteraction(settled, { answers: change.answers, by: change.by, outcome: change.outcome })
+        const record = toResolvedInteraction(settled, {
+          answers: change.answers,
+          by: change.by,
+          outcome: change.outcome,
+        })
         run.resolved.push(record)
         run.revision += 1
         recount(run)

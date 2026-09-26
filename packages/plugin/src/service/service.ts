@@ -11,14 +11,15 @@
 import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+
+import manifest from "../../package.json" with { type: "json" }
 import type { Broker } from "../broker"
 import type { ReplayPlan } from "../context"
-import { formatModel, type EngineHost, type HostMessage } from "../host"
 import { runSlot, runSlotsFull, unitSlot } from "../engine-global"
+import { formatModel, type EngineHost, type HostMessage } from "../host"
 import { ownerAlive, type Journal } from "../journal"
 import { loadWorkflow, loadWorkflowConfig, sha256 } from "../loader"
 import { runWorkflow, type RunWorkflowOutput } from "../orchestrator"
-import { MAX_RESTARTS } from "../runner"
 import {
   PROTOCOL_VERSION,
   WorkflowProtocolError,
@@ -35,13 +36,12 @@ import {
   type WorkflowIdentity,
 } from "../protocol"
 import { buildRegistry } from "../registry"
+import { MAX_RESTARTS } from "../runner"
 import { elideEvent, elideRun, isTerminal, newRun, toLibraryEntry, type RunStore } from "../runs"
 import { toJsonSchema } from "../schema-bridge"
 import type { UnitIndex } from "../units"
 import type { DefineWorkflowConfig } from "../workflow"
-import manifest from "../../package.json" with { type: "json" }
 import type { PluginConfig } from "./config"
-
 
 export const PLUGIN_NAME = "@malhashemi/opencode-dynamic-workflows"
 export const PLUGIN_VERSION: string = manifest.version
@@ -112,7 +112,11 @@ function textOf(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined
   if (typeof value === "string") return value
   if (Array.isArray(value)) {
-    const texts = value.map((entry) => (entry && typeof entry === "object" && "text" in entry ? String((entry as { text: unknown }).text) : "")).filter(Boolean)
+    const texts = value
+      .map((entry) =>
+        entry && typeof entry === "object" && "text" in entry ? String((entry as { text: unknown }).text) : "",
+      )
+      .filter(Boolean)
     if (texts.length > 0) return texts.join("")
   }
   try {
@@ -200,7 +204,9 @@ export class WorkflowService {
 
   /** Sessions currently in view on an attached surface. */
   watchedSessions(): string[] {
-    return this.attached() ? [...this.surfaces.values()].map((entry) => entry.sessionID).filter((id): id is string => !!id) : []
+    return this.attached()
+      ? [...this.surfaces.values()].map((entry) => entry.sessionID).filter((id): id is string => !!id)
+      : []
   }
 
   detach(surface: string): void {
@@ -230,7 +236,17 @@ export class WorkflowService {
       plugin: { name: PLUGIN_NAME, version: PLUGIN_VERSION },
       opencode: this.deps.opencodeVersion,
       location: this.deps.location,
-      capabilities: ["runs", "units", "interactions", "resume", "restart-unit", "save", "cleanup", "events", "inline-approval"],
+      capabilities: [
+        "runs",
+        "units",
+        "interactions",
+        "resume",
+        "restart-unit",
+        "save",
+        "cleanup",
+        "events",
+        "inline-approval",
+      ],
       limits: {
         ...this.deps.config.limits,
         maxConcurrentUnits: this.deps.config.maxConcurrentUnits,
@@ -242,7 +258,9 @@ export class WorkflowService {
   }
 
   async listRuns(input: ListRunsInput = {}): Promise<LibraryEntry[]> {
-    const live = this.deps.store.list().map((run) => toLibraryEntry(run, this.live.has(run.runId) || !isTerminal(run.status)))
+    const live = this.deps.store
+      .list()
+      .map((run) => toLibraryEntry(run, this.live.has(run.runId) || !isTerminal(run.status)))
     const seen = new Set(live.map((entry) => entry.runId))
     const history = (await this.deps.journal.list()).filter((entry) => !seen.has(entry.runId))
     let entries = [...live, ...history]
@@ -252,7 +270,9 @@ export class WorkflowService {
     if (input.search) {
       const needle = input.search.toLowerCase()
       entries = entries.filter((entry) =>
-        [entry.runId, entry.workflow.name, entry.workflow.key ?? "", entry.workflow.description].some((field) => field.toLowerCase().includes(needle)),
+        [entry.runId, entry.workflow.name, entry.workflow.key ?? "", entry.workflow.description].some((field) =>
+          field.toLowerCase().includes(needle),
+        ),
       )
     }
     entries.sort((a, b) => b.startedAt - a.startedAt || a.runId.localeCompare(b.runId))
@@ -279,12 +299,19 @@ export class WorkflowService {
   /** A Unit's session, simplified for display (the web app's transcript view). */
   async getTranscript(runId: string, unitId: string): Promise<GetTranscriptOutput> {
     const unit = await this.getUnit(runId, unitId)
-    if (!unit.sessionID) throw new WorkflowProtocolError("not_found", `Unit "${unitId}" has no session (it never started, or was replayed).`)
+    if (!unit.sessionID)
+      throw new WorkflowProtocolError(
+        "not_found",
+        `Unit "${unitId}" has no session (it never started, or was replayed).`,
+      )
     let messages: readonly HostMessage[]
     try {
       messages = await this.deps.host.session.context({ sessionID: unit.sessionID })
     } catch (error) {
-      throw new WorkflowProtocolError("not_found", `The Unit's session is gone (${error instanceof Error ? error.message : String(error)}).`)
+      throw new WorkflowProtocolError(
+        "not_found",
+        `The Unit's session is gone (${error instanceof Error ? error.message : String(error)}).`,
+      )
     }
     return toTranscript(unit.sessionID, messages)
   }
@@ -308,7 +335,10 @@ export class WorkflowService {
   }
 
   async listWorkflows(): Promise<ListWorkflowsOutput> {
-    const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
+    const registry = await buildRegistry({
+      directory: this.deps.location,
+      ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+    })
     return {
       workflows: [...registry.entries.values()]
         .toSorted((a, b) => a.key.localeCompare(b.key))
@@ -322,14 +352,24 @@ export class WorkflowService {
           path: entry.absPath,
           scope: entry.scope,
         })),
-      collisions: registry.collisions.map((c) => ({ key: c.key, kept: c.kept, shadowed: c.shadowed, sameScope: c.sameScope })),
+      collisions: registry.collisions.map((c) => ({
+        key: c.key,
+        kept: c.kept,
+        shadowed: c.shadowed,
+        sameScope: c.sameScope,
+      })),
       failures: registry.failures.map((f) => ({ path: f.absPath, error: f.error })),
     }
   }
 
   eventsSince(after = 0, epoch?: string) {
     const tail = this.deps.store.eventsSince(after, epoch)
-    return { events: tail.events.map((event) => elideEvent(event)), complete: tail.complete, latest: tail.latest, epoch: tail.epoch }
+    return {
+      events: tail.events.map((event) => elideEvent(event)),
+      complete: tail.complete,
+      latest: tail.latest,
+      epoch: tail.epoch,
+    }
   }
 
   // ------------------------------------------------------------------------------------------------------------
@@ -349,26 +389,42 @@ export class WorkflowService {
       return { runId, done: Promise.resolve({ run: this.deps.store.get(runId)! }) }
     }
     if (!!input.name === !!input.source) {
-      throw new WorkflowProtocolError("invalid_args", "Provide exactly one of `name` (a durable Workflow) or `source` (inline).")
+      throw new WorkflowProtocolError(
+        "invalid_args",
+        "Provide exactly one of `name` (a durable Workflow) or `source` (inline).",
+      )
     }
     const args = normalizeArgs(input.args)
-    const parentSessionID = input.parentSessionID ?? (await this.starterSession(input.name ?? "inline", options.surface))
+    const parentSessionID =
+      input.parentSessionID ?? (await this.starterSession(input.name ?? "inline", options.surface))
 
     let source: string
     let sourcePath: string | undefined
     let identity: WorkflowIdentity
     if (input.name) {
-      const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
+      const registry = await buildRegistry({
+        directory: this.deps.location,
+        ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+      })
       const entry = registry.entries.get(input.name)
       if (!entry) {
         const known = Array.from(registry.entries.keys()).toSorted()
-        throw new WorkflowProtocolError("not_found", `No durable Workflow named "${input.name}". Registered: ${known.length ? known.join(", ") : "(none)"}.`, {
-          details: { known },
-        })
+        throw new WorkflowProtocolError(
+          "not_found",
+          `No durable Workflow named "${input.name}". Registered: ${known.length ? known.join(", ") : "(none)"}.`,
+          {
+            details: { known },
+          },
+        )
       }
       source = await readFile(entry.absPath, "utf8")
       sourcePath = entry.absPath
-      identity = options.identity ?? { key: entry.key, name: entry.meta.name, description: entry.meta.description, provenance: "durable" }
+      identity = options.identity ?? {
+        key: entry.key,
+        name: entry.meta.name,
+        description: entry.meta.description,
+        provenance: "durable",
+      }
     } else {
       source = input.source!
       identity = options.identity ?? { key: null, name: "inline", description: "", provenance: "inline" }
@@ -376,9 +432,17 @@ export class WorkflowService {
 
     let config: DefineWorkflowConfig
     try {
-      config = (await loadWorkflow(source, { ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}), ...(sourcePath ? { sourcePath } : {}) })).config
+      config = (
+        await loadWorkflow(source, {
+          ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+          ...(sourcePath ? { sourcePath } : {}),
+        })
+      ).config
     } catch (error) {
-      throw new WorkflowProtocolError("invalid_args", `The Workflow did not load: ${error instanceof Error ? error.message : String(error)}`)
+      throw new WorkflowProtocolError(
+        "invalid_args",
+        `The Workflow did not load: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
     if (identity.provenance === "inline" && identity.name === "inline") {
       identity = { ...identity, name: config.meta.name, description: config.meta.description }
@@ -425,7 +489,12 @@ export class WorkflowService {
         }
         // At most maxConcurrentRuns Runs execute at once; this one waits, queued, for a slot.
         if (runSlotsFull()) {
-          store.apply({ type: "run.log", runId, value: `waiting: ${this.deps.config.maxConcurrentRuns} Runs are already running (maxConcurrentRuns)`, kind: "engine" })
+          store.apply({
+            type: "run.log",
+            runId,
+            value: `waiting: ${this.deps.config.maxConcurrentRuns} Runs are already running (maxConcurrentRuns)`,
+            kind: "engine",
+          })
         }
         try {
           releaseRun = await runSlot(signal)
@@ -455,7 +524,12 @@ export class WorkflowService {
           resolveWorkflow: (name) => this.resolveDurable(name),
           existingRun: true,
           ...(identity.provenance === "inline" && !this.deps.config.inlineCapabilities
-            ? { capabilities: { disabled: "inline Workflows have no capabilities in this project (plugin option inlineCapabilities: false)" } }
+            ? {
+                capabilities: {
+                  disabled:
+                    "inline Workflows have no capabilities in this project (plugin option inlineCapabilities: false)",
+                },
+              }
             : {}),
           ...(options.replay ? { replay: options.replay } : {}),
           ...(options.resumeOf ? { resumeOf: options.resumeOf } : {}),
@@ -488,11 +562,22 @@ export class WorkflowService {
 
   /** Load a saved Workflow by key (for `ctx.workflow`). */
   private async resolveDurable(name: string): Promise<DefineWorkflowConfig> {
-    const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
+    const registry = await buildRegistry({
+      directory: this.deps.location,
+      ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+    })
     const entry = registry.entries.get(name)
-    if (!entry) throw new Error(`ctx.workflow: no saved Workflow named "${name}" (known: ${Array.from(registry.entries.keys()).toSorted().join(", ") || "none"})`)
+    if (!entry)
+      throw new Error(
+        `ctx.workflow: no saved Workflow named "${name}" (known: ${Array.from(registry.entries.keys()).toSorted().join(", ") || "none"})`,
+      )
     const source = await readFile(entry.absPath, "utf8")
-    return (await loadWorkflow(source, { sourcePath: entry.absPath, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })).config
+    return (
+      await loadWorkflow(source, {
+        sourcePath: entry.absPath,
+        ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+      })
+    ).config
   }
 
   /** The session a surface-started Run is attributed to. */
@@ -513,19 +598,30 @@ export class WorkflowService {
     const current = this.deps.store.get(runId)!
     const patch: Partial<Run> = { status, endedAt: Date.now(), error: reason }
     await this.deps.journal.finish({ ...current, ...patch, revision: current.revision + 1 }, null)
-    if (!isTerminal(this.deps.store.get(runId)?.status ?? "failed")) this.deps.store.apply({ type: "run.ended", runId, patch })
+    if (!isTerminal(this.deps.store.get(runId)?.status ?? "failed"))
+      this.deps.store.apply({ type: "run.ended", runId, patch })
   }
 
   /** The inline-run gate (P0 S7): project approval, plugin policy, or a person — never silent. */
-  private async approveInline(runId: string, source: string, sessionID: string, signal: AbortSignal): Promise<true | string> {
+  private async approveInline(
+    runId: string,
+    source: string,
+    sessionID: string,
+    signal: AbortSignal,
+  ): Promise<true | string> {
     const policy = this.deps.config.inline
     if (policy === "allow") return true
-    if (policy === "deny") return "inline Workflows are disabled for this project (plugin option inline: \"deny\")"
+    if (policy === "deny") return 'inline Workflows are disabled for this project (plugin option inline: "deny")'
     if (await this.deps.approvals.get()) return true
     const verdict = await this.deps.broker.approval({
       runId,
       sessionID,
-      detail: { sha256: sha256(source), bytes: Buffer.byteLength(source), preview: source.split("\n").slice(0, 40).join("\n"), requestingSessionID: sessionID },
+      detail: {
+        sha256: sha256(source),
+        bytes: Buffer.byteLength(source),
+        preview: source.split("\n").slice(0, 40).join("\n"),
+        requestingSessionID: sessionID,
+      },
       signal,
     })
     if (verdict === "once") return true
@@ -555,37 +651,73 @@ export class WorkflowService {
   stopUnit(runId: string, unitId: string): void {
     const stop = this.live.get(runId)?.units.get(unitId)
     const binding = this.deps.index.all().find((candidate) => candidate.runId === runId && candidate.unitId === unitId)
-    if (!stop || !binding || binding.settled) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is not running.`)
+    if (!stop || !binding || binding.settled)
+      throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is not running.`)
     stop()
   }
 
   async restartUnit(runId: string, unitId: string): Promise<void> {
     const binding = this.deps.index.all().find((candidate) => candidate.runId === runId && candidate.unitId === unitId)
-    if (!binding || binding.settled) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is not running; resume the Run to re-run finished Units.`)
-    if (binding.restarts >= MAX_RESTARTS) throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" was already restarted ${MAX_RESTARTS} times.`)
+    if (!binding || binding.settled)
+      throw new WorkflowProtocolError(
+        "invalid_state",
+        `Unit "${unitId}" is not running; resume the Run to re-run finished Units.`,
+      )
+    if (binding.restarts >= MAX_RESTARTS)
+      throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" was already restarted ${MAX_RESTARTS} times.`)
     if (binding.restart) throw new WorkflowProtocolError("conflict", `Unit "${unitId}" is already restarting.`)
     if (!binding.turnActive) {
-      throw new WorkflowProtocolError("invalid_state", `Unit "${unitId}" is finishing its turn; a restart only takes effect while it is working. Try again, or resume the Run later.`, { retryable: true })
+      throw new WorkflowProtocolError(
+        "invalid_state",
+        `Unit "${unitId}" is finishing its turn; a restart only takes effect while it is working. Try again, or resume the Run later.`,
+        { retryable: true },
+      )
     }
     binding.restart = true
     await this.deps.host.session.interrupt({ sessionID: binding.sessionID })
-    this.deps.store.apply({ type: "run.log", runId, value: `restarted a Unit in its own session`, kind: "engine", unitId })
+    this.deps.store.apply({
+      type: "run.log",
+      runId,
+      value: `restarted a Unit in its own session`,
+      kind: "engine",
+      unitId,
+    })
   }
 
   /** Resume a finished or interrupted Run: replay what it finished, run the rest live. */
   async resumeRun(runId: string, rerunFailed = true, options: StartOptions = {}): Promise<StartedRun> {
     const live = this.deps.store.get(runId)
-    if (live && !isTerminal(live.status)) throw new WorkflowProtocolError("invalid_state", `Run "${runId}" is still running.`)
+    if (live && !isTerminal(live.status))
+      throw new WorkflowProtocolError("invalid_state", `Run "${runId}" is still running.`)
     const record = await this.deps.journal.read(runId)
-    if (!record || !record.source) throw new WorkflowProtocolError("not_found", `Run "${runId}" has no journaled script to resume.`)
+    if (!record || !record.source)
+      throw new WorkflowProtocolError("not_found", `Run "${runId}" has no journaled script to resume.`)
     // Another process (a second OpenCode, `opencode run`) may still be running it: never start a second copy.
-    if (!isTerminal(record.run.status) && record.owner && ownerAlive(record.owner) && !(record.owner.pid === process.pid)) {
-      throw new WorkflowProtocolError("invalid_state", `Run "${runId}" is still running in another OpenCode process (pid ${record.owner.pid}).`, { retryable: true })
+    if (
+      !isTerminal(record.run.status) &&
+      record.owner &&
+      ownerAlive(record.owner) &&
+      !(record.owner.pid === process.pid)
+    ) {
+      throw new WorkflowProtocolError(
+        "invalid_state",
+        `Run "${runId}" is still running in another OpenCode process (pid ${record.owner.pid}).`,
+        { retryable: true },
+      )
     }
     const run = record.run
-    const units = new Map<number, { prompt: string; status: Unit["status"]; output?: string; schema: boolean; subagent: string }>()
+    const units = new Map<
+      number,
+      { prompt: string; status: Unit["status"]; output?: string; schema: boolean; subagent: string }
+    >()
     for (const unit of run.units) {
-      units.set(unit.ordinal, { prompt: unit.prompt, status: unit.status, ...(unit.output !== undefined ? { output: unit.output } : {}), schema: unit.schema, subagent: unit.subagent })
+      units.set(unit.ordinal, {
+        prompt: unit.prompt,
+        status: unit.status,
+        ...(unit.output !== undefined ? { output: unit.output } : {}),
+        schema: unit.schema,
+        subagent: unit.subagent,
+      })
     }
     // One entry per `ctx.ask` the script got past, in order. An ask released because the Run stopped is not a
     // decision (skip it: ask again); a person handing one back chose the fallback (null replays the fallback).
@@ -597,23 +729,35 @@ export class WorkflowService {
     // The journaled script, not the file on disk: a resume replays the Run that happened, even if the durable
     // file was edited since (a changed script diverges and runs live from the first changed Unit).
     return this.startRun(
-      { source: record.source, args: record.args, ...(run.parentSessionID ? { parentSessionID: run.parentSessionID } : {}) },
+      {
+        source: record.source,
+        args: record.args,
+        ...(run.parentSessionID ? { parentSessionID: run.parentSessionID } : {}),
+      },
       { ...options, replay, resumeOf: runId, identity: run.workflow },
     )
   }
 
   /** Native OpenCode forms are answered through OpenCode's own form API (the TUI does), not through the engine. */
   private refuseNativeForm(runId: string, interactionId: string): void {
-    const pending = this.deps.store.get(runId)?.interactions.find((candidate) => candidate.interactionId === interactionId)
+    const pending = this.deps.store
+      .get(runId)
+      ?.interactions.find((candidate) => candidate.interactionId === interactionId)
     if (pending?.form) {
-      throw new WorkflowProtocolError("unsupported", "This is a native OpenCode form; answer or dismiss it in the OpenCode TUI (/workflows).")
+      throw new WorkflowProtocolError(
+        "unsupported",
+        "This is a native OpenCode form; answer or dismiss it in the OpenCode TUI (/workflows).",
+      )
     }
   }
 
   async replyInteraction(runId: string, interactionId: string, answers: string[][]): Promise<void> {
     this.refuseNativeForm(runId, interactionId)
     if (!(await this.deps.broker.reply(runId, interactionId, answers))) {
-      throw new WorkflowProtocolError("conflict", "That interaction is not pending, or the answer does not fit its options.")
+      throw new WorkflowProtocolError(
+        "conflict",
+        "That interaction is not pending, or the answer does not fit its options.",
+      )
     }
   }
 
@@ -629,7 +773,10 @@ export class WorkflowService {
     const record = await this.deps.journal.read(runId)
     if (!record?.source) throw new WorkflowProtocolError("not_found", `Run "${runId}" has no journaled script.`)
     if (record.run.workflow.provenance === "durable" && !name) {
-      throw new WorkflowProtocolError("conflict", `${record.run.workflow.key ?? record.run.workflow.name} is already a durable Workflow.`)
+      throw new WorkflowProtocolError(
+        "conflict",
+        `${record.run.workflow.key ?? record.run.workflow.name} is already a durable Workflow.`,
+      )
     }
     return this.promote(record.source, name ?? record.run.workflow.name)
   }
@@ -639,23 +786,34 @@ export class WorkflowService {
     try {
       meta = (await loadWorkflowConfig(source, this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {})).meta
     } catch (error) {
-      throw new WorkflowProtocolError("invalid_args", `The source is not a Workflow: ${error instanceof Error ? error.message : String(error)}`)
+      throw new WorkflowProtocolError(
+        "invalid_args",
+        `The source is not a Workflow: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
     const rel = save.replace(/\.ts$/, "")
     const root = path.join(this.deps.location, ".opencode", "workflows")
     const target = path.join(root, `${rel}.ts`)
     const resolvedRoot = path.resolve(root)
     if (!path.resolve(target).startsWith(resolvedRoot + path.sep)) {
-      throw new WorkflowProtocolError("invalid_args", `The save name must stay within .opencode/workflows (got ${JSON.stringify(save)}).`)
+      throw new WorkflowProtocolError(
+        "invalid_args",
+        `The save name must stay within .opencode/workflows (got ${JSON.stringify(save)}).`,
+      )
     }
-    if (rel.split(/[/\\]/)[0] === "runs") throw new WorkflowProtocolError("invalid_args", "`runs/` is reserved for the run journal.")
+    if (rel.split(/[/\\]/)[0] === "runs")
+      throw new WorkflowProtocolError("invalid_args", "`runs/` is reserved for the run journal.")
     if (existsSync(target)) throw new WorkflowProtocolError("conflict", `A Workflow file already exists at ${target}.`)
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, source, "utf8")
     let key = meta.name
     try {
-      const registry = await buildRegistry({ directory: this.deps.location, ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}) })
-      key = [...registry.entries.values()].find((entry) => path.resolve(entry.absPath) === path.resolve(target))?.key ?? key
+      const registry = await buildRegistry({
+        directory: this.deps.location,
+        ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+      })
+      key =
+        [...registry.entries.values()].find((entry) => path.resolve(entry.absPath) === path.resolve(target))?.key ?? key
     } catch {
       // Report meta.name.
     }
@@ -670,7 +828,8 @@ export class WorkflowService {
     const live = this.deps.store.get(runId)
     const run = live ?? (await this.deps.journal.read(runId))?.run
     if (!run) throw new WorkflowProtocolError("not_found", `No Run "${runId}" in this location.`)
-    if (!isTerminal(run.status)) throw new WorkflowProtocolError("invalid_state", "Stop the Run before deleting its Unit sessions.")
+    if (!isTerminal(run.status))
+      throw new WorkflowProtocolError("invalid_state", "Stop the Run before deleting its Unit sessions.")
     const sessions = new Set(run.units.map((unit) => unit.sessionID).filter((id): id is string => !!id))
     for (const id of deleted) sessions.delete(id)
     const cleanup: Run["cleanup"] = sessions.size === 0 ? "done" : "pending"
@@ -701,7 +860,8 @@ export class WorkflowService {
       })
       marked += 1
     }
-    if (marked > 0) this.deps.store.emit("resync.required", { reason: `${marked} interrupted Run(s) found in the journal` })
+    if (marked > 0)
+      this.deps.store.emit("resync.required", { reason: `${marked} interrupted Run(s) found in the journal` })
     return marked
   }
 

@@ -16,6 +16,7 @@ migrations, sweeps). Often the best move is hybrid: scout inline first (list the
 work-list), then write a Workflow that pipelines over it.
 
 Common single-phase shapes, which you can chain across turns (read each result before designing the next):
+
 - **Understand** — parallel readers over subsystems → one structured map
 - **Design** — N independent approaches → judges → synthesis from the winner
 - **Review** — dimensions → find → adversarially verify each finding
@@ -29,15 +30,15 @@ import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workfl
 
 export default defineWorkflow({
   meta: {
-    name: "review-changes",                        // the key once saved (a folder adds a prefix: team:review-changes)
+    name: "review-changes", // the key once saved (a folder adds a prefix: team:review-changes)
     description: "Review changed files, verify each finding",
-    whenToUse: "Before committing a change",       // optional; shown when Workflows are listed
-    phases: [{ title: "review" }, { title: "verify" }],   // optional; one per phase title you use
+    whenToUse: "Before committing a change", // optional; shown when Workflows are listed
+    phases: [{ title: "review" }, { title: "verify" }], // optional; one per phase title you use
     args: z.object({ files: z.array(z.string()).min(1) }), // optional; validated before any Unit starts
   },
   async run({ agent, pipeline, parallel, collect, phase, log, args }) {
     // …
-    return { /* whatever the caller should get back */ }
+    return {/* whatever the caller should get back */}
   },
 })
 ```
@@ -53,36 +54,36 @@ export default defineWorkflow({
 
 ## The context
 
-| Member | Behaviour |
-| --- | --- |
-| `agent(prompt, opts?)` | One Unit. Resolves to the final text, or — with `schema` — to the validated value. A failed Unit resolves to **`null`** and is added to `errors`; it never throws. |
-| `pipeline(items, ...stages)` | Each item runs through all stages on its own, with **no barrier** between items. Stages get `(previous, item, index)`. A stage that throws turns that item into `null` and skips its later stages. |
-| `parallel(thunks)` | Runs `() => Promise` thunks concurrently and waits for all — a **barrier**. A thunk that throws becomes `null`; the call never rejects. |
-| `collect(xs)` | Drops the `null`s, with the narrowed type. |
-| `errors` | Every dropped Unit so far: `{ unit, prompt, subagent, error }`. |
-| `phase(title)`, `log(message)` | Progress. `log` lines are what the person reads while it runs. |
-| `ask(questions, { fallback, graceMs? })` | Asks the person (see below). |
-| `budget` | `{ total, spent(), remaining() }` in output tokens for this Run. |
-| `signal` | The Run's `AbortSignal`. |
-| `$`, `file`, `fetch` | Shell, files and HTTP, confined to the project (see below). |
-| `workflow(name, args?)` | Run a **saved** Workflow as one step of this Run and get its result (see below). |
-| `worktrees()` | The worktrees kept by `isolation: "worktree"` Units that changed files. |
+| Member                                   | Behaviour                                                                                                                                                                                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent(prompt, opts?)`                   | One Unit. Resolves to the final text, or — with `schema` — to the validated value. A failed Unit resolves to **`null`** and is added to `errors`; it never throws.                                 |
+| `pipeline(items, ...stages)`             | Each item runs through all stages on its own, with **no barrier** between items. Stages get `(previous, item, index)`. A stage that throws turns that item into `null` and skips its later stages. |
+| `parallel(thunks)`                       | Runs `() => Promise` thunks concurrently and waits for all — a **barrier**. A thunk that throws becomes `null`; the call never rejects.                                                            |
+| `collect(xs)`                            | Drops the `null`s, with the narrowed type.                                                                                                                                                         |
+| `errors`                                 | Every dropped Unit so far: `{ unit, prompt, subagent, error }`.                                                                                                                                    |
+| `phase(title)`, `log(message)`           | Progress. `log` lines are what the person reads while it runs.                                                                                                                                     |
+| `ask(questions, { fallback, graceMs? })` | Asks the person (see below).                                                                                                                                                                       |
+| `budget`                                 | `{ total, spent(), remaining() }` in output tokens for this Run.                                                                                                                                   |
+| `signal`                                 | The Run's `AbortSignal`.                                                                                                                                                                           |
+| `$`, `file`, `fetch`                     | Shell, files and HTTP, confined to the project (see below).                                                                                                                                        |
+| `workflow(name, args?)`                  | Run a **saved** Workflow as one step of this Run and get its result (see below).                                                                                                                   |
+| `worktrees()`                            | The worktrees kept by `isolation: "worktree"` Units that changed files.                                                                                                                            |
 
 ### `agent()` options
 
-| Option | Use |
-| --- | --- |
-| `schema` | A zod schema (`z`), or a plain JSON Schema object → a typed, validated result. Use an **object** at the root. |
-| `label` | The Unit's name in progress and in its session title. Always set it inside `pipeline`/`parallel` (`label: file`). |
-| `phase` | Put this Unit in a phase explicitly. Use it inside `pipeline`/`parallel`: the global `phase()` changes under concurrent stages. |
-| `subagent` (alias `agentType`) | Which subagent runs the Unit. Default `general`; `explore` is a fast read-only one — use it for readers and verifiers. |
-| `model` | `"provider/model"` or `"provider/model#variant"`. Omit to use the subagent's model. Set it only when a stage clearly needs a different model. |
-| `effort` | With `model`: its reasoning variant (e.g. `"low"`, `"high"`), same as `"provider/model#high"`. Ignored without `model`. |
-| `retries` | Repair turns for a typed Unit (default 2). |
-| `timeoutMs` | A deadline for this Unit. There is none by default. |
-| `permissions` | Rules for this Unit's session, e.g. `[{ action: "edit", resource: "*", effect: "deny" }]`. |
-| `isolation` | `"worktree"`: run the Unit in a fresh git worktree — for Units that **edit files in parallel** (see below). |
-| `location` | Run the Unit in a directory you prepared yourself. |
+| Option                         | Use                                                                                                                                           |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema`                       | A zod schema (`z`), or a plain JSON Schema object → a typed, validated result. Use an **object** at the root.                                 |
+| `label`                        | The Unit's name in progress and in its session title. Always set it inside `pipeline`/`parallel` (`label: file`).                             |
+| `phase`                        | Put this Unit in a phase explicitly. Use it inside `pipeline`/`parallel`: the global `phase()` changes under concurrent stages.               |
+| `subagent` (alias `agentType`) | Which subagent runs the Unit. Default `general`; `explore` is a fast read-only one — use it for readers and verifiers.                        |
+| `model`                        | `"provider/model"` or `"provider/model#variant"`. Omit to use the subagent's model. Set it only when a stage clearly needs a different model. |
+| `effort`                       | With `model`: its reasoning variant (e.g. `"low"`, `"high"`), same as `"provider/model#high"`. Ignored without `model`.                       |
+| `retries`                      | Repair turns for a typed Unit (default 2).                                                                                                    |
+| `timeoutMs`                    | A deadline for this Unit. There is none by default.                                                                                           |
+| `permissions`                  | Rules for this Unit's session, e.g. `[{ action: "edit", resource: "*", effect: "deny" }]`.                                                    |
+| `isolation`                    | `"worktree"`: run the Unit in a fresh git worktree — for Units that **edit files in parallel** (see below).                                   |
+| `location`                     | Run the Unit in a directory you prepared yourself.                                                                                            |
 
 ### Typed Units
 
@@ -95,7 +96,7 @@ call; if all fail the Unit is `null`. So:
   verdicts with evidence) instead of prose they must re-parse — prose between stages is where pipelines lose
   their citations.
 - Keep schemas small and concrete; use `.describe()` on fields whose meaning is not obvious.
-- Put the instruction for the *work* in the prompt; the engine adds the instruction to submit the result.
+- Put the instruction for the _work_ in the prompt; the engine adds the instruction to submit the result.
 
 ### Writing Unit prompts
 
@@ -108,7 +109,14 @@ not to ask).
 
 ```ts
 const [[depth]] = await ask(
-  { header: "Depth", prompt: "How deep?", options: [{ label: "Quick", description: "3 areas" }, { label: "Thorough", description: "8 areas" }] },
+  {
+    header: "Depth",
+    prompt: "How deep?",
+    options: [
+      { label: "Quick", description: "3 areas" },
+      { label: "Thorough", description: "8 areas" },
+    ],
+  },
   { fallback: [["Quick"]] },
 )
 ```
@@ -124,10 +132,10 @@ Unit is told nobody is available and proceeds).
 ### Capabilities
 
 ```ts
-const diff = await $`git diff ${base} -- ${file}`   // tagged template: values are shell-quoted
+const diff = await $`git diff ${base} -- ${file}` // tagged template: values are shell-quoted
 const status = await $("git status --short", { timeoutMs: 30_000 })
 if (diff.exitCode !== 0) throw new Error(diff.stderr)
-const text = await file.read("README.md")          // project files only
+const text = await file.read("README.md") // project files only
 await file.write(".opencode/reports/out.md", report)
 ```
 
@@ -137,7 +145,7 @@ Shell commands stop when the Run stops (default timeout 120 s).
 ### Composing saved Workflows
 
 ```ts
-const review = await workflow("review-diff", { base: "main" })   // a saved Workflow, by key
+const review = await workflow("review-diff", { base: "main" }) // a saved Workflow, by key
 ```
 
 The child shares this Run's concurrency cap, budget, errors and stop signal; its Units and phases appear as
@@ -162,7 +170,7 @@ configured in a committed `opencode.json` (or globally); otherwise those Units f
 
 ## pipeline by default
 
-Default to `pipeline`. Use a barrier only when a stage needs cross-item context from *all* results of the previous
+Default to `pipeline`. Use a barrier only when a stage needs cross-item context from _all_ results of the previous
 stage:
 
 - dedup or merge across the full set before expensive work,
@@ -174,8 +182,8 @@ conceptually separate" (that is what `pipeline` models). The smell:
 
 ```ts
 const a = await parallel(xs.map((x) => () => agent(find(x))))
-const b = a.filter(Boolean).flatMap(split)          // no cross-item dependency…
-const c = await parallel(b.map((y) => () => agent(verify(y))))   // …so this barrier only wastes time
+const b = a.filter(Boolean).flatMap(split) // no cross-item dependency…
+const c = await parallel(b.map((y) => () => agent(verify(y)))) // …so this barrier only wastes time
 ```
 
 Rewrite it as `pipeline(xs, (x) => agent(find(x)), (found) => parallel(split(found).map(…)))`: each item verifies
@@ -190,27 +198,35 @@ const results = await pipeline(
   (d) => agent(d.prompt, { label: `review:${d.key}`, phase: "review", subagent: "explore", schema: Findings }),
   (review, d) =>
     review &&
-    parallel(review.findings.map((f) => () =>
-      agent(`Adversarially verify against the code. Default to holds=false if unsure.\n${JSON.stringify(f)}`, {
-        label: `verify:${f.file}`, phase: "verify", subagent: "explore", schema: Verdict,
-      }).then((v) => ({ ...f, dimension: d.key, verdict: v })),
-    )),
+    parallel(
+      review.findings.map(
+        (f) => () =>
+          agent(`Adversarially verify against the code. Default to holds=false if unsure.\n${JSON.stringify(f)}`, {
+            label: `verify:${f.file}`,
+            phase: "verify",
+            subagent: "explore",
+            schema: Verdict,
+          }).then((v) => ({ ...f, dimension: d.key, verdict: v })),
+      ),
+    ),
 )
-const confirmed = collect(results).flat().filter((f) => f.verdict?.holds)
+const confirmed = collect(results)
+  .flat()
+  .filter((f) => f.verdict?.holds)
 ```
 
-A barrier that *is* correct — dedup across every finding before verification:
+A barrier that _is_ correct — dedup across every finding before verification:
 
 ```ts
 const all = collect(await parallel(FINDERS.map((f) => () => agent(f.prompt, { phase: "find", schema: Bugs }))))
-const unique = dedupeByFileAndLine(all.flatMap((r) => r.bugs))   // genuinely needs all of them
+const unique = dedupeByFileAndLine(all.flatMap((r) => r.bugs)) // genuinely needs all of them
 const verdicts = await parallel(unique.map((b) => () => agent(verifyPrompt(b), { phase: "verify", schema: Verdict })))
 ```
 
 ## Loops and budgets
 
 ```ts
-let draft: string = first            // type the loop variable as string, not string | null
+let draft: string = first // type the loop variable as string, not string | null
 for (let round = 0; round < 4; round++) {
   const critique = await agent(`Critique:\n${draft}`, { schema: Critique })
   if (!critique || critique.score >= 8) break
@@ -225,7 +241,9 @@ hard: true }` stops the Run once it is spent. Guard budget loops on `budget.tota
 `remaining()` is `Infinity`:
 
 ```ts
-while (budget.total !== null && budget.remaining() > 50_000) { /* another round */ }
+while (budget.total !== null && budget.remaining() > 50_000) {
+  /* another round */
+}
 ```
 
 Limits stop runaway scripts with a clear error: 1000 Units per Run, 4096 items per `parallel`/`pipeline` call,
@@ -245,7 +263,7 @@ Pick by task and compose freely:
 - **Judge panel** — N attempts from different angles, parallel judges score them, synthesize from the winner and
   graft the best ideas from the others.
 - **Loop until dry** — for unknown-size discovery, keep finding until K consecutive rounds add nothing new. Dedup
-  against everything *seen*, not only what was confirmed, or rejected findings return every round.
+  against everything _seen_, not only what was confirmed, or rejected findings return every round.
 - **Multi-modal sweep** — searchers that look in different ways (by file, by content, by history); each is blind
   to what the others find.
 - **Completeness critic** — a last Unit asks "what is missing: an angle not run, a claim unverified, a source
@@ -278,10 +296,19 @@ value in a prompt makes resume re-run it. Units that failed are re-run.
 ```ts
 import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 
-const Plan = z.object({ areas: z.array(z.object({ name: z.string(), files: z.array(z.string()).min(1), question: z.string() })).max(4) })
-const Findings = z.object({ findings: z.array(z.object({ file: z.string(), line: z.number().int().nullable(), claim: z.string() })).max(5) })
-const Verified = z.object({ verdicts: z.array(z.object({ claim: z.string(), holds: z.boolean(), evidence: z.string() })) })
-const Report = z.object({ summary: z.string(), risks: z.array(z.object({ title: z.string(), file: z.string(), fix: z.string() })).max(5) })
+const Plan = z.object({
+  areas: z.array(z.object({ name: z.string(), files: z.array(z.string()).min(1), question: z.string() })).max(4),
+})
+const Findings = z.object({
+  findings: z.array(z.object({ file: z.string(), line: z.number().int().nullable(), claim: z.string() })).max(5),
+})
+const Verified = z.object({
+  verdicts: z.array(z.object({ claim: z.string(), holds: z.boolean(), evidence: z.string() })),
+})
+const Report = z.object({
+  summary: z.string(),
+  risks: z.array(z.object({ title: z.string(), file: z.string(), fix: z.string() })).max(5),
+})
 
 export default defineWorkflow({
   meta: {
@@ -289,28 +316,43 @@ export default defineWorkflow({
     description: "Plan areas, investigate each, verify every finding against the code, report",
     phases: [{ title: "plan" }, { title: "investigate → verify" }, { title: "report" }],
     args: z.object({ root: z.string().default("src") }).default({ root: "src" }),
-    permissions: [{ action: "edit", resource: "*", effect: "deny" }],   // auditors read, never write
+    permissions: [{ action: "edit", resource: "*", effect: "deny" }], // auditors read, never write
   },
   async run({ agent, pipeline, collect, phase, log, $, args }) {
     phase("plan")
     const files = (await $`git ls-files ${args.root}`).stdout
-    const plan = await agent(`Plan a correctness audit of these files. Pick up to 4 areas, each with its files and one sharp question.\n${files}`, { label: "planner", schema: Plan })
+    const plan = await agent(
+      `Plan a correctness audit of these files. Pick up to 4 areas, each with its files and one sharp question.\n${files}`,
+      { label: "planner", schema: Plan },
+    )
     if (!plan) throw new Error("planning failed")
 
     phase("investigate → verify")
     const verified = collect(
       await pipeline(
         plan.areas,
-        (area) => agent(`Read ${area.files.join(", ")} and answer: ${area.question}. Report concrete findings with file and line only.`, { label: `investigate:${area.name}`, subagent: "explore", schema: Findings }),
+        (area) =>
+          agent(
+            `Read ${area.files.join(", ")} and answer: ${area.question}. Report concrete findings with file and line only.`,
+            { label: `investigate:${area.name}`, subagent: "explore", schema: Findings },
+          ),
         // A different `model:` here makes the verifier independent of the investigator (model diversity).
-        (found, area) => found && agent(`Check each finding against the actual code; it holds only if the code really does that.\n${JSON.stringify(found.findings)}`, { label: `verify:${area.name}`, subagent: "explore", schema: Verified }),
+        (found, area) =>
+          found &&
+          agent(
+            `Check each finding against the actual code; it holds only if the code really does that.\n${JSON.stringify(found.findings)}`,
+            { label: `verify:${area.name}`, subagent: "explore", schema: Verified },
+          ),
       ),
     )
     const upheld = verified.flatMap((v) => v.verdicts.filter((x) => x.holds))
     log(`${upheld.length} finding(s) upheld`)
 
     phase("report")
-    return agent(`Write the audit report from these verified findings:\n${JSON.stringify(upheld)}`, { label: "report", schema: Report })
+    return agent(`Write the audit report from these verified findings:\n${JSON.stringify(upheld)}`, {
+      label: "report",
+      schema: Report,
+    })
   },
 })
 ```

@@ -1,0 +1,57 @@
+name: Bug report
+description: Something doesn't work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! The Run's journal usually shows exactly what went wrong, so please attach it if you can.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The Workflow source (or a minimal one that shows the problem) helps most.
+      placeholder: |
+        1. Run /my-workflow ...
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: opencode
+    attributes:
+      label: OpenCode version
+      description: Output of `opencode --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS (Apple Silicon), macOS (Intel), Linux (x64), Linux (arm64), Windows (x64), Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did you see it?
+      multiple: true
+      options: [The workflow tool / model, TUI panel (/workflows), Web app, Protocol / RPC client, Other]
+  - type: textarea
+    id: journal
+    attributes:
+      label: Run journal
+      description: |
+        From `.opencode/workflows/runs/<runId>/` in your project: `run.json` and `units.jsonl`.
+        They contain prompts and outputs, so remove anything private first.
+      render: json

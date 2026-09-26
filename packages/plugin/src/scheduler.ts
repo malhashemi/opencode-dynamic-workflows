@@ -3,7 +3,7 @@
  * the context owns one instance, and every primitive that launches a Unit (`agent`, and therefore `parallel`
  * and `pipeline`, which only launch Units through `agent`) runs under `semaphore.run(...)`. Because the bound
  * sits at the Unit level, total in-flight Units never exceeds the cap no matter how many `parallel`/`pipeline`
- * calls are mid-flight at the same time (spec D5).
+ * calls are mid-flight at the same time.
  *
  * No external deps — a hand-rolled permit pool with a FIFO waiter queue. `run` always releases its permit in a
  * `finally`, so a throwing Unit can never strand a slot and deadlock the pool.
@@ -38,7 +38,7 @@ function abortReason(signal: AbortSignal): AbortError {
  * (awaiting one if none are free), runs `fn`, and releases the permit — handing it directly to the next waiter
  * so the count is conserved. A non-finite or < 1 `permits` clamps to 1, so a mis-computed cap never zeroes the
  * pool. When a `signal` is supplied, an acquire that is already-aborted or aborts WHILE QUEUED rejects and is
- * removed from the queue (D11) — a Unit already past acquire keeps running (its slot is not killed mid-flight).
+ * removed from the queue — a Unit already past acquire keeps running (its slot is not killed mid-flight).
  */
 export class Semaphore {
   private available: number

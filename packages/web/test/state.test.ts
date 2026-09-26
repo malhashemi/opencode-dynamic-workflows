@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+
+import type { LibraryEntry } from "@malhashemi/opencode-dynamic-workflows/protocol"
+
 import {
   beginResync,
   emptyRunView,
@@ -13,7 +16,6 @@ import {
   withFullUnit,
   type RunView,
 } from "../src/state"
-import type { LibraryEntry } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { activity, event, header, pending, resolved, run, unit, usage } from "./fixtures"
 
 function ready(overrides = {}, log = [] as ReturnType<typeof activity>[]): RunView {
@@ -109,7 +111,10 @@ describe("units", () => {
     view = receiveEvent(view, event("unit.updated", 2, unit({ unitId: "b", ordinal: 2 })))
     view = receiveEvent(view, event("unit.updated", 3, unit({ unitId: "a", ordinal: 1 })))
     view = receiveEvent(view, event("unit.updated", 4, unit({ unitId: "b", ordinal: 2, status: "repairing" })))
-    view = receiveEvent(view, event("unit.updated", 5, unit({ unitId: "b", ordinal: 2, status: "succeeded", usage: usage(10, 0.01) })))
+    view = receiveEvent(
+      view,
+      event("unit.updated", 5, unit({ unitId: "b", ordinal: 2, status: "succeeded", usage: usage(10, 0.01) })),
+    )
     expect(view.run!.units.map((u) => [u.unitId, u.status])).toEqual([
       ["a", "running"],
       ["b", "succeeded"],
@@ -118,7 +123,10 @@ describe("units", () => {
 
   test("run.updated keeps the collections it does not carry", () => {
     let view = ready({ revision: 1, units: [unit()], logs: ["x"] })
-    view = receiveEvent(view, event("run.updated", 2, header(run({ revision: 2, status: "running", usage: usage(5, 0.5) }))))
+    view = receiveEvent(
+      view,
+      event("run.updated", 2, header(run({ revision: 2, status: "running", usage: usage(5, 0.5) }))),
+    )
     expect(view.run!.units).toHaveLength(1)
     expect(view.run!.logs).toEqual(["x"])
     expect(view.run!.usage.cost).toBe(0.5)
@@ -143,7 +151,12 @@ describe("units", () => {
   })
 
   test("unitCounts counts settled statuses", () => {
-    const counts = unitCounts([unit({ status: "succeeded" }), unit({ status: "replayed" }), unit({ status: "repairing" }), unit({ status: "failed" })])
+    const counts = unitCounts([
+      unit({ status: "succeeded" }),
+      unit({ status: "replayed" }),
+      unit({ status: "repairing" }),
+      unit({ status: "failed" }),
+    ])
     expect(counts.total).toBe(4)
     expect(counts.settled).toBe(3)
     expect(counts.repairing).toBe(1)
@@ -184,7 +197,12 @@ describe("derived figures", () => {
   })
 
   test("phaseRows groups Units and marks progress", () => {
-    const rows = phaseRows(run({ currentPhase: "rate", units: [unit({ phase: "facts" }), unit({ unitId: "u2", phase: "rate" }), unit({ unitId: "u3", phase: null })] }))
+    const rows = phaseRows(
+      run({
+        currentPhase: "rate",
+        units: [unit({ phase: "facts" }), unit({ unitId: "u2", phase: "rate" }), unit({ unitId: "u3", phase: null })],
+      }),
+    )
     expect(rows.phases.map((p) => [p.name, p.state, p.units.length])).toEqual([
       ["facts", "done", 1],
       ["rate", "current", 1],
@@ -216,7 +234,9 @@ describe("derived figures", () => {
     const list = [entry("a"), entry("b", { status: "running", live: true, waiting: true, startedAt: 5 })]
     expect(filterLibrary(list, { status: "live", search: "", location: "all" }).map((e) => e.runId)).toEqual(["b"])
     expect(filterLibrary(list, { status: "waiting", search: "", location: "all" }).map((e) => e.runId)).toEqual(["b"])
-    expect(filterLibrary(list, { status: "succeeded", search: "FAN", location: "all" }).map((e) => e.runId)).toEqual(["a"])
+    expect(filterLibrary(list, { status: "succeeded", search: "FAN", location: "all" }).map((e) => e.runId)).toEqual([
+      "a",
+    ])
     expect(filterLibrary(list, { status: "all", search: "", location: "/other" })).toEqual([])
     const merged = upsertLibraryEntry(list, entry("c", { startedAt: 9 }))
     expect(merged.map((e) => e.runId)).toEqual(["c", "b", "a"])

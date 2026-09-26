@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    ignore:
+      # Must match the zod version @opencode/plugin depends on: RPC schemas cross into OpenCode.
+      - dependency-name: zod
+      # The host provides these to the TUI bundle; keep them on the versions OpenCode ships.
+      - dependency-name: "@opentui/*"
+      - dependency-name: solid-js
+    groups:
+      minor-and-patch: { update-types: [minor, patch] }
+    commit-message: { prefix: "build(deps)" }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    commit-message: { prefix: "ci(deps)" }

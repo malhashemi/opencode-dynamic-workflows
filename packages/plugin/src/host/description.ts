@@ -3,7 +3,8 @@
  * `dynamic-workflows` skill (`skill/dynamic-workflows/SKILL.md`); these descriptions stay short and point to it.
  */
 
-const SKILL_POINTER = "Before writing a Workflow, load the `dynamic-workflows` skill: the full API, pipeline vs parallel, typed Units, questions, resume, quality patterns and worked examples."
+const SKILL_POINTER =
+  "Before writing a Workflow, load the `dynamic-workflows` skill: the full API, pipeline vs parallel, typed Units, questions, resume, quality patterns and worked examples."
 
 const CONTEXT_REFERENCE = `A Workflow is a TypeScript module: export default defineWorkflow({ meta, run }), imported from
 "@malhashemi/opencode-dynamic-workflows/workflow". meta: { name, description, whenToUse?, phases?: [{ title }], args?: zod schema,

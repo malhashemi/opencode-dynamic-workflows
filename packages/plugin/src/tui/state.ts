@@ -9,7 +9,16 @@
  * and the strip) or the full {@link Run} (`getRun`, needed to apply Unit and interaction events). Live Runs are
  * hydrated to full depth; history stays at entry depth until a view opens it.
  */
-import type { ActivityEntry, LibraryEntry, PendingInteraction, ProtocolEvent, ResolvedInteraction, Run, RunHeader, Unit } from "../protocol"
+import type {
+  ActivityEntry,
+  LibraryEntry,
+  PendingInteraction,
+  ProtocolEvent,
+  ResolvedInteraction,
+  Run,
+  RunHeader,
+  Unit,
+} from "../protocol"
 import { addUsage, emptyUsage } from "../protocol"
 import { isTerminal, toLibraryEntry } from "../runs"
 
@@ -66,9 +75,22 @@ function withSlot(state: SyncState, runId: string, slot: RunSlot): SyncState {
 }
 
 /** A fresh state from a full re-read: the library, the Runs read in full, and the `seq` it is current to. */
-export function fromSnapshot(input: { location: string; seq: number; epoch?: string; entries: readonly LibraryEntry[]; runs: readonly Run[]; previous?: SyncState }): SyncState {
+export function fromSnapshot(input: {
+  location: string
+  seq: number
+  epoch?: string
+  entries: readonly LibraryEntry[]
+  runs: readonly Run[]
+  previous?: SyncState
+}): SyncState {
   const runs: Record<string, RunSlot> = {}
-  for (const entry of input.entries) runs[entry.runId] = { entry: { ...entry, live: live(entry.status) }, run: null, snapshotRevision: 0, activity: null }
+  for (const entry of input.entries)
+    runs[entry.runId] = {
+      entry: { ...entry, live: live(entry.status) },
+      run: null,
+      snapshotRevision: 0,
+      activity: null,
+    }
   for (const run of input.runs) runs[run.runId] = slotOf(run, input.previous?.runs[run.runId]?.activity ?? null)
   // Runs a view already holds in full that the (bounded) library did not list stay available.
   for (const [runId, slot] of Object.entries(input.previous?.runs ?? {})) {
@@ -123,17 +145,27 @@ function applyToRun(run: Run, event: ProtocolEvent): Run {
     }
     case "unit.updated": {
       const units = upsertUnit(run.units, event.data as Unit)
-      return { ...run, units, usage: units.reduce((sum, unit) => addUsage(sum, unit.usage), emptyUsage()), revision: event.revision }
+      return {
+        ...run,
+        units,
+        usage: units.reduce((sum, unit) => addUsage(sum, unit.usage), emptyUsage()),
+        revision: event.revision,
+      }
     }
     case "interaction.pending": {
       const interaction = event.data as PendingInteraction
-      const interactions = [...run.interactions.filter((candidate) => candidate.interactionId !== interaction.interactionId), interaction]
+      const interactions = [
+        ...run.interactions.filter((candidate) => candidate.interactionId !== interaction.interactionId),
+        interaction,
+      ]
       return { ...run, interactions, waiting: true, revision: event.revision }
     }
     case "interaction.resolved": {
       const record = event.data as ResolvedInteraction
       const interactions = run.interactions.filter((candidate) => candidate.interactionId !== record.interactionId)
-      const resolved = run.resolved.some((candidate) => candidate.interactionId === record.interactionId) ? run.resolved : [...run.resolved, record]
+      const resolved = run.resolved.some((candidate) => candidate.interactionId === record.interactionId)
+        ? run.resolved
+        : [...run.resolved, record]
       return { ...run, interactions, resolved, waiting: interactions.length > 0, revision: event.revision }
     }
     case "activity.appended": {
@@ -160,7 +192,8 @@ export function applyEvent(state: SyncState, event: ProtocolEvent): Applied {
   }
   if (event.seq <= state.seq) {
     // A lower `seq` for a Run we have never seen means the service restarted and numbering began again.
-    if (event.type === "run.started" && !state.runs[event.runId]) return { state, effects: [{ kind: "resync", reason: "event sequence restarted" }] }
+    if (event.type === "run.started" && !state.runs[event.runId])
+      return { state, effects: [{ kind: "resync", reason: "event sequence restarted" }] }
     return { state, effects: [] }
   }
   if (event.seq > state.seq + 1) return { state, effects: [{ kind: "catchup", after: state.seq }] }
@@ -174,7 +207,15 @@ export function applyEvent(state: SyncState, event: ProtocolEvent): Applied {
     const entry = event.data as LibraryEntry
     const current = next.runs[entry.runId]
     if (current?.run) return { state: next, effects: [] }
-    return { state: withSlot(next, entry.runId, { entry: { ...entry, live: live(entry.status) }, run: null, snapshotRevision: 0, activity: current?.activity ?? null }), effects: [] }
+    return {
+      state: withSlot(next, entry.runId, {
+        entry: { ...entry, live: live(entry.status) },
+        run: null,
+        snapshotRevision: 0,
+        activity: current?.activity ?? null,
+      }),
+      effects: [],
+    }
   }
   if (event.type === "run.started") {
     const run = event.data as Run
@@ -195,15 +236,26 @@ export function applyEvent(state: SyncState, event: ProtocolEvent): Applied {
     }
     if (event.type === "activity.appended") return { state: next, effects: [] }
     const entry = event.type === "interaction.pending" ? { ...slot.entry, waiting: true } : slot.entry
-    return { state: withSlot(next, event.runId, { ...slot, entry }), effects: [{ kind: "hydrate", runId: event.runId }] }
+    return {
+      state: withSlot(next, event.runId, { ...slot, entry }),
+      effects: [{ kind: "hydrate", runId: event.runId }],
+    }
   }
 
   if (event.revision <= slot.snapshotRevision) return { state: next, effects: [] }
 
   const run = applyToRun(slot.run, event)
-  const activity = event.type === "activity.appended" && slot.activity ? [...slot.activity, event.data as ActivityEntry] : slot.activity
+  const activity =
+    event.type === "activity.appended" && slot.activity
+      ? [...slot.activity, event.data as ActivityEntry]
+      : slot.activity
   const effects: Effect[] = []
-  if (event.type === "interaction.pending" && !slot.run.interactions.some((candidate) => candidate.interactionId === (event.data as PendingInteraction).interactionId)) {
+  if (
+    event.type === "interaction.pending" &&
+    !slot.run.interactions.some(
+      (candidate) => candidate.interactionId === (event.data as PendingInteraction).interactionId,
+    )
+  ) {
     effects.push({ kind: "waiting", runId: event.runId, interaction: event.data as PendingInteraction })
   }
   if (event.type === "run.ended") effects.push({ kind: "ended", runId: event.runId })

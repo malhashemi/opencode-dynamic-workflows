@@ -17,12 +17,15 @@
 import { realpathSync, watch, type FSWatcher } from "node:fs"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
+
 import { Plugin } from "@opencode/plugin"
 import type { Context } from "@opencode/plugin/promise/plugin"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
+
 import { createBroker } from "../broker"
 import { confine } from "../capabilities"
 import { configureLimits, engineGlobal, locationSlot } from "../engine-global"
+import { ensureGateway, type GatewayHandle } from "../gateway/server"
 import type { EngineHost, HostSessionInfo } from "../host"
 import { createJournal, journalRoot, subscribeJournal } from "../journal"
 import { InvalidArgsError } from "../orchestrator"
@@ -33,7 +36,6 @@ import { createRunStore, elideEvent, isTerminal } from "../runs"
 import { parseConfig, type PluginConfig } from "../service/config"
 import { WorkflowRpc } from "../service/rpc"
 import { WorkflowService, argsSchemaOf } from "../service/service"
-import { ensureGateway, type GatewayHandle } from "../gateway/server"
 import {
   RESULT_TOOL_DESCRIPTION,
   WORKFLOW_COMMAND_TEMPLATE,
@@ -66,10 +68,13 @@ export function adaptHost(ctx: Context): EngineHost {
       interrupt: (input) => ctx.session.interrupt(input),
       get: (input) => ctx.session.get(input) as unknown as Promise<HostSessionInfo>,
     },
-    generateText: (input) => ctx.generate.text({ prompt: input.prompt, model: input.model } as never) as Promise<{ text: string }>,
+    generateText: (input) =>
+      ctx.generate.text({ prompt: input.prompt, model: input.model } as never) as Promise<{ text: string }>,
     worktree: {
       async create(name) {
-        const created = (await ctx.worktree.create({ projectID: ctx.location.project.id, name } as never)) as { directory: string }
+        const created = (await ctx.worktree.create({ projectID: ctx.location.project.id, name } as never)) as {
+          directory: string
+        }
         const directory = canonical(created.directory)
         // OpenCode checks worktrees out detached: give each its own branch so kept work can be merged by name.
         let branch = git(directory, ["rev-parse", "--abbrev-ref", "HEAD"])
@@ -107,32 +112,51 @@ function git(directory: string, args: string[]): string | null {
 
 /** The shape of the built-in `question` tool's input (2.0.16). */
 interface QuestionToolInput {
-  questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string; description?: string }>; multiple?: boolean }>
+  questions?: Array<{
+    question?: string
+    header?: string
+    options?: Array<{ label?: string; description?: string }>
+    multiple?: boolean
+  }>
 }
 
 export function toQuestions(input: QuestionToolInput): InteractionQuestion[] {
   return (input.questions ?? []).map((question) => ({
     header: question.header ?? "Question",
     prompt: question.question ?? "",
-    options: (question.options ?? []).map((option) => ({ label: option.label ?? "", description: option.description ?? "" })),
+    options: (question.options ?? []).map((option) => ({
+      label: option.label ?? "",
+      description: option.description ?? "",
+    })),
     multiple: question.multiple === true,
     custom: true,
   }))
 }
 
 function protocolErrorText(error: unknown, schema?: Record<string, unknown> | null): string {
-  if (error instanceof InvalidArgsError) return `${error.message}${schema ? `\nExpected args JSON Schema: ${JSON.stringify(schema)}` : ""}`
+  if (error instanceof InvalidArgsError)
+    return `${error.message}${schema ? `\nExpected args JSON Schema: ${JSON.stringify(schema)}` : ""}`
   if (error instanceof WorkflowProtocolError) return `workflow: ${error.message}`
   return `workflow failed: ${error instanceof Error ? error.message : String(error)}`
 }
 
 interface ServiceSlot {
   service: WorkflowService
-  replyPermission: (input: { sessionID: string; requestID: string; decision: "once" | "always" | "reject"; message?: string }) => Promise<void>
+  replyPermission: (input: {
+    sessionID: string
+    requestID: string
+    decision: "once" | "always" | "reject"
+    message?: string
+  }) => Promise<void>
   gatewayAttached: () => boolean
 }
 
-function ensureService(ctx: Context, location: string, config: PluginConfig, instance: string): { slot: ServiceSlot; fresh: boolean } {
+function ensureService(
+  ctx: Context,
+  location: string,
+  config: PluginConfig,
+  instance: string,
+): { slot: ServiceSlot; fresh: boolean } {
   const locationState = locationSlot(location)
   const existing = locationState.state.service as ServiceSlot | undefined
   if (existing) {
@@ -147,7 +171,13 @@ function ensureService(ctx: Context, location: string, config: PluginConfig, ins
       const message = `journal ${context}: ${error instanceof Error ? error.message : String(error)}`
       console.warn(`[workflow] ${message}`)
       // Visible where people look: the Run's activity. (A journal error never fails the Run itself.)
-      if (runId && store.get(runId)) store.apply({ type: "run.log", runId, value: `the run journal could not be written — ${message}`, kind: "engine" })
+      if (runId && store.get(runId))
+        store.apply({
+          type: "run.log",
+          runId,
+          value: `the run journal could not be written — ${message}`,
+          kind: "engine",
+        })
     },
   })
   subscribeJournal(store, journal)
@@ -174,7 +204,8 @@ function ensureService(ctx: Context, location: string, config: PluginConfig, ins
     },
     gatewayUrl: () => (engineGlobal().singletons.get("gateway") as GatewayHandle | undefined)?.url ?? null,
   })
-  holder.gatewayAttached = () => (engineGlobal().singletons.get("gateway") as GatewayHandle | undefined)?.attached(location) ?? false
+  holder.gatewayAttached = () =>
+    (engineGlobal().singletons.get("gateway") as GatewayHandle | undefined)?.attached(location) ?? false
   holder.replyPermission = async () => {
     throw new Error("no plugin instance is serving this location")
   }
@@ -193,7 +224,12 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   const service = slot.service
   const broker = service.deps.broker
   slot.replyPermission = async (input) => {
-    await ctx.permission.reply({ sessionID: input.sessionID, requestID: input.requestID, decision: input.decision, ...(input.message ? { message: input.message } : {}) } as never)
+    await ctx.permission.reply({
+      sessionID: input.sessionID,
+      requestID: input.requestID,
+      decision: input.decision,
+      ...(input.message ? { message: input.message } : {}),
+    } as never)
   }
   locationSlot(location).owner = instance
   let alive = true
@@ -237,13 +273,22 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     if (background) {
       if (service.deps.config.notify) {
         const sessionID = tc.sessionID
-        void started.done.then(async (outcome) => {
-          const text = notificationText(outcome.run, outcome.output?.result, link(outcome.run.runId), outcome.error)
-          // Queued: if the session is mid-turn the notice waits for the turn to end, then the model reads it.
-          await ctx.session.prompt({ sessionID, text, delivery: "queue" } as never)
-        }).catch((error: unknown) => console.warn(`[workflow] background notification failed: ${error instanceof Error ? error.message : String(error)}`))
+        void started.done
+          .then(async (outcome) => {
+            const text = notificationText(outcome.run, outcome.output?.result, link(outcome.run.runId), outcome.error)
+            // Queued: if the session is mid-turn the notice waits for the turn to end, then the model reads it.
+            await ctx.session.prompt({ sessionID, text, delivery: "queue" } as never)
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `[workflow] background notification failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          )
       }
-      return { content: startedRunText(run, link(started.runId), service.deps.config.notify), metadata: { runId: started.runId } }
+      return {
+        content: startedRunText(run, link(started.runId), service.deps.config.notify),
+        metadata: { runId: started.runId },
+      }
     }
     const stopMirror = mirrorProgress(started.runId, tc)
     try {
@@ -256,7 +301,10 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       }
       const text = finishedRunText(outcome.run, outcome.output?.result, link(started.runId), outcome.error)
       if (outcome.error?.startsWith("invalid args") && argsSchema) {
-        return { content: `${outcome.error}\nExpected args JSON Schema: ${JSON.stringify(argsSchema)}`, metadata: { runId: started.runId } }
+        return {
+          content: `${outcome.error}\nExpected args JSON Schema: ${JSON.stringify(argsSchema)}`,
+          metadata: { runId: started.runId },
+        }
       }
       return { content: text, metadata: { runId: started.runId, status: outcome.run.status } }
     } finally {
@@ -273,7 +321,8 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       }
       if (typeof input.result === "string") {
         const { run, live } = await service.getRun(input.result)
-        if (live || !isTerminal(run.status)) return { content: `That Run has not finished yet.\n\n${statusText(run, live, link(run.runId))}` }
+        if (live || !isTerminal(run.status))
+          return { content: `That Run has not finished yet.\n\n${statusText(run, live, link(run.runId))}` }
         const { result } = await service.getResult(input.result)
         return { content: finishedRunText(run, result, link(run.runId)), metadata: { runId: run.runId } }
       }
@@ -281,30 +330,54 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         service.stopRun(input.stop)
         return { content: `Stopping run ${input.stop}.` }
       }
-      const resumeTarget = typeof input.resume === "string" ? input.resume : typeof input.resumeFromRunId === "string" ? input.resumeFromRunId : undefined
+      const resumeTarget =
+        typeof input.resume === "string"
+          ? input.resume
+          : typeof input.resumeFromRunId === "string"
+            ? input.resumeFromRunId
+            : undefined
       if (resumeTarget) {
         const resumeId = resumeTarget
-        return runForeground(() => service.resumeRun(resumeId, true, { surface: "the workflow tool" }), tc, input.background === true)
+        return runForeground(
+          () => service.resumeRun(resumeId, true, { surface: "the workflow tool" }),
+          tc,
+          input.background === true,
+        )
       }
       if (typeof input.save_run === "string") {
         const saved = await service.saveRun(input.save_run)
-        return { content: `Saved as durable Workflow "${saved.key}" at ${saved.path}. Run it with workflow({ name: "${saved.key}", args }).` }
+        return {
+          content: `Saved as durable Workflow "${saved.key}" at ${saved.path}. Run it with workflow({ name: "${saved.key}", args }).`,
+        }
       }
       if (typeof input.name === "string") {
         const name = input.name
         const listing = await service.listWorkflows()
         const schema = listing.workflows.find((entry) => entry.key === name)?.args ?? null
         return runForeground(
-          () => service.startRun({ name, args: input.args, parentSessionID: tc.sessionID }, { background: input.background === true, ...(input.background === true ? {} : { signal: tc.signal }), surface: "the workflow tool" }),
+          () =>
+            service.startRun(
+              { name, args: input.args, parentSessionID: tc.sessionID },
+              {
+                background: input.background === true,
+                ...(input.background === true ? {} : { signal: tc.signal }),
+                surface: "the workflow tool",
+              },
+            ),
           tc,
           input.background === true,
           schema,
         )
       }
       if (typeof input.source === "string") {
-        return { content: "Inline source runs through the `workflow_inline` tool. Call workflow_inline({ source, args })." }
+        return {
+          content: "Inline source runs through the `workflow_inline` tool. Call workflow_inline({ source, args }).",
+        }
       }
-      return { content: "Provide one of: list, name (+ args), status, result, stop, resume, save_run. Inline source goes to workflow_inline." }
+      return {
+        content:
+          "Provide one of: list, name (+ args), status, result, stop, resume, save_run. Inline source goes to workflow_inline.",
+      }
     } catch (error) {
       return { content: protocolErrorText(error) }
     }
@@ -316,20 +389,36 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       try {
         source = await readFile(confine(location, input.scriptPath), "utf8")
       } catch (error) {
-        return { content: `workflow_inline could not read scriptPath: ${error instanceof Error ? error.message : String(error)}` }
+        return {
+          content: `workflow_inline could not read scriptPath: ${error instanceof Error ? error.message : String(error)}`,
+        }
       }
     }
-    if (!source) return { content: "workflow_inline needs `source` (or `scriptPath`): a module that default-exports defineWorkflow({ meta, run })." }
+    if (!source)
+      return {
+        content:
+          "workflow_inline needs `source` (or `scriptPath`): a module that default-exports defineWorkflow({ meta, run }).",
+      }
     try {
       if (typeof input.save === "string") {
         const saved = await service.promote(source, input.save)
-        return { content: `Saved as durable Workflow "${saved.key}" at ${saved.path}. Run it with workflow({ name: "${saved.key}", args }).` }
+        return {
+          content: `Saved as durable Workflow "${saved.key}" at ${saved.path}. Run it with workflow({ name: "${saved.key}", args }).`,
+        }
       }
     } catch (error) {
       return { content: protocolErrorText(error) }
     }
     return runForeground(
-      () => service.startRun({ source, args: input.args, parentSessionID: tc.sessionID }, { background: input.background === true, ...(input.background === true ? {} : { signal: tc.signal }), surface: "workflow_inline" }),
+      () =>
+        service.startRun(
+          { source, args: input.args, parentSessionID: tc.sessionID },
+          {
+            background: input.background === true,
+            ...(input.background === true ? {} : { signal: tc.signal }),
+            surface: "workflow_inline",
+          },
+        ),
       tc,
       input.background === true,
     )
@@ -366,10 +455,16 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         type: "object",
         properties: {
           source: { type: "string", description: "TypeScript module: export default defineWorkflow({ meta, run })." },
-          scriptPath: { type: "string", description: "Instead of `source`: a project file holding the module (still approved as inline)." },
+          scriptPath: {
+            type: "string",
+            description: "Instead of `source`: a project file holding the module (still approved as inline).",
+          },
           args: { description: "JSON value passed to the Workflow as `args`." },
           background: { type: "boolean", description: "Return at once with the runId instead of waiting." },
-          save: { type: "string", description: "Save the source as .opencode/workflows/<save>.ts instead of running it." },
+          save: {
+            type: "string",
+            description: "Save the source as .opencode/workflows/<save>.ts instead of running it.",
+          },
         },
         additionalProperties: false,
       },
@@ -383,7 +478,8 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
       options: { codemode: false },
       execute: async (input, tc) => {
         const outcome = units.submit(tc.sessionID, input)
-        if (!outcome.ok) throw new Error(`Invalid result. Fix these fields and call workflow_result again: ${outcome.error}`)
+        if (!outcome.ok)
+          throw new Error(`Invalid result. Fix these fields and call workflow_result again: ${outcome.error}`)
         return { content: "Result recorded. Your work is complete — reply with one short confirmation." }
       },
     })
@@ -417,7 +513,9 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     if (event.tool !== "question" || event.status !== "error" || !units.get(event.sessionID)) return
     if (/declared output/i.test(event.error.message)) {
       questionWrapperEnabled = false
-      console.warn("[workflow] the question-tool wrapper was rejected by this OpenCode version; Unit questions now use native forms")
+      console.warn(
+        "[workflow] the question-tool wrapper was rejected by this OpenCode version; Unit questions now use native forms",
+      )
     }
   })
 
@@ -435,7 +533,10 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     if (binding.steps > binding.maxSteps) binding.onStepLimit()
     if (binding.schema && binding.jsonSchema && event.tools.workflow_result) {
       event.tools.workflow_result = { description: RESULT_TOOL_DESCRIPTION, input: binding.jsonSchema as never }
-      event.system.push({ type: "text", text: binding.repairing ? RESULT_INSTRUCTION_REPAIR : RESULT_INSTRUCTION } as never)
+      event.system.push({
+        type: "text",
+        text: binding.repairing ? RESULT_INSTRUCTION_REPAIR : RESULT_INSTRUCTION,
+      } as never)
     } else if (!binding.schema) {
       delete event.tools.workflow_result
     }
@@ -497,7 +598,18 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         } else if (event.type === "permission.replied") {
           broker.permissionResolved(String(data.requestID), typeof data.reply === "string" ? data.reply : undefined)
         } else if (event.type === "form.created") {
-          const form = data.form as { id?: string; sessionID?: string; fields?: Array<{ key?: string; title?: string; description?: string; options?: Array<{ label?: string; value?: string; description?: string }> }> } | undefined
+          const form = data.form as
+            | {
+                id?: string
+                sessionID?: string
+                fields?: Array<{
+                  key?: string
+                  title?: string
+                  description?: string
+                  options?: Array<{ label?: string; value?: string; description?: string }>
+                }>
+              }
+            | undefined
           const binding = form?.sessionID ? units.get(form.sessionID) : undefined
           if (!form?.id || !binding || binding.location !== location) continue
           broker.form({
@@ -508,14 +620,22 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
             questions: (form.fields ?? []).map((field) => ({
               header: field.title ?? field.key ?? "Question",
               prompt: field.description ?? field.title ?? "",
-              options: (field.options ?? []).map((option) => ({ label: option.label ?? option.value ?? "", description: option.description ?? "" })),
+              options: (field.options ?? []).map((option) => ({
+                label: option.label ?? option.value ?? "",
+                description: option.description ?? "",
+              })),
               multiple: false,
               custom: true,
             })),
           })
         } else if (event.type === "form.replied" || event.type === "form.cancelled") {
           const answer = data.answer as Record<string, unknown> | undefined
-          broker.formResolved(String(data.id), answer ? Object.values(answer).map((value) => (Array.isArray(value) ? value.map(String) : [String(value)])) : null)
+          broker.formResolved(
+            String(data.id),
+            answer
+              ? Object.values(answer).map((value) => (Array.isArray(value) ? value.map(String) : [String(value)]))
+              : null,
+          )
         }
       }
     } catch {
@@ -527,12 +647,17 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   // RPC
   // --------------------------------------------------------------------------------------------------------------
 
-  const guard = async <T>(fail: (type: "workflow", message: string, data: never) => never, work: () => Promise<T> | T): Promise<T> => {
+  const guard = async <T>(
+    fail: (type: "workflow", message: string, data: never) => never,
+    work: () => Promise<T> | T,
+  ): Promise<T> => {
     try {
       return await work()
     } catch (error) {
       const protocol =
-        error instanceof WorkflowProtocolError ? error : new WorkflowProtocolError("internal", error instanceof Error ? error.message : String(error))
+        error instanceof WorkflowProtocolError
+          ? error
+          : new WorkflowProtocolError("internal", error instanceof Error ? error.message : String(error))
       return fail("workflow", protocol.message, protocol.toJSON() as never)
     }
   }
@@ -541,10 +666,12 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     info: (_input, c) => guard(c.error as never, () => service.info()),
     listRuns: (input, c) => guard(c.error as never, async () => ({ runs: await service.listRuns(input) })),
     getRun: (input, c) => guard(c.error as never, () => service.getRun(input.runId)),
-    getUnit: (input, c) => guard(c.error as never, async () => ({ unit: await service.getUnit(input.runId, input.unitId) })),
+    getUnit: (input, c) =>
+      guard(c.error as never, async () => ({ unit: await service.getUnit(input.runId, input.unitId) })),
     getResult: (input, c) => guard(c.error as never, () => service.getResult(input.runId)),
     getTranscript: (input, c) => guard(c.error as never, () => service.getTranscript(input.runId, input.unitId)),
-    getActivity: (input, c) => guard(c.error as never, async () => ({ entries: await service.getActivity(input.runId) })),
+    getActivity: (input, c) =>
+      guard(c.error as never, async () => ({ entries: await service.getActivity(input.runId) })),
     listWorkflows: (_input, c) => guard(c.error as never, () => service.listWorkflows()),
     startRun: (input, c) =>
       guard(c.error as never, async () => {
@@ -552,23 +679,46 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         return { runId: started.runId }
       }),
     stopRun: (input, c) => guard(c.error as never, () => (service.stopRun(input.runId), { ok: true as const })),
-    stopUnit: (input, c) => guard(c.error as never, () => (service.stopUnit(input.runId, input.unitId), { ok: true as const })),
-    restartUnit: (input, c) => guard(c.error as never, async () => (await service.restartUnit(input.runId, input.unitId), { ok: true as const })),
+    stopUnit: (input, c) =>
+      guard(c.error as never, () => (service.stopUnit(input.runId, input.unitId), { ok: true as const })),
+    restartUnit: (input, c) =>
+      guard(
+        c.error as never,
+        async () => (await service.restartUnit(input.runId, input.unitId), { ok: true as const }),
+      ),
     resumeRun: (input, c) =>
-      guard(c.error as never, async () => ({ runId: (await service.resumeRun(input.runId, input.rerunFailed ?? true, { background: true, surface: "the TUI" })).runId })),
+      guard(c.error as never, async () => ({
+        runId: (
+          await service.resumeRun(input.runId, input.rerunFailed ?? true, { background: true, surface: "the TUI" })
+        ).runId,
+      })),
     replyInteraction: (input, c) =>
-      guard(c.error as never, async () => (await service.replyInteraction(input.runId, input.interactionId, input.answers), { ok: true as const })),
+      guard(
+        c.error as never,
+        async () => (
+          await service.replyInteraction(input.runId, input.interactionId, input.answers),
+          { ok: true as const }
+        ),
+      ),
     cancelInteraction: (input, c) =>
-      guard(c.error as never, async () => (await service.cancelInteraction(input.runId, input.interactionId), { ok: true as const })),
+      guard(
+        c.error as never,
+        async () => (await service.cancelInteraction(input.runId, input.interactionId), { ok: true as const }),
+      ),
     saveRun: (input, c) => guard(c.error as never, () => service.saveRun(input.runId, input.name)),
     cleanupRun: (input, c) => guard(c.error as never, () => service.cleanupRun(input.runId, input.deleted ?? [])),
-    attach: (input, c) => guard(c.error as never, () => (service.attach(input.surface, input.ttlMs, input.sessionID), { ok: true as const })),
+    attach: (input, c) =>
+      guard(
+        c.error as never,
+        () => (service.attach(input.surface, input.ttlMs, input.sessionID), { ok: true as const }),
+      ),
     detach: (input, c) => guard(c.error as never, () => (service.detach(input.surface), { ok: true as const })),
     eventsSince: (input, c) => guard(c.error as never, () => service.eventsSince(input.after ?? 0, input.epoch)),
     pair: (_input, c) =>
       guard(c.error as never, () => {
         const current = engineGlobal().singletons.get("gateway") as GatewayHandle | undefined
-        if (!current) throw new WorkflowProtocolError("unsupported", "The Gateway is not running (gateway.enabled: false).")
+        if (!current)
+          throw new WorkflowProtocolError("unsupported", "The Gateway is not running (gateway.enabled: false).")
         return current.createPairingCode()
       }),
   })
@@ -603,20 +753,30 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     }
   }
   await refreshCommands()
-  const promptWith = (template: string) => async (invocation: { sessionID: string; prompt: { text: string }; delivery: "steer" | "queue" }) => {
-    await ctx.session.prompt({
-      ...(invocation.prompt as object),
-      sessionID: invocation.sessionID,
-      text: template.replaceAll("$ARGUMENTS", invocation.prompt.text ?? ""),
-      delivery: invocation.delivery,
-    } as never)
-  }
+  const promptWith =
+    (template: string) =>
+    async (invocation: { sessionID: string; prompt: { text: string }; delivery: "steer" | "queue" }) => {
+      await ctx.session.prompt({
+        ...(invocation.prompt as object),
+        sessionID: invocation.sessionID,
+        text: template.replaceAll("$ARGUMENTS", invocation.prompt.text ?? ""),
+        delivery: invocation.delivery,
+      } as never)
+    }
   await ctx.command.transform((editor) => {
-    editor.add({ name: "workflow", description: "Run a durable Workflow by key: /workflow <key> <request>", execute: promptWith(WORKFLOW_COMMAND_TEMPLATE) as never })
+    editor.add({
+      name: "workflow",
+      description: "Run a durable Workflow by key: /workflow <key> <request>",
+      execute: promptWith(WORKFLOW_COMMAND_TEMPLATE) as never,
+    })
     const reserved = new Set(["workflow", "workflows"])
     for (const command of commands) {
       if (reserved.has(command.name)) continue
-      editor.add({ name: command.name, description: command.description, execute: promptWith(command.template) as never })
+      editor.add({
+        name: command.name,
+        description: command.description,
+        execute: promptWith(command.template) as never,
+      })
     }
   })
 
@@ -625,7 +785,9 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   const scheduleReload = () => {
     if (reloadTimer) clearTimeout(reloadTimer)
     reloadTimer = setTimeout(() => {
-      void refreshCommands().then(() => (alive ? ctx.command.reload() : undefined)).catch(() => {})
+      void refreshCommands()
+        .then(() => (alive ? ctx.command.reload() : undefined))
+        .catch(() => {})
     }, 300)
   }
   for (const scope of configDirs(location)) {
@@ -647,10 +809,12 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   // Gateway
   // --------------------------------------------------------------------------------------------------------------
 
-  const gateway = config.gateway.enabled ? await ensureGateway(config.gateway).catch((error: unknown) => {
-    console.warn(`[workflow] gateway did not start: ${error instanceof Error ? error.message : String(error)}`)
-    return null
-  }) : null
+  const gateway = config.gateway.enabled
+    ? await ensureGateway(config.gateway).catch((error: unknown) => {
+        console.warn(`[workflow] gateway did not start: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      })
+    : null
   const unregisterGateway = gateway?.register(location, service) ?? (() => {})
 
   return async () => {

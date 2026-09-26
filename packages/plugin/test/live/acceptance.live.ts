@@ -12,6 +12,7 @@ import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
 import { drive, PLUGIN_PATH, startLive, toolOutput, until, type LiveServer } from "./harness"
 
 const ACCEPT = `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
@@ -64,17 +65,24 @@ describe("acceptance: installed package", () => {
 
   test("a durable Run: headless ask fallback, typed Unit, capability", async () => {
     const { runId } = (await server.workflow.startRun({ name: "accept", args: { n: 41 } })) as any
-    const run = await until(async () => {
-      const { run: current } = (await server.workflow.getRun({ runId })) as any
-      return current.status !== "running" && current.status !== "queued" ? current : undefined
-    }, 180_000, 500)
+    const run = await until(
+      async () => {
+        const { run: current } = (await server.workflow.getRun({ runId })) as any
+        return current.status !== "running" && current.status !== "queued" ? current : undefined
+      },
+      180_000,
+      500,
+    )
     expect(run.status).toBe("succeeded")
     const { result } = (await server.workflow.getResult({ runId })) as any
     expect(result).toEqual({ mode: "B", total: 42, shell: "ok" })
   }, 240_000)
 
   test("the model runs it through the tool and gets a working web link", async () => {
-    const { messages } = await drive(server, 'Call the workflow tool with {"name":"accept","args":{"n":1}}. Then reply with its summary line only.')
+    const { messages } = await drive(
+      server,
+      'Call the workflow tool with {"name":"accept","args":{"n":1}}. Then reply with its summary line only.',
+    )
     const output = toolOutput(messages, "workflow") ?? ""
     expect(output).toContain("accept · succeeded")
     const link = output.match(/http:\/\/127\.0\.0\.1:\d+\/runs\/[0-9a-f-]{36}/)?.[0]
@@ -84,12 +92,17 @@ describe("acceptance: installed package", () => {
     expect(await page.text()).toContain("<script")
   }, 240_000)
   test("the installed package (installed when the location booted) carries the built TUI and web app", async () => {
-    const found = await Array.fromAsync(new Bun.Glob("**/opencode-dynamic-workflows/package.json").scan({ cwd: path.join(server.root, "cache"), dot: true, absolute: true }))
+    const found = await Array.fromAsync(
+      new Bun.Glob("**/opencode-dynamic-workflows/package.json").scan({
+        cwd: path.join(server.root, "cache"),
+        dot: true,
+        absolute: true,
+      }),
+    )
     expect(found.length).toBeGreaterThan(0)
     const pkg = path.dirname(found[0]!)
     expect(existsSync(path.join(pkg, "dist", "tui.js"))).toBe(true)
     expect(existsSync(path.join(pkg, "dist", "web", "index.html"))).toBe(true)
     expect(existsSync(path.join(pkg, "docs", "protocol", "README.md"))).toBe(true)
   })
-
 })

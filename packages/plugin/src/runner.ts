@@ -5,17 +5,17 @@
  *
  * Decisions carried from the P0 spikes:
  *
- * - The Unit is an ordinary, unlinked session (D1). Its identity goes in `metadata.workflow` at create time —
+ * - The Unit is an ordinary, unlinked session. Its identity goes in `metadata.workflow` at create time —
  *   the plugin cannot update metadata later — and in the process-wide Unit index.
  * - `prompt` only admits; `wait` resolves when the session settles. Stopping a Unit is `interrupt`.
  * - Typed results come from the plugin-owned `workflow_result` tool (validated in the tool itself, so the model
  *   can correct itself within the same turn). If the model answers in text instead, the JSON in that text is
  *   tried next, then a short repair turn in the SAME session, then — last — an extraction call. Every attempt
  *   is recorded, and every turn stays visible in the Unit's transcript.
- * - The runner never throws: a failed Unit is a value (error model D9), recorded by the context in `ctx.errors`.
+ * - The runner never throws: a failed Unit is a value, recorded by the context in `ctx.errors`.
  */
 import type { z } from "zod"
-import { addUsage, emptyUsage, type ResultPath, type UnitAttempt, type Usage } from "./protocol"
+
 import {
   finalAssistant,
   type EngineHost,
@@ -23,6 +23,7 @@ import {
   type HostPermissionRule,
   type HostSessionInfo,
 } from "./host"
+import { addUsage, emptyUsage, type ResultPath, type UnitAttempt, type Usage } from "./protocol"
 import { modelJsonSchema } from "./schema-bridge"
 import { formatIssues, type UnitBinding, type UnitIndex } from "./units"
 
@@ -206,7 +207,7 @@ export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec
   try {
     return await runUnitUnsafe(host, index, spec, trace)
   } catch (error) {
-    // The contract is "never throws": a failed Unit is a value (D9). This is the backstop for host surprises:
+    // The contract is "never throws": a failed Unit is a value. This is the backstop for host surprises:
     // unbind the Unit, stop its session, and report what is known about it.
     trace.release?.()
     let usage = emptyUsage()
@@ -231,7 +232,12 @@ export async function runUnit(host: EngineHost, index: UnitIndex, spec: UnitSpec
   }
 }
 
-async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec, trace: UnitTrace): Promise<UnitRunResult> {
+async function runUnitUnsafe(
+  host: EngineHost,
+  index: UnitIndex,
+  spec: UnitSpec,
+  trace: UnitTrace,
+): Promise<UnitRunResult> {
   const attempts = trace.attempts
   let sessionID: string | null = null
   let model: HostModelRef | undefined = spec.model
@@ -258,8 +264,13 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
   // The Unit's deadline and stop signals start before its session exists: a slow create is part of the Unit.
   const stop = new AbortController()
   const stepLimit = new AbortController()
-  const timeout = spec.timeoutMs && Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0 ? AbortSignal.timeout(spec.timeoutMs) : undefined
-  const guards = [spec.signal, stop.signal, stepLimit.signal, timeout].filter((signal): signal is AbortSignal => !!signal)
+  const timeout =
+    spec.timeoutMs && Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0
+      ? AbortSignal.timeout(spec.timeoutMs)
+      : undefined
+  const guards = [spec.signal, stop.signal, stepLimit.signal, timeout].filter(
+    (signal): signal is AbortSignal => !!signal,
+  )
   const guard = AbortSignal.any(guards)
 
   const reason = (): Interrupted =>
@@ -271,29 +282,33 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
 
   let info: HostSessionInfo
   try {
-    const creating = Promise.resolve(host.session.create({
-          title: unitTitle(spec.workflow, spec.label, spec.subagent),
-          agent: spec.subagent,
-          ...(spec.model ? { model: spec.model } : {}),
-          metadata: {
-            workflow: {
-              protocol: 1,
-              runId: spec.runId,
-              unitId: spec.unitId,
-              ordinal: spec.ordinal,
-              attempt: 1,
-              parentSessionID: spec.parentSessionID,
-              workflow: spec.workflow,
-              location: spec.location,
-            },
+    const creating = Promise.resolve(
+      host.session.create({
+        title: unitTitle(spec.workflow, spec.label, spec.subagent),
+        agent: spec.subagent,
+        ...(spec.model ? { model: spec.model } : {}),
+        metadata: {
+          workflow: {
+            protocol: 1,
+            runId: spec.runId,
+            unitId: spec.unitId,
+            ordinal: spec.ordinal,
+            attempt: 1,
+            parentSessionID: spec.parentSessionID,
+            workflow: spec.workflow,
+            location: spec.location,
           },
-          permissions: [...(spec.permissions ?? []), ...ENGINE_UNIT_RULES],
-          ...(spec.unitLocation ? { location: { directory: spec.unitLocation } } : {}),
-        }))
+        },
+        permissions: [...(spec.permissions ?? []), ...ENGINE_UNIT_RULES],
+        ...(spec.unitLocation ? { location: { directory: spec.unitLocation } } : {}),
+      }),
+    )
     const created = await Promise.race([creating.then((value) => ({ value })), aborted.then((why) => ({ why }))])
     if ("why" in created) {
       // Stopped while OpenCode was still creating it: stop that session whenever it appears.
-      void creating.then((late) => (late.id ? host.session.interrupt({ sessionID: late.id }) : undefined)).catch(() => {})
+      void creating
+        .then((late) => (late.id ? host.session.interrupt({ sessionID: late.id }) : undefined))
+        .catch(() => {})
       return fail(interruptedBeforeSession(created.why), created.why === "stopped" || created.why === "aborted")
     }
     info = created.value
@@ -331,7 +346,6 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
   }
   model = info.model ?? model
   spec.onSession?.(sessionID, () => stop.abort(), model)
-
 
   /** Stop the session and give it a bounded moment to go quiet, so its usage is final and no work outlives the Unit. */
   const halt = async (id: string) => {
@@ -438,7 +452,12 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
     for (let turn = 0; turn <= retries; turn++) {
       if (turn > 0) {
         const spent = await overBudget()
-        if (spent) return fail(`budget exhausted before repair turn ${turn}: ${lastError ?? "workflow_result was not called"}`, false, spent)
+        if (spent)
+          return fail(
+            `budget exhausted before repair turn ${turn}: ${lastError ?? "workflow_result was not called"}`,
+            false,
+            spent,
+          )
       }
       binding.turnActive = true
       const admitted = await admit(sessionID, text)
@@ -483,7 +502,8 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
       model = final.model ?? model
       lastText = final.text ?? lastText
       // Stopped while the turn was being read: the stop wins over the answer.
-      if (guard.aborted) return fail(interruptedMessage(reason()), reason() === "stopped" || reason() === "aborted", await readUsage())
+      if (guard.aborted)
+        return fail(interruptedMessage(reason()), reason() === "stopped" || reason() === "aborted", await readUsage())
 
       if (!spec.schema) {
         if (final.text !== undefined) {
@@ -492,7 +512,15 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
         }
         if (binding.result) {
           attempts.push({ turn, path: "tool", ok: true })
-          return { ok: true, value: binding.result.value, sessionID, usage: await readUsage(), model, path: "tool", attempts }
+          return {
+            ok: true,
+            value: binding.result.value,
+            sessionID,
+            usage: await readUsage(),
+            model,
+            path: "tool",
+            attempts,
+          }
         }
         attempts.push({ turn, path: "text", ok: false, error: final.error ?? "no assistant text" })
         return fail(final.error ?? "the Unit produced no assistant text", false, await readUsage())
@@ -501,7 +529,15 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
       // Typed Unit: the tool result first.
       if (binding.result) {
         attempts.push({ turn, path: "tool", ok: true })
-        return { ok: true, value: binding.result.value, sessionID, usage: await readUsage(), model, path: "tool", attempts }
+        return {
+          ok: true,
+          value: binding.result.value,
+          sessionID,
+          usage: await readUsage(),
+          model,
+          path: "tool",
+          attempts,
+        }
       }
       attempts.push({ turn, path: "tool", ok: false, error: binding.lastError ?? "workflow_result was not called" })
 
@@ -512,7 +548,15 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
           const valid = spec.schema.safeParse(parsed.value)
           if (valid.success) {
             attempts.push({ turn, path: "text-json", ok: true })
-            return { ok: true, value: valid.data, sessionID, usage: await readUsage(), model, path: "text-json", attempts }
+            return {
+              ok: true,
+              value: valid.data,
+              sessionID,
+              usage: await readUsage(),
+              model,
+              path: "text-json",
+              attempts,
+            }
           }
           lastError = formatIssues(valid.error)
           attempts.push({ turn, path: "text-json", ok: false, error: lastError })
@@ -533,7 +577,11 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
     // Last resort: extract JSON from the final reply with a plain generation call.
     const spentBeforeExtract = lastText && host.generateText && model ? await overBudget() : null
     if (spentBeforeExtract) {
-      return fail(`budget exhausted before extraction: ${lastError ?? "workflow_result was never called"}`, false, spentBeforeExtract)
+      return fail(
+        `budget exhausted before extraction: ${lastError ?? "workflow_result was never called"}`,
+        false,
+        spentBeforeExtract,
+      )
     }
     if (lastText && host.generateText && model) {
       try {
@@ -544,14 +592,27 @@ async function runUnitUnsafe(host: EngineHost, index: UnitIndex, spec: UnitSpec,
           Promise.resolve(host.generateText({ model, prompt })).then((value) => ({ value })),
           aborted.then((why) => ({ why })),
         ])
-        if ("why" in extracting) return fail(interruptedMessage(extracting.why), extracting.why === "stopped" || extracting.why === "aborted", await readUsage())
+        if ("why" in extracting)
+          return fail(
+            interruptedMessage(extracting.why),
+            extracting.why === "stopped" || extracting.why === "aborted",
+            await readUsage(),
+          )
         const generated = extracting.value
         // The host reports no usage for this call; count an estimate so budgets and totals are not blind to it.
-        extra = addUsage(extra, { ...emptyUsage(), tokens: { ...emptyUsage().tokens, input: estimateTokens(prompt), output: estimateTokens(generated.text) } })
+        extra = addUsage(extra, {
+          ...emptyUsage(),
+          tokens: { ...emptyUsage().tokens, input: estimateTokens(prompt), output: estimateTokens(generated.text) },
+        })
         const parsed = parseJsonFromText(generated.text)
         const valid = parsed.ok ? spec.schema!.safeParse(parsed.value) : undefined
         if (valid?.success) {
-          attempts.push({ turn: attempts.length, path: "extract", ok: true, note: "usage estimated (the host reports none for extraction)" })
+          attempts.push({
+            turn: attempts.length,
+            path: "extract",
+            ok: true,
+            note: "usage estimated (the host reports none for extraction)",
+          })
           return { ok: true, value: valid.data, sessionID, usage: await readUsage(), model, path: "extract", attempts }
         }
         attempts.push({

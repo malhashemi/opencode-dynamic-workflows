@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import { EventHub } from "../src/hub"
 import type { SseOptions } from "../src/sse"
 
@@ -13,11 +14,18 @@ function setup() {
   )
   const events: number[] = []
   const resyncs: string[] = []
-  hub.listen({ event: (event) => events.push(event.seq), resync: (location, reason) => resyncs.push(`${location}:${reason}`) })
+  hub.listen({
+    event: (event) => events.push(event.seq),
+    resync: (location, reason) => resyncs.push(`${location}:${reason}`),
+  })
   hub.ensure("/p")
   hub.ensure("/p")
   const send = (seq: number, type = "unit.updated", data: unknown = {}) =>
-    connections[0]!.onMessage({ id: String(seq), event: type, data: JSON.stringify({ protocol: 1, seq, time: 0, location: "/p", runId: "r", type, revision: seq, data }) })
+    connections[0]!.onMessage({
+      id: String(seq),
+      event: type,
+      data: JSON.stringify({ protocol: 1, seq, time: 0, location: "/p", runId: "r", type, revision: seq, data }),
+    })
   return { hub, connections, events, resyncs, send }
 }
 

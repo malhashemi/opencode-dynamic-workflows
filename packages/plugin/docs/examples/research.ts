@@ -37,14 +37,23 @@ export default defineWorkflow({
     phase("research")
     const notes = collect(
       await parallel(
-        plan.subQuestions.map((q, i) => () => agent(`Research and answer concisely, citing files or URLs:\n${q}`, { label: `q${i + 1}`, subagent: "explore" })),
+        plan.subQuestions.map(
+          (q, i) => () =>
+            agent(`Research and answer concisely, citing files or URLs:\n${q}`, {
+              label: `q${i + 1}`,
+              subagent: "explore",
+            }),
+        ),
       ),
     )
 
     phase("synthesis")
-    const answer = await agent(`Question: ${args.question}\n\nNotes:\n${notes.join("\n\n---\n\n")}\n\nWrite one clear answer.`, {
-      label: "synthesis",
-    })
+    const answer = await agent(
+      `Question: ${args.question}\n\nNotes:\n${notes.join("\n\n---\n\n")}\n\nWrite one clear answer.`,
+      {
+        label: "synthesis",
+      },
+    )
     return { answer, subQuestions: plan.subQuestions, tokens: budget.spent() }
   },
 })

@@ -1,17 +1,15 @@
 /**
- * `@malhashemi/opencode-dynamic-workflows/workflow` — the author-facing surface (the legacy `@opencode-ai/workflow` import
- * still resolves: the engine rewrites it when it loads a Workflow).
+ * `@malhashemi/opencode-dynamic-workflows/workflow` — the author-facing surface.
  *
  * A Workflow is a TypeScript module that exports `defineWorkflow({ meta, run })`. Authors import
  * `defineWorkflow` and `z` from here; the plugin engine injects a live {@link WorkflowContext} at run time.
  *
- * This package is intentionally thin and dependency-light (just `zod`): it is what BOTH durable workflow
- * files (`.opencode/workflows/*.ts`) and inline ad-hoc temp modules import, so it must resolve everywhere a
- * Workflow runs. The orchestration primitives themselves live in the plugin engine, not here.
+ * This module is intentionally thin (just `zod`): durable Workflow files (`.opencode/workflows/*.ts`) and inline
+ * modules both import it, and the loader points that import at the plugin's own copy, so authors and the engine
+ * share one module (and one zod). The orchestration primitives live in the plugin engine, not here.
  *
- * We re-export the **zod 4** API (`zod/v4`, shipped inside the same `zod` dependency) rather than the legacy
- * v3 default, because v4 carries a built-in `z.toJSONSchema` — the engine's Schema-bridge needs it to turn an
- * author's `schema` into the native `format:{json_schema}` request, with no extra dependency.
+ * `z` is zod 4: its built-in `z.toJSONSchema` is how a Unit's `schema` becomes the input of its `workflow_result`
+ * tool.
  */
 import { z } from "zod"
 
@@ -61,34 +59,20 @@ export interface WorkflowMeta<S extends z.ZodType = z.ZodType> {
    * as the schema's inferred type. Omit it for an untyped/unchecked `args` (`ctx.args` is then `unknown`).
    */
   args?: S
-  /** How this Workflow's interactions are routed between a human and the engine's automation. */
+  /** How this Workflow's questions and permission requests are handled. */
   interaction?: InteractionPolicy
 }
 
-/**
- * How a Run's interactions are routed — per Workflow, overriding the engine's defaults.
- *
- * The engine's default is human-first: when a surface is attached, a nested Question is published and left for
- * a person indefinitely; with nobody attached, or once an opt-in {@link InteractionPolicy.graceMs} expires, the
- * watcher's proxy → escalate → reject ladder runs exactly as it does headlessly.
- */
+/** How a Run's interactions are handled — per Workflow, overriding the engine's defaults. */
 export interface InteractionPolicy {
-  /**
-   * - `human` — publish and wait for the grace, then hand back to automation (the default).
-   * - `proxy` — never wait for a person; run the automation ladder immediately, as a headless Run does.
-   * - `proxy-then-human` — same as `proxy`, but a question the proxy cannot ground is offered to a human
-   *   for the grace period before it is rejected.
-   */
-  questions?: "human" | "proxy" | "proxy-then-human"
   /**
    * What happens when a Unit's tool call hits an `ask` permission rule:
    * - `ask` (default) — with a surface attached, a person decides (TUI panel, web app); headless, it is denied
    *   with a message the Unit can act on. Never hangs a headless Run.
    * - `auto` — allowed once, silently (opt-in; prefer explicit `meta.permissions` rules).
    * - `deny` — always denied with a message.
-   * `human` is accepted as a legacy alias of `ask`.
    */
-  permissions?: "ask" | "auto" | "deny" | "human"
+  permissions?: "ask" | "auto" | "deny"
   /**
    * How long a human has before automation takes an interaction back — **opt-in, with no default**.
    *
@@ -111,7 +95,7 @@ export interface PermissionRule {
   effect: "allow" | "deny" | "ask"
 }
 
-/** A plain JSON Schema object, accepted wherever a zod schema is (D7 alias). */
+/** A plain JSON Schema object, accepted wherever a zod schema is. */
 export type JsonSchemaInput = { type?: unknown; [key: string]: unknown }
 
 /** One question a script asks. The same shape the host uses, so both origins render through one pane. */
@@ -234,7 +218,7 @@ export type AgentFn = <S extends z.ZodType | JsonSchemaInput | undefined = undef
   opts?: AgentOpts<S>,
 ) => Promise<(S extends z.ZodType ? z.infer<S> : S extends undefined ? string : unknown) | null>
 
-/** A dropped Unit, surfaced via {@link WorkflowContext.errors} (error model D9 — no silent drops). */
+/** A dropped Unit, surfaced via {@link WorkflowContext.errors} (no silent drops). */
 export interface WorkflowError {
   /** Human-facing identifier of the Unit that dropped: its `label`, else the resolved subagent name. */
   unit: string
@@ -265,7 +249,7 @@ export type CollectFn = <T>(xs: Array<T | null>) => T[]
 /**
  * One {@link PipelineFn} stage. Receives the running value (`prev` — the previous stage's result, or the
  * original item for stage 1), the original `item`, and its `index`. Returns the next running value (sync or
- * async). A stage that **throws** collapses that item to `null` and skips its remaining stages (D9); other
+ * async). A stage that **throws** collapses that item to `null` and skips its remaining stages ; other
  * items keep flowing. (A Unit that *fails* via `agent()` returns `null` without throwing, so it flows on as
  * `null` rather than dropping the item.)
  */
@@ -319,7 +303,10 @@ export interface WorkflowCapabilities {
    * ``await $`git log -1 ${ref}` ``. Options: `cwd` (inside the project), `timeoutMs` (default 120 s), `env`.
    */
   $: {
-    (command: string, options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<ShellResult>
+    (
+      command: string,
+      options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
+    ): Promise<ShellResult>
     (strings: TemplateStringsArray, ...values: unknown[]): Promise<ShellResult>
   }
   /** Files inside the project only (paths resolve through symlinks and may not leave it). */
@@ -373,7 +360,7 @@ export interface WorkflowContext<A = unknown> extends WorkflowCapabilities {
   workflow: (name: string, args?: unknown) => Promise<unknown>
   /** Worktrees kept by `isolation: "worktree"` Units that changed something, in the order they finished. */
   worktrees: () => ReadonlyArray<{ unit: string; directory: string; branch: string | null }>
-  /** The Run's abort signal (D11). Aborting stops launching queued Units AND interrupts in-flight Unit sessions; each dropped Unit is recorded in {@link errors}. */
+  /** The Run's abort signal. Aborting stops launching queued Units AND interrupts in-flight Unit sessions; each dropped Unit is recorded in {@link errors}. */
   signal: AbortSignal
 }
 
@@ -392,7 +379,9 @@ export interface DefineWorkflowConfig<S extends z.ZodType = z.ZodType> {
  * resolves the config and calls `run` with a live context. The `meta.args` schema (if any) drives both the
  * compile-time type of `ctx.args` and the engine's runtime validation of the caller's input.
  */
-export function defineWorkflow<S extends z.ZodType = z.ZodType>(config: DefineWorkflowConfig<S>): DefineWorkflowConfig<S> {
+export function defineWorkflow<S extends z.ZodType = z.ZodType>(
+  config: DefineWorkflowConfig<S>,
+): DefineWorkflowConfig<S> {
   if (!config || typeof config !== "object") {
     throw new TypeError("defineWorkflow: expected a { meta, run } config object")
   }

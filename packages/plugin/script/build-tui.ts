@@ -1,3 +1,5 @@
+import path from "node:path"
+
 /**
  * Precompile the TUI plugin (`src/tui/index.tsx` → `dist/tui.js`).
  *
@@ -9,7 +11,6 @@
  *     bun run script/build-tui.ts
  */
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
-import path from "node:path"
 
 const root = path.resolve(import.meta.dir, "..")
 
@@ -20,7 +21,7 @@ const result = await Bun.build({
   target: "bun",
   format: "esm",
   plugins: [createSolidTransformPlugin()],
-  minify: true,
+  // No minify: any minified output (even whitespace-only) crashes the panel with "No renderer found" on 2.0.16.
   external: [
     // A dependency of this package: resolved from its own node_modules at run time instead of bundled.
     "zod",
@@ -40,4 +41,5 @@ if (!result.success) {
   for (const log of result.logs) console.error(log)
   process.exit(1)
 }
-for (const output of result.outputs) console.log(`built ${path.relative(root, output.path)} (${(output.size / 1024).toFixed(1)} KiB)`)
+for (const output of result.outputs)
+  console.log(`built ${path.relative(root, output.path)} (${(output.size / 1024).toFixed(1)} KiB)`)

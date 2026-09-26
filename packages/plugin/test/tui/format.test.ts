@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import {
   LIBRARY_COLUMNS,
   UNIT_COLUMNS,
@@ -49,12 +50,17 @@ describe("layout", () => {
     expect(layout(LIBRARY_COLUMNS, 160).map((column) => column.id)).toEqual(LIBRARY_COLUMNS.map((column) => column.id))
     const tiny = layout(LIBRARY_COLUMNS, 40).map((column) => column.id)
     expect(tiny).toEqual(["status", "workflow", "units"])
-    expect(layout(UNIT_COLUMNS, 60).map((column) => column.id)).toEqual(expect.arrayContaining(["status", "name", "elapsed"]))
+    expect(layout(UNIT_COLUMNS, 60).map((column) => column.id)).toEqual(
+      expect.arrayContaining(["status", "name", "elapsed"]),
+    )
   })
 
   test("rows fit the width exactly, numbers right-aligned", () => {
     const columns = layout(LIBRARY_COLUMNS, 100)
-    const r = run({ units: [unit({ status: "succeeded", endedAt: 2_000 }), unit({ unitId: "u2", ordinal: 1 })], currentPhase: "work" })
+    const r = run({
+      units: [unit({ status: "succeeded", endedAt: 2_000 }), unit({ unitId: "u2", ordinal: 1 })],
+      currentPhase: "work",
+    })
     const row = renderRow(columns, libraryCells(entry(r), 61_000))
     expect(row.length).toBe(100)
     expect(renderHeader(columns).length).toBe(100)

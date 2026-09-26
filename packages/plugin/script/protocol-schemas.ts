@@ -4,7 +4,9 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+
 import { z } from "zod"
+
 import { PROTOCOL_VERSION, PUBLISHED_SCHEMAS } from "../src/protocol"
 
 const out = path.join(import.meta.dir, "..", "docs", "protocol", "schemas")
@@ -27,4 +29,6 @@ if (stale.length) {
   console.error(`protocol schemas out of date: ${stale.join(", ")} — run bun run script/protocol-schemas.ts`)
   process.exit(1)
 }
-console.log(`${check ? "checked" : "wrote"} ${Object.keys(PUBLISHED_SCHEMAS).length} schemas in ${path.relative(process.cwd(), out)}`)
+console.log(
+  `${check ? "checked" : "wrote"} ${Object.keys(PUBLISHED_SCHEMAS).length} schemas in ${path.relative(process.cwd(), out)}`,
+)

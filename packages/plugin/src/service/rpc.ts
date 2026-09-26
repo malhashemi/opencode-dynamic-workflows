@@ -14,6 +14,7 @@
  */
 import { Rpc } from "@opencode/plugin/rpc"
 import { z } from "zod"
+
 import {
   ActivityOutput,
   AttachInput,

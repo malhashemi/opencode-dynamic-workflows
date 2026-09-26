@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import { formatCost, formatCount, formatDuration, prettyValue, shortLocation, tokenizeJson } from "../src/format"
 import { describeFields, parseArgs, templateFor, validateJson } from "../src/schema"
 
@@ -60,11 +61,14 @@ describe("args schema", () => {
     expect(validateJson(schema, { topic: "", count: 9, mode: "slow", tags: [1], extra: true })).toEqual([
       "args.topic: at least 1 characters",
       "args.count: must be ≤ 5",
-      "args.mode: must be one of \"fast\", \"deep\"",
+      'args.mode: must be one of "fast", "deep"',
       "args.tags[0]: expected string, got integer",
       "args.extra: not allowed",
     ])
-    expect(validateJson(schema, { count: 1.5 })).toEqual(["args.topic: required", "args.count: expected integer, got number"])
+    expect(validateJson(schema, { count: 1.5 })).toEqual([
+      "args.topic: required",
+      "args.count: expected integer, got number",
+    ])
   })
 
   test("parseArgs: JSON errors, empty input, and schema checks", () => {

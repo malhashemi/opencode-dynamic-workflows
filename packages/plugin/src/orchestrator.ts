@@ -1,26 +1,28 @@
 /**
  * The orchestrator — turns a loaded Workflow into a Run.
  *
- * It validates `args` against `meta.args` before anything launches (D7), creates the Run in the store, opens its
+ * It validates `args` against `meta.args` before anything launches, creates the Run in the store, opens its
  * journal record, wires the Run's interactions to the broker, builds the context, calls `run`, and settles the
  * Run with a terminal status and result. Host-independent: everything OpenCode-specific arrives as an
  * {@link EngineHost} and an {@link UnitIndex}.
  */
 import type { Broker } from "./broker"
 import { createCapabilities } from "./capabilities"
-import { Semaphore } from "./scheduler"
 import { createEngineState, createWorkflowContext, type ReplayPlan, type RunLimits } from "./context"
 import type { EngineHost, HostPermissionRule } from "./host"
 import type { Journal } from "./journal"
 import type { Run, WorkflowIdentity } from "./protocol"
 import { isTerminal, newRun, type RunStore } from "./runs"
+import { Semaphore } from "./scheduler"
 import type { UnitIndex } from "./units"
 import type { DefineWorkflowConfig, WorkflowMeta } from "./workflow"
 
 /** Units in flight for one Run: the author's `meta.concurrency`, never above the configured cap. */
 export function resolveConcurrency(fromMeta: number | undefined, cap = DEFAULT_UNITS_PER_RUN): number {
   const limit = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : DEFAULT_UNITS_PER_RUN
-  return fromMeta !== undefined && Number.isFinite(fromMeta) && fromMeta >= 1 ? Math.min(Math.floor(fromMeta), limit) : limit
+  return fromMeta !== undefined && Number.isFinite(fromMeta) && fromMeta >= 1
+    ? Math.min(Math.floor(fromMeta), limit)
+    : limit
 }
 
 export const DEFAULT_UNITS_PER_RUN = 5
@@ -47,7 +49,10 @@ export function resolvePermissionPolicy(meta: Pick<WorkflowMeta, "interaction">)
   return "ask"
 }
 
-export function resolveBudget(meta: Pick<WorkflowMeta, "budget">, override?: number): { total: number | null; hard: boolean } {
+export function resolveBudget(
+  meta: Pick<WorkflowMeta, "budget">,
+  override?: number,
+): { total: number | null; hard: boolean } {
   if (override !== undefined) return { total: override, hard: false }
   const budget = meta.budget
   if (budget === undefined) return { total: null, hard: false }
@@ -179,7 +184,12 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
     store.apply({
       type: "run.patch",
       runId: input.runId,
-      patch: { status: "running", phases, phasesDeclared: phases.length > 0, budget: { total: budget.total, hard: budget.hard } },
+      patch: {
+        status: "running",
+        phases,
+        phasesDeclared: phases.length > 0,
+        budget: { total: budget.total, hard: budget.hard },
+      },
     })
   }
   input.onRegister?.(input.runId, (reason) => {
@@ -200,7 +210,14 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       throw error
     }
     void journalWrite(
-      input.journal ? () => input.journal!.begin(store.get(input.runId)!, { source: input.source, args, instance: input.instance ?? "" }) : undefined,
+      input.journal
+        ? () =>
+            input.journal!.begin(store.get(input.runId)!, {
+              source: input.source,
+              args,
+              instance: input.instance ?? "",
+            })
+        : undefined,
     )
 
     const capabilities = () =>
@@ -240,7 +257,13 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
           signal,
         }),
       askAgent: (unitId, sessionID) => (questions, unitSignal) =>
-        input.broker.askAgent({ runId: input.runId, unitId, sessionID, questions, signal: AbortSignal.any([signal, unitSignal]) }),
+        input.broker.askAgent({
+          runId: input.runId,
+          unitId,
+          sessionID,
+          questions,
+          signal: AbortSignal.any([signal, unitSignal]),
+        }),
       onLimit: (message) => {
         stopReason ??= message
         failure = message
@@ -250,7 +273,8 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
         ? {
             replay: {
               ...input.replay,
-              onDiverge: (message: string) => store.apply({ type: "run.log", runId: input.runId, value: message, kind: "engine" }),
+              onDiverge: (message: string) =>
+                store.apply({ type: "run.log", runId: input.runId, value: message, kind: "engine" }),
             },
           }
         : {}),
@@ -319,16 +343,26 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       // and settle BEFORE it ends (nothing may change a Run after run.ended).
       const stray = state.inflight.size
       if (!signal.aborted) {
-        store.apply({ type: "run.log", runId: input.runId, value: `stopping ${stray} Unit(s) the script did not await`, kind: "engine" })
+        store.apply({
+          type: "run.log",
+          runId: input.runId,
+          value: `stopping ${stray} Unit(s) the script did not await`,
+          kind: "engine",
+        })
         stopController.abort(new Error("the Run ended"))
       }
-      await Promise.race([Promise.allSettled(state.inflight), new Promise((resolve) => setTimeout(resolve, STRAY_DRAIN_MS))])
+      await Promise.race([
+        Promise.allSettled(state.inflight),
+        new Promise((resolve) => setTimeout(resolve, STRAY_DRAIN_MS)),
+      ])
     }
     input.broker.releaseRun(input.runId)
     let current = store.get(input.runId)
     if (current && (current.status === "running" || current.status === "queued")) {
-      if (failure && status !== "succeeded") store.apply({ type: "run.log", runId: input.runId, value: `run ${status}: ${failure}`, kind: "engine" })
-      if (stopReason && status === "stopped") store.apply({ type: "run.log", runId: input.runId, value: `stopped: ${stopReason}`, kind: "engine" })
+      if (failure && status !== "succeeded")
+        store.apply({ type: "run.log", runId: input.runId, value: `run ${status}: ${failure}`, kind: "engine" })
+      if (stopReason && status === "stopped")
+        store.apply({ type: "run.log", runId: input.runId, value: `stopped: ${stopReason}`, kind: "engine" })
       current = store.get(input.runId)!
       const patch: Partial<Run> = {
         status,
@@ -342,7 +376,11 @@ export async function runWorkflow(input: RunWorkflowInput): Promise<RunWorkflowO
       // Durable and fetchable BEFORE it is announced: a client that reacts to `run.ended` must find the result
       // and a journal record that already says so.
       input.onResult?.(input.runId, result)
-      await journalWrite(input.journal ? () => input.journal!.finish({ ...current!, ...patch, revision: current!.revision + 1 }, result) : undefined)
+      await journalWrite(
+        input.journal
+          ? () => input.journal!.finish({ ...current!, ...patch, revision: current!.revision + 1 }, result)
+          : undefined,
+      )
       store.apply({ type: "run.ended", runId: input.runId, patch })
     }
     // Anything the script left running (a late agent() or ask()) ends now instead of outliving the Run.

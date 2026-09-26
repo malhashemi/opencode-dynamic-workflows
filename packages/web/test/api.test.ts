@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+
 import { ApiError, createApi, type TokenStorage } from "../src/api"
 
 function memoryTokens(initial: string | null = null): TokenStorage & { value: string | null } {
@@ -12,7 +13,12 @@ function memoryTokens(initial: string | null = null): TokenStorage & { value: st
   return store
 }
 
-type Handler = (method: string, url: string, headers: Record<string, string>, body: unknown) => Response | Promise<Response>
+type Handler = (
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+) => Response | Promise<Response>
 
 function fakeFetch(handler: Handler) {
   const calls: { method: string; url: string; headers: Record<string, string>; body: unknown }[] = []
@@ -26,7 +32,8 @@ function fakeFetch(handler: Handler) {
   return { fn, calls }
 }
 
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 const error = (code: string, status: number) => json({ error: { code, message: code, retryable: false } }, status)
 
 describe("api", () => {
@@ -61,13 +68,19 @@ describe("api", () => {
     })
     const api = createApi({ fetch: fn, tokens })
     await api.reply("r", "i", [["Yes"]])
-    expect(calls.map((c) => c.url)).toEqual(["/v1/runs/r/interactions/i/reply", "/v1/pair/local", "/v1/runs/r/interactions/i/reply"])
+    expect(calls.map((c) => c.url)).toEqual([
+      "/v1/runs/r/interactions/i/reply",
+      "/v1/pair/local",
+      "/v1/runs/r/interactions/i/reply",
+    ])
     expect(calls[2]!.body).toEqual({ answers: [["Yes"]] })
     expect(tokens.value).toBe("wfg_new")
   })
 
   test("a remote browser that cannot pair locally gets an error that asks for pairing", async () => {
-    const { fn } = fakeFetch((method, url) => (url === "/v1/pair/local" ? error("forbidden", 403) : error("unauthorized", 401)))
+    const { fn } = fakeFetch((method, url) =>
+      url === "/v1/pair/local" ? error("forbidden", 403) : error("unauthorized", 401),
+    )
     const api = createApi({ fetch: fn, tokens: memoryTokens() })
     const caught = await api.stopRun("r").catch((e) => e)
     expect(caught).toBeInstanceOf(ApiError)
@@ -76,7 +89,9 @@ describe("api", () => {
 
   test("a read with an unknown token retries without it", async () => {
     const tokens = memoryTokens("wfg_gone")
-    const { fn, calls } = fakeFetch((method, url, headers) => (headers.authorization ? error("unauthorized", 401) : json({ run: {}, live: false })))
+    const { fn, calls } = fakeFetch((method, url, headers) =>
+      headers.authorization ? error("unauthorized", 401) : json({ run: {}, live: false }),
+    )
     const api = createApi({ fetch: fn, tokens })
     await api.getRun("r")
     expect(calls).toHaveLength(2)
@@ -92,8 +107,12 @@ describe("api", () => {
   })
 
   test("protocol errors surface code, message and retryable", async () => {
-    const { fn } = fakeFetch(() => json({ error: { code: "invalid_state", message: "Run is still running", retryable: true } }, 409))
-    const caught = (await createApi({ fetch: fn, tokens: memoryTokens("wfg_x") }).resumeRun("r").catch((e) => e)) as ApiError
+    const { fn } = fakeFetch(() =>
+      json({ error: { code: "invalid_state", message: "Run is still running", retryable: true } }, 409),
+    )
+    const caught = (await createApi({ fetch: fn, tokens: memoryTokens("wfg_x") })
+      .resumeRun("r")
+      .catch((e) => e)) as ApiError
     expect(caught.code).toBe("invalid_state")
     expect(caught.status).toBe(409)
     expect(caught.retryable).toBe(true)

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
+
 import type { FormField } from "@opencode/client"
+
 import { back, confirm, formAnswer, move, pick, rows, startAnswer, submitText, toggle } from "../../src/tui/answer"
 import { question } from "./fixtures"
 
@@ -55,7 +57,16 @@ describe("answer mode", () => {
     let state = startAnswer(
       question({
         questions: [
-          { header: "Pick", prompt: "Which?", options: [{ label: "a", description: "" }, { label: "b", description: "" }], multiple: true, custom: true },
+          {
+            header: "Pick",
+            prompt: "Which?",
+            options: [
+              { label: "a", description: "" },
+              { label: "b", description: "" },
+            ],
+            multiple: true,
+            custom: true,
+          },
         ],
       }),
     )
@@ -74,7 +85,16 @@ describe("answer mode", () => {
       question({
         questions: [
           { header: "One", prompt: "1?", options: [{ label: "x", description: "" }], multiple: false, custom: false },
-          { header: "Two", prompt: "2?", options: [{ label: "y", description: "" }, { label: "z", description: "" }], multiple: false, custom: false },
+          {
+            header: "Two",
+            prompt: "2?",
+            options: [
+              { label: "y", description: "" },
+              { label: "z", description: "" },
+            ],
+            multiple: false,
+            custom: false,
+          },
         ],
       }),
     )
@@ -89,16 +109,35 @@ describe("answer mode", () => {
 
 describe("formAnswer", () => {
   const fields: FormField[] = [
-    { key: "colour", type: "string", options: [{ label: "Red", value: "red" }, { label: "Blue", value: "blue" }], custom: true },
-    { key: "tags", type: "multiselect", options: [{ label: "A", value: "a" }, { label: "B", value: "b" }] },
+    {
+      key: "colour",
+      type: "string",
+      options: [
+        { label: "Red", value: "red" },
+        { label: "Blue", value: "blue" },
+      ],
+      custom: true,
+    },
+    {
+      key: "tags",
+      type: "multiselect",
+      options: [
+        { label: "A", value: "a" },
+        { label: "B", value: "b" },
+      ],
+    },
     { key: "ok", type: "boolean" },
     { key: "count", type: "integer", required: true },
     { key: "docs", type: "external", url: "https://example.com" },
   ]
 
   test("maps labels to option values per field type", () => {
-    expect(formAnswer(fields, [["Blue"], ["A", "B"], ["yes"], ["3"], []])).toEqual({ answer: { colour: "blue", tags: ["a", "b"], ok: true, count: 3 } })
-    expect(formAnswer(fields, [["green"], [], ["no"], ["1"]])).toEqual({ answer: { colour: "green", ok: false, count: 1 } })
+    expect(formAnswer(fields, [["Blue"], ["A", "B"], ["yes"], ["3"], []])).toEqual({
+      answer: { colour: "blue", tags: ["a", "b"], ok: true, count: 3 },
+    })
+    expect(formAnswer(fields, [["green"], [], ["no"], ["1"]])).toEqual({
+      answer: { colour: "green", ok: false, count: 1 },
+    })
   })
 
   test("rejects answers the field cannot take", () => {

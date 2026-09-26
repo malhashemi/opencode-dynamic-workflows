@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "bun:test"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+
 import { confine, createCapabilities, shellCommand, shellQuote } from "../src/capabilities"
 
 const posix = process.platform !== "win32"
@@ -15,7 +16,12 @@ afterAll(async () => {
 
 const make = (overrides: { signal?: AbortSignal; disabled?: string } = {}) => {
   const audit: string[] = []
-  const caps = createCapabilities({ location: root, signal: overrides.signal ?? new AbortController().signal, audit: (m) => audit.push(m), ...(overrides.disabled ? { disabled: overrides.disabled } : {}) })
+  const caps = createCapabilities({
+    location: root,
+    signal: overrides.signal ?? new AbortController().signal,
+    audit: (m) => audit.push(m),
+    ...(overrides.disabled ? { disabled: overrides.disabled } : {}),
+  })
   return { caps, audit }
 }
 

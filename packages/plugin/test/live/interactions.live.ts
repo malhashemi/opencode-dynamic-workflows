@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
+
 import { drive, startLive, toolOutput, until, type LiveServer } from "./harness"
 
 const ASK = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"
@@ -62,17 +63,25 @@ let server: LiveServer
 const w = () => server.workflow as any
 
 async function settled(runId: string, ms = 180_000) {
-  return until(async () => {
-    const { run: current } = await w().getRun({ runId })
-    return current.status !== "running" && current.status !== "queued" ? current : undefined
-  }, ms, 500)
+  return until(
+    async () => {
+      const { run: current } = await w().getRun({ runId })
+      return current.status !== "running" && current.status !== "queued" ? current : undefined
+    },
+    ms,
+    500,
+  )
 }
 
 async function pending(runId: string, ms = 120_000) {
-  return until(async () => {
-    const { run } = await w().getRun({ runId })
-    return run.interactions[0]
-  }, ms, 300)
+  return until(
+    async () => {
+      const { run } = await w().getRun({ runId })
+      return run.interactions[0]
+    },
+    ms,
+    300,
+  )
 }
 
 beforeAll(async () => {
@@ -138,7 +147,9 @@ describe("live: attached surface", () => {
     const { runId } = await w().startRun({ name: "ask" })
     const interaction = await pending(runId)
     expect(interaction.origin).toBe("script")
-    await expect(w().replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["Mars"]] })).rejects.toThrow()
+    await expect(
+      w().replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["Mars"]] }),
+    ).rejects.toThrow()
     await w().replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["thorough"]] })
     await settled(runId, 30_000)
     expect((await w().getResult({ runId })).result).toBe("Thorough")
@@ -153,7 +164,11 @@ describe("live: attached surface", () => {
     console.log("unit question interaction:", JSON.stringify(interaction.questions))
     expect(interaction.origin).toBe("agent")
     expect(interaction.unitId).toBeTruthy()
-    await w().replyInteraction({ runId, interactionId: interaction.interactionId, answers: interaction.questions.map(() => ["blue"]) })
+    await w().replyInteraction({
+      runId,
+      interactionId: interaction.interactionId,
+      answers: interaction.questions.map(() => ["blue"]),
+    })
     await settled(runId)
     const { result } = await w().getResult({ runId })
     console.log("attached unit question:", result)
@@ -193,7 +208,9 @@ describe("live: attached surface", () => {
     await w().stopRun({ runId })
     const stopped = await settled(runId, 30_000)
     expect(stopped.status).toBe("stopped")
-    const journal = JSON.parse(await readFile(path.join(server.project, ".opencode/workflows/runs", runId, "run.json"), "utf8"))
+    const journal = JSON.parse(
+      await readFile(path.join(server.project, ".opencode/workflows/runs", runId, "run.json"), "utf8"),
+    )
     expect(journal.run.status).toBe("stopped")
 
     const resumed = await w().resumeRun({ runId })
@@ -217,13 +234,23 @@ describe("live: gateway", () => {
     const runs = (await (await fetch(`${base()}/v1/runs`)).json()) as any
     expect(runs.runs.length).toBeGreaterThan(0)
 
-    expect((await fetch(`${base()}/v1/runs`, { method: "POST", body: JSON.stringify({ name: "noask" }) })).status).toBe(401)
-    expect((await fetch(`${base()}/v1/pair/local`, { method: "POST", headers: { origin: "http://evil.example" } })).status).toBe(403)
+    expect((await fetch(`${base()}/v1/runs`, { method: "POST", body: JSON.stringify({ name: "noask" }) })).status).toBe(
+      401,
+    )
+    expect(
+      (await fetch(`${base()}/v1/pair/local`, { method: "POST", headers: { origin: "http://evil.example" } })).status,
+    ).toBe(403)
     expect((await fetch(`${base()}/v1/info`, { headers: { host: "evil.example" } })).status).toBe(403)
 
-    const paired = (await (await fetch(`${base()}/v1/pair/local`, { method: "POST", headers: { origin: base() } })).json()) as any
+    const paired = (await (
+      await fetch(`${base()}/v1/pair/local`, { method: "POST", headers: { origin: base() } })
+    ).json()) as any
     expect(paired.token).toStartWith("wfg_")
-    const started = await fetch(`${base()}/v1/runs`, { method: "POST", headers: { authorization: `Bearer ${paired.token}`, "content-type": "application/json" }, body: JSON.stringify({ name: "noask" }) })
+    const started = await fetch(`${base()}/v1/runs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${paired.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "noask" }),
+    })
     expect(started.status).toBe(202)
     const { runId } = (await started.json()) as any
     await settled(runId, 30_000)
@@ -231,7 +258,10 @@ describe("live: gateway", () => {
 
   test("SSE streams protocol events and resumes from Last-Event-ID", async () => {
     const controller = new AbortController()
-    const response = await fetch(`${base()}/v1/events`, { signal: controller.signal, headers: { "last-event-id": "0" } })
+    const response = await fetch(`${base()}/v1/events`, {
+      signal: controller.signal,
+      headers: { "last-event-id": "0" },
+    })
     expect(response.headers.get("content-type")).toContain("text/event-stream")
     const reader = response.body!.getReader()
     let text = ""
@@ -247,17 +277,24 @@ describe("live: gateway", () => {
 
     // An id from another epoch (a restarted service) is answered with resync.required, not a silent replay.
     const stale = new AbortController()
-    const again = await fetch(`${base()}/v1/events`, { signal: stale.signal, headers: { "last-event-id": "deadbeef.1" } })
+    const again = await fetch(`${base()}/v1/events`, {
+      signal: stale.signal,
+      headers: { "last-event-id": "deadbeef.1" },
+    })
     const staleReader = again.body!.getReader()
     let more = ""
-    for (let i = 0; i < 5 && !more.includes("resync.required"); i++) more += new TextDecoder().decode((await staleReader.read()).value)
+    for (let i = 0; i < 5 && !more.includes("resync.required"); i++)
+      more += new TextDecoder().decode((await staleReader.read()).value)
     stale.abort()
     expect(more).toContain("event: resync.required")
     expect(more).toContain("the service restarted")
   })
 
   test("the tool result links to the run page, which the gateway serves", async () => {
-    const { messages } = await drive(server, 'Call the workflow tool with {"name":"noask"}. Then reply with its summary line only.')
+    const { messages } = await drive(
+      server,
+      'Call the workflow tool with {"name":"noask"}. Then reply with its summary line only.',
+    )
     const output = toolOutput(messages, "workflow") ?? ""
     const link = output.match(/http:\/\/127\.0\.0\.1:\d+\/runs\/[0-9a-f-]{36}/)?.[0]
     expect(link).toBeTruthy()
@@ -273,14 +310,18 @@ describe("live: service restart", () => {
     const { runId } = await w().startRun({ name: "slow" })
     await pending(runId)
     await server.restart()
-    const run = await until(async () => {
-      try {
-        const { run: current } = await w().getRun({ runId })
-        return current.status === "interrupted" ? current : undefined
-      } catch {
-        return undefined
-      }
-    }, 60_000, 500)
+    const run = await until(
+      async () => {
+        try {
+          const { run: current } = await w().getRun({ runId })
+          return current.status === "interrupted" ? current : undefined
+        } catch {
+          return undefined
+        }
+      },
+      60_000,
+      500,
+    )
     expect(run.units[0].status).toBe("succeeded")
 
     await w().attach({ surface: "live-test", ttlMs: 120_000 })

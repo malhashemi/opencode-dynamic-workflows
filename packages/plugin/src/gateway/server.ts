@@ -16,6 +16,7 @@
 import { existsSync, statSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+
 import { engineGlobal } from "../engine-global"
 import {
   ListRunsInput,
@@ -90,7 +91,7 @@ export function resolveBind(bind: string): string {
         if (a === 100 && b !== undefined && b >= 64 && b <= 127) return address.address
       }
     }
-    throw new Error("gateway.bind is \"tailscale\" but no Tailscale (100.64.0.0/10) address was found")
+    throw new Error('gateway.bind is "tailscale" but no Tailscale (100.64.0.0/10) address was found')
   }
   return bind
 }
@@ -98,12 +99,21 @@ export function resolveBind(bind: string): string {
 function json(payload: unknown, status = 200, extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...SECURITY_HEADERS, ...extra },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...SECURITY_HEADERS,
+      ...extra,
+    },
   })
 }
 
 function fail(code: ProtocolErrorCode, message: string, extra: Record<string, string> = {}): Response {
-  return json({ error: { code, message, retryable: code === "rate_limited" || code === "internal" } }, STATUS[code], extra)
+  return json(
+    { error: { code, message, retryable: code === "rate_limited" || code === "internal" } },
+    STATUS[code],
+    extra,
+  )
 }
 
 async function body(request: Request): Promise<unknown> {
@@ -154,10 +164,25 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
   const baseUrl = `http://${publicHost.includes(":") ? `[${publicHost}]` : publicHost}:${port}`
   const ownOrigins = new Set([baseUrl, `http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`])
   const allowedOrigins = new Set([...ownOrigins, ...config.allowedOrigins])
-  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, `${publicHost}:${port}`, ...config.allowedOrigins.map((origin) => { try { return new URL(origin).host } catch { return "" } }).filter(Boolean)])
+  const allowedHosts = new Set([
+    `127.0.0.1:${port}`,
+    `localhost:${port}`,
+    `[::1]:${port}`,
+    `${publicHost}:${port}`,
+    ...config.allowedOrigins
+      .map((origin) => {
+        try {
+          return new URL(origin).host
+        } catch {
+          return ""
+        }
+      })
+      .filter(Boolean),
+  ])
   if (hostname === "0.0.0.0") {
     for (const addresses of Object.values(os.networkInterfaces())) {
-      for (const address of addresses ?? []) if (address.family === "IPv4") allowedHosts.add(`${address.address}:${port}`)
+      for (const address of addresses ?? [])
+        if (address.family === "IPv4") allowedHosts.add(`${address.address}:${port}`)
     }
   }
 
@@ -181,7 +206,8 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
 
   const audit = (service: WorkflowService, runId: string, action: string, who: string) => {
     try {
-      if (service.deps.store.get(runId)) service.deps.store.apply({ type: "run.log", runId, value: `control: ${action} (${who})`, kind: "engine" })
+      if (service.deps.store.get(runId))
+        service.deps.store.apply({ type: "run.log", runId, value: `control: ${action} (${who})`, kind: "engine" })
     } catch {
       // The Run may be journal-only.
     }
@@ -216,11 +242,20 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
     if (!existsSync(indexFile)) {
       return new Response(
         `<!doctype html><meta charset="utf-8"><title>Workflows</title><body style="font-family:system-ui;padding:2rem"><h1>Workflows</h1><p>The web app is not built. Run <code>bun run build</code> in the plugin package. The API is at <code>/v1</code>.</p></body>`,
-        { headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": HTML_CSP, ...SECURITY_HEADERS } },
+        {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "content-security-policy": HTML_CSP,
+            ...SECURITY_HEADERS,
+          },
+        },
       )
     }
     const candidate = path.resolve(root, `.${decodeURIComponent(pathname)}`)
-    const file = candidate.startsWith(root + path.sep) && existsSync(candidate) && statSync(candidate).isFile() ? candidate : indexFile
+    const file =
+      candidate.startsWith(root + path.sep) && existsSync(candidate) && statSync(candidate).isFile()
+        ? candidate
+        : indexFile
     const extension = path.extname(file)
     return new Response(Bun.file(file), {
       headers: {
@@ -233,7 +268,11 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
   }
 
   /** SSE ids are `<epoch>.<seq>`; a bare number (older clients, `?after=`) is a seq of an unknown epoch. */
-  function events(request: Request, service: WorkflowService, lastEventId: { seq: number; epoch?: string } | null): Response {
+  function events(
+    request: Request,
+    service: WorkflowService,
+    lastEventId: { seq: number; epoch?: string } | null,
+  ): Response {
     const location = service.location
     let unsubscribe = () => {}
     let heartbeat: ReturnType<typeof setInterval> | undefined
@@ -241,13 +280,25 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         subscribers.set(location, (subscribers.get(location) ?? 0) + 1)
-        const send = (event: ProtocolEvent) => controller.enqueue(encoder.encode(`id: ${event.epoch ?? ""}.${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(elideEvent(event))}\n\n`))
+        const send = (event: ProtocolEvent) =>
+          controller.enqueue(
+            encoder.encode(
+              `id: ${event.epoch ?? ""}.${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(elideEvent(event))}\n\n`,
+            ),
+          )
         controller.enqueue(encoder.encode(`retry: 2000\n: ${PLUGIN_NAME} protocol ${PROTOCOL_VERSION}\n\n`))
         if (lastEventId !== null) {
           const tail = service.eventsSince(lastEventId.seq, lastEventId.epoch)
           if (!tail.complete) {
-            const reason = lastEventId.epoch !== undefined && lastEventId.epoch !== tail.epoch ? "the service restarted" : "events were missed"
-            controller.enqueue(encoder.encode(`id: ${tail.epoch}.${tail.latest}\nevent: resync.required\ndata: ${JSON.stringify({ protocol: PROTOCOL_VERSION, seq: tail.latest, epoch: tail.epoch, time: Date.now(), location, runId: "", type: "resync.required", revision: 0, data: { reason } })}\n\n`))
+            const reason =
+              lastEventId.epoch !== undefined && lastEventId.epoch !== tail.epoch
+                ? "the service restarted"
+                : "events were missed"
+            controller.enqueue(
+              encoder.encode(
+                `id: ${tail.epoch}.${tail.latest}\nevent: resync.required\ndata: ${JSON.stringify({ protocol: PROTOCOL_VERSION, seq: tail.latest, epoch: tail.epoch, time: Date.now(), location, runId: "", type: "resync.required", revision: 0, data: { reason } })}\n\n`,
+              ),
+            )
           } else for (const event of tail.events) send(event)
         }
         unsubscribe = service.deps.store.subscribe((event) => {
@@ -276,11 +327,21 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
       if (heartbeat) clearInterval(heartbeat)
     })
     return new Response(stream, {
-      headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no", ...SECURITY_HEADERS, ...cors(request) },
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-store",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+        ...SECURITY_HEADERS,
+        ...cors(request),
+      },
     })
   }
 
-  async function route(request: Request, srv: { requestIP(request: Request): { address: string } | null }): Promise<Response> {
+  async function route(
+    request: Request,
+    srv: { requestIP(request: Request): { address: string } | null },
+  ): Promise<Response> {
     const url = new URL(request.url)
     const host = request.headers.get("host") ?? ""
     if (!allowedHosts.has(host)) return fail("forbidden", `Host "${host}" is not served here.`)
@@ -288,7 +349,11 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
     const loopbackClient = isLoopbackAddress(client)
     const origin = request.headers.get("origin")
     const extra = cors(request)
-    if (request.method === "OPTIONS") return new Response(null, { status: allowedOrigins.has(origin ?? "") ? 204 : 403, headers: { ...extra, ...SECURITY_HEADERS } })
+    if (request.method === "OPTIONS")
+      return new Response(null, {
+        status: allowedOrigins.has(origin ?? "") ? 204 : 403,
+        headers: { ...extra, ...SECURITY_HEADERS },
+      })
     if (!url.pathname.startsWith("/v1/")) {
       if (request.method !== "GET") return fail("not_found", "no such route")
       // Anyone who can reach the Gateway gets the app shell; the API behind it still enforces tokens.
@@ -296,12 +361,14 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
     }
 
     const isWrite = request.method === "POST"
-    if (isWrite && origin && !allowedOrigins.has(origin)) return fail("forbidden", `Origin ${origin} is not allowed.`, extra)
+    if (isWrite && origin && !allowedOrigins.has(origin))
+      return fail("forbidden", `Origin ${origin} is not allowed.`, extra)
     const token = bearer(request)
     const device = token ? tokens.verify(token) : null
     if (token && !device) return fail("unauthorized", "Unknown or revoked token.", extra)
     const noAuth = config.auth === "none" && loopbackBind && loopbackClient
-    const allowed = (scope: Scope) => noAuth || (device?.scopes.includes(scope) ?? false) || (scope === "read" && loopbackClient)
+    const allowed = (scope: Scope) =>
+      noAuth || (device?.scopes.includes(scope) ?? false) || (scope === "read" && loopbackClient)
     const who = device ? `device ${device.name}` : loopbackClient ? "loopback" : client
 
     try {
@@ -315,13 +382,19 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
       }
       if (url.pathname === "/v1/pair/local" && isWrite) {
         // A browser on this machine, on the Gateway's own origin: the only party that can make this request.
-        if (!loopbackClient || !origin || !ownOrigins.has(origin)) return fail("forbidden", "Local pairing is only available to a browser on this machine.", extra)
+        if (!loopbackClient || !origin || !ownOrigins.has(origin))
+          return fail("forbidden", "Local pairing is only available to a browser on this machine.", extra)
         const issued = await tokens.issue("local browser", ["read", "control"])
         return json({ token: issued.token, id: issued.id }, 200, extra)
       }
 
       if (isWrite) {
-        if (!allowed("control")) return fail(device ? "forbidden" : "unauthorized", "Control actions need a bearer token with control scope.", extra)
+        if (!allowed("control"))
+          return fail(
+            device ? "forbidden" : "unauthorized",
+            "Control actions need a bearer token with control scope.",
+            extra,
+          )
         if (rateLimited(client)) return fail("rate_limited", "Too many control requests; slow down.", extra)
       } else if (!allowed("read")) {
         return fail("unauthorized", "Remote reads need a bearer token.", extra)
@@ -332,12 +405,22 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
 
       if (request.method === "GET") {
         if (parts[0] === "info" && parts.length === 1) {
-          return json({
-            protocol: PROTOCOL_VERSION,
-            plugin: { name: PLUGIN_NAME, version: PLUGIN_VERSION },
-            locations: [...services.values()].map((service) => ({ location: service.location, info: service.info() })),
-            auth: { device: device ? { id: device.id, name: device.name, scopes: device.scopes } : null, loopback: loopbackClient },
-          }, 200, extra)
+          return json(
+            {
+              protocol: PROTOCOL_VERSION,
+              plugin: { name: PLUGIN_NAME, version: PLUGIN_VERSION },
+              locations: [...services.values()].map((service) => ({
+                location: service.location,
+                info: service.info(),
+              })),
+              auth: {
+                device: device ? { id: device.id, name: device.name, scopes: device.scopes } : null,
+                loopback: loopbackClient,
+              },
+            },
+            200,
+            extra,
+          )
         }
         if (parts[0] === "events" && parts.length === 1) {
           const header = request.headers.get("last-event-id") ?? url.searchParams.get("after")
@@ -345,12 +428,15 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
           const after = match ? { seq: Number(match[2]), ...(match[1] ? { epoch: match[1] } : {}) } : null
           return events(request, serviceFor(location), after)
         }
-        if (parts[0] === "workflows" && parts.length === 1) return json(await serviceFor(location).listWorkflows(), 200, extra)
+        if (parts[0] === "workflows" && parts.length === 1)
+          return json(await serviceFor(location).listWorkflows(), 200, extra)
         if (parts[0] === "runs" && parts.length === 1) {
           const input = ListRunsInput.parse({
             ...(url.searchParams.getAll("status").length ? { status: url.searchParams.getAll("status") } : {}),
             ...(url.searchParams.get("search") ? { search: url.searchParams.get("search") } : {}),
-            ...(url.searchParams.get("parentSessionID") ? { parentSessionID: url.searchParams.get("parentSessionID") } : {}),
+            ...(url.searchParams.get("parentSessionID")
+              ? { parentSessionID: url.searchParams.get("parentSessionID") }
+              : {}),
             ...(url.searchParams.get("since") ? { since: Number(url.searchParams.get("since")) } : {}),
             ...(url.searchParams.get("limit") ? { limit: Number(url.searchParams.get("limit")) } : {}),
           })
@@ -363,8 +449,10 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
           const service = await serviceForRun(parts[1])
           if (parts.length === 2) return json(await service.getRun(parts[1]), 200, extra)
           if (parts[2] === "result" && parts.length === 3) return json(await service.getResult(parts[1]), 200, extra)
-          if (parts[2] === "activity" && parts.length === 3) return json({ entries: await service.getActivity(parts[1]) }, 200, extra)
-          if (parts[2] === "units" && parts[3] && parts.length === 4) return json({ unit: await service.getUnit(parts[1], parts[3]) }, 200, extra)
+          if (parts[2] === "activity" && parts.length === 3)
+            return json({ entries: await service.getActivity(parts[1]) }, 200, extra)
+          if (parts[2] === "units" && parts[3] && parts.length === 4)
+            return json({ unit: await service.getUnit(parts[1], parts[3]) }, 200, extra)
           if (parts[2] === "units" && parts[3] && parts[4] === "transcript" && parts.length === 5) {
             return json(await service.getTranscript(parts[1], parts[3]), 200, extra)
           }
@@ -391,18 +479,34 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
           }
           if (action === "resume") {
             const input = (await body(request)) as { rerunFailed?: boolean }
-            const started = await service.resumeRun(runId, input.rerunFailed !== false, { background: true, surface: `the web app (${who})` })
+            const started = await service.resumeRun(runId, input.rerunFailed !== false, {
+              background: true,
+              surface: `the web app (${who})`,
+            })
             return json({ runId: started.runId }, 202, extra)
           }
           if (action === "save") {
             const input = (await body(request)) as { name?: string }
-            return json(await service.saveRun(runId, typeof input.name === "string" ? input.name : undefined), 200, extra)
+            return json(
+              await service.saveRun(runId, typeof input.name === "string" ? input.name : undefined),
+              200,
+              extra,
+            )
           }
           if (action === "cleanup") {
             const input = (await body(request)) as { deleted?: string[] }
-            return json(await service.cleanupRun(runId, Array.isArray(input.deleted) ? input.deleted.map(String) : []), 200, extra)
+            return json(
+              await service.cleanupRun(runId, Array.isArray(input.deleted) ? input.deleted.map(String) : []),
+              200,
+              extra,
+            )
           }
-          if (parts[2] === "units" && parts[3] && parts.length === 5 && (parts[4] === "stop" || parts[4] === "restart")) {
+          if (
+            parts[2] === "units" &&
+            parts[3] &&
+            parts.length === 5 &&
+            (parts[4] === "stop" || parts[4] === "restart")
+          ) {
             audit(service, runId, `${parts[4]} unit`, who)
             if (parts[4] === "stop") service.stopUnit(runId, parts[3])
             else await service.restartUnit(runId, parts[3])
@@ -410,7 +514,11 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
           }
           if (parts[2] === "interactions" && parts[3] && parts.length === 5) {
             if (parts[4] === "reply") {
-              const input = ReplyInteractionInput.parse({ ...(await body(request) as object), runId, interactionId: parts[3] })
+              const input = ReplyInteractionInput.parse({
+                ...((await body(request)) as object),
+                runId,
+                interactionId: parts[3],
+              })
               await service.replyInteraction(runId, parts[3], input.answers)
               audit(service, runId, "answer interaction", who)
               return json({ ok: true }, 200, extra)
@@ -427,7 +535,8 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
       return fail("not_found", "no such route", extra)
     } catch (error) {
       if (error instanceof WorkflowProtocolError) return json({ error: error.toJSON() }, STATUS[error.code], extra)
-      if (error && typeof error === "object" && "issues" in error) return fail("invalid_args", `invalid request: ${String((error as unknown as Error).message)}`, extra)
+      if (error && typeof error === "object" && "issues" in error)
+        return fail("invalid_args", `invalid request: ${String((error as unknown as Error).message)}`, extra)
       return fail("internal", error instanceof Error ? error.message : String(error), extra)
     }
   }

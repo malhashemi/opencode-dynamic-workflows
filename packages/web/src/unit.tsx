@@ -1,10 +1,22 @@
 import type { GetTranscriptOutput, Run, Unit } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
-import { ActionButton, CodeBlock, CopyButton, Empty, ErrorNote, Link, Stat, StatusBadge, Tag, ValueBlock } from "./components"
+
+import {
+  ActionButton,
+  CodeBlock,
+  CopyButton,
+  Empty,
+  ErrorNote,
+  Link,
+  Stat,
+  StatusBadge,
+  Tag,
+  ValueBlock,
+} from "./components"
 import { useApp } from "./context"
 import { clockTime, elapsed, formatCost, formatCount, tokenBreakdown, totalTokens } from "./format"
-import type { RunData } from "./run-data"
 import { navigate, unitPath } from "./router"
+import type { RunData } from "./run-data"
 import { messageView, summarizeTranscript, summaryLine, type TranscriptItem, type TranscriptView } from "./transcript"
 
 export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
@@ -31,7 +43,13 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
   })
 
   const onKey = (event: KeyboardEvent) => {
-    if (event.metaKey || event.ctrlKey || event.altKey || (event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      (event.target as HTMLElement).closest("input, textarea, select, [contenteditable]")
+    )
+      return
     const target = event.key === "[" ? siblings().previous : event.key === "]" ? siblings().next : undefined
     if (!target) return
     event.preventDefault()
@@ -40,7 +58,9 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
   onMount(() => window.addEventListener("keydown", onKey))
   onCleanup(() => window.removeEventListener("keydown", onKey))
 
-  const interactions = createMemo(() => props.run.interactions.filter((interaction) => interaction.unitId === props.unitId))
+  const interactions = createMemo(() =>
+    props.run.interactions.filter((interaction) => interaction.unitId === props.unitId),
+  )
   const activity = createMemo(() => props.data.view().activity.filter((entry) => entry.unitId === props.unitId))
 
   return (
@@ -52,20 +72,30 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
               <h1>{u().label ?? `${u().subagent} #${u().ordinal}`}</h1>
               <StatusBadge status={u().status} />
               <Show when={u().schema}>
-                <Tag tone="muted" title="Asked for a typed result">typed</Tag>
+                <Tag tone="muted" title="Asked for a typed result">
+                  typed
+                </Tag>
               </Show>
               <span class="spacer" />
               <nav class="control-group" aria-label="Other Units">
                 <Show when={siblings().previous}>
                   {(previous) => (
-                    <Link class="btn btn-ghost btn-sm" href={unitPath(props.run.runId, previous().unitId)} aria-keyshortcuts="[">
+                    <Link
+                      class="btn btn-ghost btn-sm"
+                      href={unitPath(props.run.runId, previous().unitId)}
+                      aria-keyshortcuts="["
+                    >
                       ← {previous().label ?? `#${previous().ordinal}`}
                     </Link>
                   )}
                 </Show>
                 <Show when={siblings().next}>
                   {(next) => (
-                    <Link class="btn btn-ghost btn-sm" href={unitPath(props.run.runId, next().unitId)} aria-keyshortcuts="]">
+                    <Link
+                      class="btn btn-ghost btn-sm"
+                      href={unitPath(props.run.runId, next().unitId)}
+                      aria-keyshortcuts="]"
+                    >
                       {next().label ?? `#${next().ordinal}`} →
                     </Link>
                   )}
@@ -88,7 +118,11 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
               />
               <Stat label="Result path" value={<span class="mono">{u().resultPath ?? "—"}</span>} />
               <Stat label="Elapsed" value={<span class="num">{elapsed(u().startedAt, u().endedAt, app.now())}</span>} />
-              <Stat label="Tokens" value={<span class="num">{formatCount(totalTokens(u().usage))}</span>} title={tokenBreakdown(u().usage)} />
+              <Stat
+                label="Tokens"
+                value={<span class="num">{formatCount(totalTokens(u().usage))}</span>}
+                title={tokenBreakdown(u().usage)}
+              />
               <Stat label="Cost" value={<span class="num">{formatCost(u().usage.cost)}</span>} />
               <Stat label="Unit #" value={<span class="num">{u().ordinal}</span>} />
             </div>
@@ -111,7 +145,8 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
 
           <Show when={interactions().length > 0}>
             <div class="note note-attention" role="status">
-              This Unit is waiting on {interactions().length === 1 ? "an interaction" : `${interactions().length} interactions`} —{" "}
+              This Unit is waiting on{" "}
+              {interactions().length === 1 ? "an interaction" : `${interactions().length} interactions`} —{" "}
               <Link href={`/runs/${encodeURIComponent(props.run.runId)}`}>answer on the Run page</Link>.
             </div>
           </Show>
@@ -119,7 +154,9 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
           <Show when={u().error}>
             <section class="panel" aria-labelledby="unit-error">
               <header class="panel-head">
-                <h2 id="unit-error" class="err">Error</h2>
+                <h2 id="unit-error" class="err">
+                  Error
+                </h2>
               </header>
               <div class="pad">
                 <pre class="code err-text">{u().error}</pre>
@@ -138,7 +175,15 @@ export function UnitDetail(props: { run: Run; unitId: string; data: RunData }) {
               <div class="pad">
                 <Show
                   when={u().output !== undefined}
-                  fallback={<p class="muted">{u().outputElided ? "Loading…" : u().status === "running" || u().status === "queued" || u().status === "repairing" ? "No output yet." : "No output."}</p>}
+                  fallback={
+                    <p class="muted">
+                      {u().outputElided
+                        ? "Loading…"
+                        : u().status === "running" || u().status === "queued" || u().status === "repairing"
+                          ? "No output yet."
+                          : "No output."}
+                    </p>
+                  }
                 >
                   <ValueBlock value={u().output} maxHeight="40rem" />
                 </Show>
@@ -269,7 +314,8 @@ function TranscriptSection(props: { runId: string; unit: Unit }) {
 
   const views = createMemo(() => (data()?.messages ?? []).map(messageView))
   const summary = createMemo(() => summaryLine(summarizeTranscript(data()?.messages ?? [])))
-  const live = () => props.unit.status === "running" || props.unit.status === "repairing" || props.unit.status === "queued"
+  const live = () =>
+    props.unit.status === "running" || props.unit.status === "repairing" || props.unit.status === "queued"
 
   return (
     <section class="panel" aria-labelledby="unit-transcript">
@@ -296,7 +342,13 @@ function TranscriptSection(props: { runId: string; unit: Unit }) {
             </button>
           }
         >
-          <button type="button" class="btn btn-ghost btn-sm" disabled={busy()} aria-busy={busy()} onClick={() => void load()}>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            disabled={busy()}
+            aria-busy={busy()}
+            onClick={() => void load()}
+          >
             {busy() ? "Loading…" : "Refresh"}
           </button>
           <button type="button" class="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>
@@ -312,11 +364,14 @@ function TranscriptSection(props: { runId: string; unit: Unit }) {
               Some large tool inputs or outputs were clipped for display.
             </div>
           </Show>
-          <Show when={data()} fallback={
+          <Show
+            when={data()}
+            fallback={
               <Show when={!error()}>
                 <p class="muted">Loading…</p>
               </Show>
-            }>
+            }
+          >
             <Show when={views().length > 0} fallback={<p class="muted">No messages yet.</p>}>
               <ol class="tx-messages">
                 <For each={views()}>{(view) => <TranscriptMessageView view={view} />}</For>
@@ -368,8 +423,12 @@ function TranscriptItemView(props: { item: TranscriptItem }) {
         <details class="tx-fold tx-tool" data-failed={item.failed ? "" : undefined}>
           <summary class="mono">{item.title}</summary>
           <div class="tx-tool-body">
-            <Show when={item.tool.input}>{(input) => <ValueBlock value={input()} label="Input" maxHeight="20rem" />}</Show>
-            <Show when={item.tool.output}>{(output) => <CodeBlock text={output()} label="Output" maxHeight="20rem" />}</Show>
+            <Show when={item.tool.input}>
+              {(input) => <ValueBlock value={input()} label="Input" maxHeight="20rem" />}
+            </Show>
+            <Show when={item.tool.output}>
+              {(output) => <CodeBlock text={output()} label="Output" maxHeight="20rem" />}
+            </Show>
             <Show when={item.tool.error}>{(message) => <pre class="code code-inline err-text">{message()}</pre>}</Show>
             <Show when={!item.tool.input && !item.tool.output && !item.tool.error}>
               <p class="muted small">No input or output recorded.</p>

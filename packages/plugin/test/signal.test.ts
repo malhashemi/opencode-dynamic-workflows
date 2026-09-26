@@ -3,6 +3,7 @@
  * drops QUEUED Units and interrupts the IN-FLIGHT Unit's session; each drops to null + ctx.errors (D9).
  */
 import { describe, expect, test } from "bun:test"
+
 import { makeCtx } from "./helpers"
 
 describe("ctx.signal (abort)", () => {
@@ -36,13 +37,16 @@ describe("ctx.signal (abort)", () => {
   })
 
   test("an unexpected throw from an events callback PROPAGATES — not mislabeled as an aborted drop", async () => {
-    const { ctx } = makeCtx({ reply: { text: "x" } }, {
-      events: {
-        onUnit: (unit) => {
-          if (unit.status === "running") throw new Error("callback bug")
+    const { ctx } = makeCtx(
+      { reply: { text: "x" } },
+      {
+        events: {
+          onUnit: (unit) => {
+            if (unit.status === "running") throw new Error("callback bug")
+          },
         },
       },
-    })
+    )
     await expect(ctx.agent("go")).rejects.toThrow("callback bug")
     expect(ctx.errors).toHaveLength(0)
   })

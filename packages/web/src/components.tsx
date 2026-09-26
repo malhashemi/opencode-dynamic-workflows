@@ -1,4 +1,5 @@
 import { createMemo, createSignal, For, Show, splitProps, type JSX } from "solid-js"
+
 import { ApiError } from "./api"
 import { useApp } from "./context"
 import { prettyValue, tokenizeJson } from "./format"
@@ -13,7 +14,15 @@ export function Link(props: JSX.AnchorHTMLAttributes<HTMLAnchorElement> & { href
       href={local.href}
       onClick={(event) => {
         if (typeof local.onClick === "function") (local.onClick as (e: MouseEvent) => void)(event)
-        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return
         event.preventDefault()
         navigate(local.href)
       }}
@@ -54,7 +63,9 @@ export function Tag(props: { tone?: "attention" | "live" | "muted" | "info"; chi
 /** Pretty JSON with token colouring (text nodes only), or plain text. */
 export function ValueBlock(props: { value: unknown; label?: string; maxHeight?: string }) {
   const pretty = createMemo(() => prettyValue(props.value))
-  const tokens = createMemo(() => (pretty().json && pretty().text.length < 200_000 ? tokenizeJson(pretty().text) : null))
+  const tokens = createMemo(() =>
+    pretty().json && pretty().text.length < 200_000 ? tokenizeJson(pretty().text) : null,
+  )
   return (
     <div class="code-wrap">
       <div class="code-tools">
@@ -63,9 +74,24 @@ export function ValueBlock(props: { value: unknown; label?: string; maxHeight?: 
         </Show>
         <CopyButton text={pretty().text} />
       </div>
-      <pre class="code" tabIndex={0} style={props.maxHeight ? { "max-height": props.maxHeight } : undefined} aria-label={props.label}>
+      <pre
+        class="code"
+        tabIndex={0}
+        style={props.maxHeight ? { "max-height": props.maxHeight } : undefined}
+        aria-label={props.label}
+      >
         <Show when={tokens()} fallback={pretty().text}>
-          {(list) => <For each={list()}>{(token) => (token.kind === "space" || token.kind === "punct" ? token.text : <span class={`j-${token.kind}`}>{token.text}</span>)}</For>}
+          {(list) => (
+            <For each={list()}>
+              {(token) =>
+                token.kind === "space" || token.kind === "punct" ? (
+                  token.text
+                ) : (
+                  <span class={`j-${token.kind}`}>{token.text}</span>
+                )
+              }
+            </For>
+          )}
         </Show>
       </pre>
     </div>
@@ -81,7 +107,12 @@ export function CodeBlock(props: { text: string; label?: string; maxHeight?: str
         </Show>
         <CopyButton text={props.text} />
       </div>
-      <pre class="code" tabIndex={0} style={props.maxHeight ? { "max-height": props.maxHeight } : undefined} aria-label={props.label}>
+      <pre
+        class="code"
+        tabIndex={0}
+        style={props.maxHeight ? { "max-height": props.maxHeight } : undefined}
+        aria-label={props.label}
+      >
         {props.text}
       </pre>
     </div>
@@ -137,7 +168,8 @@ export function ActionButton(props: {
       try {
         await props.onAction()
       } catch (error) {
-        if (error instanceof ApiError && error.needsPairing && (await app.requestPairing(error.message))) await props.onAction()
+        if (error instanceof ApiError && error.needsPairing && (await app.requestPairing(error.message)))
+          await props.onAction()
         else throw error
       }
       if (props.done) app.announce(props.done)
@@ -176,7 +208,14 @@ export function Meter(props: { value: number; total: number; failed?: number; la
   const pct = () => (props.total > 0 ? Math.min(100, (props.value / props.total) * 100) : 0)
   const failedPct = () => (props.total > 0 ? Math.min(100, ((props.failed ?? 0) / props.total) * 100) : 0)
   return (
-    <span class="meter" role="meter" aria-label={props.label} aria-valuemin={0} aria-valuemax={props.total} aria-valuenow={props.value}>
+    <span
+      class="meter"
+      role="meter"
+      aria-label={props.label}
+      aria-valuemin={0}
+      aria-valuemax={props.total}
+      aria-valuenow={props.value}
+    >
       <span class="meter-fill" style={{ width: `${pct()}%` }} />
       <span class="meter-failed" style={{ width: `${failedPct()}%` }} />
     </span>

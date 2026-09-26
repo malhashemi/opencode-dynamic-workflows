@@ -1,42 +1,390 @@
-# opencode-dynamic-workflows
+<p align="center">
+  <img src="assets/banner.svg" alt="dynamic-workflows: one Workflow script fans work out to parallel Units and combines their typed results" width="100%">
+</p>
 
-Deterministic multi-subagent Workflows for OpenCode V2, as a plugin. No OpenCode core changes.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@malhashemi/opencode-dynamic-workflows"><img alt="npm" src="https://img.shields.io/npm/v/@malhashemi/opencode-dynamic-workflows?color=fab283&label=npm"></a>
+  <a href="https://github.com/malhashemi/opencode-dynamic-workflows/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/malhashemi/opencode-dynamic-workflows/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-9d7cd8"></a>
+  <img alt="OpenCode 2.0.16 or newer" src="https://img.shields.io/badge/OpenCode-%E2%89%A5%202.0.16-7fd88f">
+  <img alt="macOS, Linux, Windows" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-808080">
+</p>
 
-- [`packages/plugin`](./packages/plugin) — the published package `opencode-dynamic-workflows`: server plugin,
-  TUI plugin, authoring API, protocol, Gateway. Start with its [README](./packages/plugin/README.md).
-- [`packages/web`](./packages/web) — the web app (Solid + Vite), built into `packages/plugin/dist/web`.
+<p align="center">
+  <b>Deterministic multi-agent Workflows for OpenCode.</b><br>
+  Write the plan as a TypeScript script. It fans work out to subagents, gets typed results back, and combines them
+  with plain code.
+</p>
 
-```sh
-bun install
-bun run typecheck && bun test
-bun run build
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#writing-workflows">Writing Workflows</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+---
+
+A **Workflow** is a small TypeScript program for [OpenCode](https://opencode.ai) V2. Each `agent()` call in it starts
+one **Unit**: a fresh OpenCode session that runs one subagent on one prompt. The script decides what fans out, what
+verifies and what gets combined, using `pipeline`, `parallel`, loops and `if`. The models do only the parts that need a
+model.
+
+When one agent improvises the orchestration, it decides turn by turn how many subagents to start, whether to check
+their work and when to stop, and it can decide differently on every run. A Workflow runs the same structure every time.
+Units run under concurrency caps, typed Units return validated values instead of prose, a person can answer questions
+and permission requests while it runs, and every Unit is journaled so a stopped or crashed Run can be resumed.
+
+<p align="center">
+  <a href="assets/web-run.webp"><img src="assets/web-run.webp" alt="The web app's Run page for engine-audit: 4 phases, 9 Units, every Unit typed, on two models (claude-work/claude-opus-5-5 and openai/gpt-6-sol), all succeeded" width="100%"></a><br>
+  <sub>A real Run in the web app: <code>engine-audit</code>, 9 typed Units on two models across 4 phases.</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="44%" align="center">
+      <a href="assets/web-typed-unit.webp"><img src="assets/web-typed-unit.webp" alt="A Unit page: a verify Unit on claude-work/claude-opus-5-5 whose result path is tool, with its validated JSON output of verdicts" width="380"></a><br>
+      <sub>One Unit's typed result: validated JSON, delivered through the <code>workflow_result</code> tool.</sub>
+    </td>
+    <td>
+      <ul>
+        <li><b>Plain TypeScript.</b> <code>agent()</code> starts a Unit; <code>pipeline</code>, <code>parallel</code> and ordinary code combine the results.</li>
+        <li><b>Typed results.</b> Pass a zod schema (or a JSON Schema) and get a validated value back. When a model answers in prose, the engine repairs or extracts the value.</li>
+        <li><b>Any model per Unit.</b> <code>model: "provider/model#variant"</code> puts different models in one Run, for example an independent verifier.</li>
+        <li><b>Watch and steer.</b> A TUI panel and a web app show phases, Units and transcripts. Stop a Run, restart a Unit, answer a question.</li>
+        <li><b>Never hangs headless.</b> Questions carry a fallback answer, and permission requests are denied with a message when nobody is watching.</li>
+        <li><b>Resumable.</b> Every Run is journaled. Resume replays the finished Units and runs the rest live.</li>
+        <li><b>Bounded.</b> 5 Units per Run and 5 Runs at once by default, per-provider caps, token budgets and hard limits.</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+
+## A Workflow
+
+```ts
+// .opencode/workflows/review-changes.ts
+import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
+
+const Finding = z.object({ line: z.number().nullable(), claim: z.string() })
+const Findings = z.object({ findings: z.array(Finding) })
+const Verdict = z.object({ holds: z.boolean(), evidence: z.string() })
+
+export default defineWorkflow({
+  meta: {
+    name: "review-changes",
+    description: "Review each changed file, then verify every finding against the code",
+    args: z.object({ base: z.string().default("main") }),
+  },
+  async run({ agent, pipeline, parallel, collect, $, args }) {
+    const diff = await $`git diff --name-only ${args.base}`
+    const files = diff.stdout.split("\n").filter(Boolean)
+    const checked = await pipeline(
+      files,
+      (file) => agent(`Review ${file} for bugs.`, { label: file, schema: Findings }),
+      (review, file) =>
+        review &&
+        parallel(review.findings.map((f) => async () => {
+          const verdict = await agent(`Does this hold in ${file}? ${f.claim}`, {
+            label: `verify:${file}`,
+            schema: Verdict,
+          })
+          return { file, ...f, verdict }
+        })),
+    )
+    return collect(checked).flat().filter((f) => f?.verdict?.holds)
+  },
+})
 ```
 
-Protocol: [`packages/plugin/docs/protocol`](./packages/plugin/docs/protocol/README.md).
-Security: [`packages/plugin/docs/security.md`](./packages/plugin/docs/security.md).
+Each changed file gets a reviewer Unit, and each finding gets its own verifier as soon as that file's review is done.
+Only the findings that hold come back. Save the file, then type `/review-changes` in OpenCode, or ask the model to "run
+review-changes against main".
 
-## Dogfooding in this repo
+You can also let the model write the script. The tool descriptions point it to the bundled `dynamic-workflows` skill;
+it writes a Workflow for the task at hand and runs it with `workflow_inline` once you approve the source.
 
-`.opencode/opencode.json` loads the plugin from `packages/plugin` (a relative path), and
-`.opencode/workflows/` holds ready-made Workflows. Both are git-ignored (machine-local), like the rest of
-`.opencode/`.
+## Requirements
 
-1. `bun install && bun run build` (the TUI and web app are built into `packages/plugin/dist`).
-2. **Restart OpenCode** (quit the TUI; stop a background `opencode serve --service` if one runs). A location
-   reload is not enough after you change plugin source: Bun caches the modules for the life of the process.
-3. In the TUI: `/workflows` opens the library; `/<key>` runs a Workflow, e.g. `/review-diff`, `/repo-report`,
-   `/echo hello`. Or ask the model: "list the workflows", "run review-diff".
+- [OpenCode](https://opencode.ai) **2.0.16** or later. The plugin uses the V2 plugin API and does not work with
+  OpenCode V1.
+- Any model OpenCode can use. Typed results work best with models that call tools reliably; for the others the engine
+  falls back to JSON in the reply, repair turns and an extraction call.
+- macOS, Linux or Windows. Development and live testing happen on macOS; if something breaks on Linux or Windows,
+  please [open an issue](https://github.com/malhashemi/opencode-dynamic-workflows/issues).
 
-| Workflow | Try it for |
+## Install
+
+Add the package to `plugins` in `opencode.json` (one project) or in your global OpenCode config:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@malhashemi/opencode-dynamic-workflows"]
+}
+```
+
+Restart OpenCode. The TUI part loads with the server part; there is nothing else to install.
+
+To run from a checkout of this repository, run `bun install && bun run build` and put the absolute path of
+`packages/plugin` in `plugins` instead. A git spec (`git+https://…#<ref>`) works for a repository whose root is the
+packed package (`bun run pack` output).
+
+## Usage
+
+### Tools the model gets
+
+| Tool | What it does |
 | --- | --- |
-| `review-diff` | typed Units per changed file, `ctx.$` git, `pipeline`, permission rules |
-| `repo-report` | `ctx.$` / `ctx.file`; writes `.opencode/reports/latest.md` |
-| `needs-permission` | a permission interaction (Allow once / Always / Reject) |
-| `asks-the-human`, `asks-complex`, `asks-briefly` | script questions (`ctx.ask`), grace timers |
-| `asks-nested-question`, `asks-complex-nested` | a Unit's model asking you through its `question` tool |
-| `long-run` | stop, stop/restart a Unit, resume |
-| `refine`, `constrain`, `deep-research` | typed results driving loops and multi-stage pipelines |
-| `echo`, `phase-gate`, `summarize`, `research:quick`, `schema-probe` | quick smoke tests |
+| `workflow` | `list` the saved Workflows; run one by `name` (with `args`, optionally `background: true`); `status`, `result`, `stop` or `resume` (alias `resumeFromRunId`) a Run by id; `save_run` to keep an inline Run's script. |
+| `workflow_inline` | Run model-written `source` (or a project file via `scriptPath`) after approval, or `save` it as a durable Workflow instead of running it. |
+| `workflow_result`, `question` | Inside Units only: the typed-result tool, and a `question` tool the engine answers. |
 
-Runs are journaled under `.opencode/workflows/runs/` and show in the library, with the web app linked from
-every tool result (`http://127.0.0.1:4320` by default; the next free port if taken).
+The plugin also registers the **`dynamic-workflows` skill**, the full authoring guide: API, pipeline vs parallel, typed
+Units, questions, resume, quality patterns and worked examples. The tool descriptions tell the model to load it before
+writing a Workflow. Source: [`packages/plugin/skill/dynamic-workflows/SKILL.md`](packages/plugin/skill/dynamic-workflows/SKILL.md).
+
+A Run started with `background: true` returns its id at once. When it ends, a notification with a summary and a result
+preview arrives in the session that started it (plugin option `notify`).
+
+### Commands
+
+- `/workflow <key> <request>` runs a durable Workflow by key.
+- Every durable Workflow also gets its own command, `/<key>`, with namespaces written with `/` (`team:review` becomes
+  `/team/review`). The commands follow your Workflow files as they change. Both kinds hand the request to the model,
+  which calls `workflow` with the matching `args`.
+
+### In the TUI
+
+`/workflows` (or <kbd>leader</kbd> <kbd>f</kbd>) opens the Run library. From there you open a Run (phases, Units,
+activity, result) and a Unit (prompt, output, transcript). The session you are in also shows its Runs in a strip above
+the prompt, in the sidebar and in a run panel (`/workflows panel`).
+
+| Where | Keys |
+| --- | --- |
+| Library | <kbd>↵</kbd> open · <kbd>a</kbd> answer · <kbd>f</kbd> filter · <kbd>d</kbd> clean up finished · <kbd>p</kbd> pair a browser · <kbd>r</kbd> refresh |
+| Run, while running | <kbd>↵</kbd> Unit · <kbd>o</kbd> transcript · <kbd>s</kbd> stop Run · <kbd>x</kbd> stop Unit · <kbd>r</kbd> restart Unit · <kbd>p</kbd> parent session |
+| Run, when finished | <kbd>e</kbd> resume · <kbd>w</kbd> save as a durable Workflow · <kbd>d</kbd> delete its Unit sessions |
+| Anywhere | <kbd>j</kbd>/<kbd>k</kbd> or arrows to move · <kbd>⌫</kbd> back |
+
+`/workflows` also takes `panel`, `answer`, `cleanup`, `pair`, `refresh`, or a Run id or Workflow name to open.
+
+### In the browser
+
+Every tool result links to its Run in the web app, served by the plugin's Gateway at `http://127.0.0.1:4320` (the next
+free port if that one is taken). A browser on the same machine pairs itself for control actions. For a browser on
+another device (with `gateway.bind` set to `lan` or `tailscale`), run `/workflows pair` in the TUI and enter the
+one-use code.
+
+<p align="center">
+  <a href="assets/web-library.webp"><img src="assets/web-library.webp" alt="The web app's Run library: Runs with status, phase, Unit progress, tokens, cost, elapsed time, start time and location, with filters by status" width="100%"></a><br>
+  <sub>The Run library, kept live over Server-Sent Events.</sub>
+</p>
+
+<p align="center">
+  <a href="assets/web-unit.webp"><img src="assets/web-unit.webp" alt="A Unit page: the Unit's subagent, phase, model, result path, tokens and cost, then its transcript with every tool call, including the workflow_result call that carried the typed value" width="100%"></a><br>
+  <sub>A Unit and its transcript, down to the <code>workflow_result</code> call that delivered its typed value (Output and Prompt panels omitted).</sub>
+</p>
+
+### Where Workflows live
+
+`.opencode/workflows/**/*.ts` (or `workflow/`) in the project and every parent directory, the global config directory,
+and `$OPENCODE_CONFIG_DIR`. A subfolder becomes a namespace: `workflows/team/review.ts` with `meta.name: "review"` has
+the key `team:review`. The nearest scope wins a key collision.
+
+## Configuration
+
+Pass options with the object form of the plugin entry. Every option is optional, and an invalid value falls back to
+its default.
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "@malhashemi/opencode-dynamic-workflows",
+      "options": {
+        "inline": "ask",
+        "maxConcurrentUnits": 5,
+        "providerConcurrency": { "github-copilot": 4 },
+        "gateway": { "port": 4320 },
+      },
+    },
+  ],
+}
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `inline` | `"ask"` | Inline (model-written) Workflows: `ask` a person each time (or "always for this project"), `allow`, or `deny`. With `ask` and nobody attached, the Run is refused. |
+| `inlineCapabilities` | `true` | Give inline Runs `ctx.$`, `ctx.file` and `ctx.fetch`. Durable Runs always have them. |
+| `notify` | `true` | When a background Run started by the model ends, post a notification (summary and result preview) into that session. |
+| `maxConcurrentUnits` | `5` | Units in flight per Run. A Workflow's `meta.concurrency` can lower it, not raise it. |
+| `maxConcurrentRuns` | `5` | Runs executing at once in the OpenCode process. Further Runs wait, queued, until one ends. |
+| `providerConcurrency` | `{}` | Caps per provider id across all Runs, e.g. `{ "github-copilot": 4 }` for a rate-limited subscription. |
+| `retention` | `"keep"` | `delete-on-success` marks Runs that succeed for cleanup; `/workflows cleanup` in the TUI then deletes their Unit sessions. |
+| `limits` | `{ maxUnits: 1000, maxItemsPerCall: 4096, maxUnitSteps: 250 }` | Hard limits per Run, per `parallel`/`pipeline` call and per Unit (model requests). |
+| `gateway` | see below | The HTTP + SSE Gateway that serves the protocol and the web app. |
+
+| `gateway.*` | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | `false` turns the Gateway off; the TUI keeps working over plugin RPC. |
+| `bind` | `"loopback"` | `loopback` (127.0.0.1), `lan` (0.0.0.0), `tailscale` (your 100.64.0.0/10 address), or an IP. |
+| `port` | `4320` | The next free port is used if it is taken; the TUI and tool results show the real URL. |
+| `auth` | `"token"` | Control actions need a token. `none` removes auth for loopback clients on a loopback bind only. |
+| `allowedOrigins` | `[]` | Extra browser origins (CORS and CSRF allow-list). |
+| `web` | `true` | Serve the web app. |
+
+## Writing Workflows
+
+The [`dynamic-workflows` skill](packages/plugin/skill/dynamic-workflows/SKILL.md) is the complete guide, and
+[`packages/plugin/docs/examples/`](packages/plugin/docs/examples) has runnable Workflows:
+[`review-files.ts`](packages/plugin/docs/examples/review-files.ts) (typed findings per file),
+[`research.ts`](packages/plugin/docs/examples/research.ts) (a question to the person, a hard token budget) and
+[`repo-report.ts`](packages/plugin/docs/examples/repo-report.ts) (`ctx.$` and `ctx.file`). Import everything from
+`@malhashemi/opencode-dynamic-workflows/workflow`.
+
+`run(ctx)` receives:
+
+| Member | What it does |
+| --- | --- |
+| `agent(prompt, opts?)` | One Unit. Returns its final text, or with `schema` a validated value. A failed Unit returns `null` and is added to `errors`; it never throws. |
+| `pipeline(items, ...stages)` | Each item runs through its stages on its own, with no barrier between items. Stages get `(previous, item, index)`. |
+| `parallel(thunks)` | Runs thunks concurrently and waits for all of them (a barrier). Failures become `null`. |
+| `collect(xs)` | Drops the `null`s, with the narrowed type. |
+| `errors` | Every dropped Unit: `{ unit, prompt, subagent, error }`. |
+| `args` | The Run's `args`, validated against `meta.args` before anything starts. |
+| `log(msg)`, `phase(title)` | Progress, shown in the TUI and the web app. |
+| `ask(questions, { fallback, graceMs? })` | Ask a person. The `fallback` answers at once when nobody is attached, so a Run never hangs. |
+| `budget` | `{ total, spent(), remaining() }` in output tokens. |
+| `signal` | The Run's `AbortSignal`. |
+| `$`, `file`, `fetch` | Shell, files and HTTP, confined to the project and recorded in the Run's activity. |
+| `workflow(name, args?)` | Run a saved Workflow as one step of this Run (one level deep). |
+| `worktrees()` | The git worktrees kept by `isolation: "worktree"` Units that changed files. |
+
+`agent()` options: `schema`, `label`, `phase`, `subagent` (alias `agentType`; default `general`), `model`
+(`"provider/model#variant"` or `{ providerID, modelID }`), `effort` (the variant), `retries` (repair turns, default 2),
+`timeoutMs`, `permissions`, `isolation: "worktree"` (a fresh git worktree, removed if unchanged) and `location` (another
+directory).
+
+`meta`: `name`, `description`, `whenToUse`, `phases`, `args` (zod), `concurrency`, `unitTimeout`, `budget` (a number,
+or `{ tokens, hard: true }` to stop at the limit), `permissions` (rules for every Unit), `limits`, and
+`interaction: { permissions: "ask" | "auto" | "deny", graceMs }`.
+
+Default to `pipeline`. Use `parallel` as a barrier only when a stage needs every result of the previous one, such as
+deduplicating findings across all files before verifying them.
+
+### Typed results
+
+A Unit with a `schema` gets a `workflow_result` tool whose input is your schema. The tool validates each call, so the
+model can correct a bad call in the same turn. If the model answers in text instead, the engine tries the JSON in that
+text, then sends up to `retries` repair turns in the same session, then extracts the value with one plain generation
+call. Every Unit records which path produced its value (`resultPath`: `tool`, `text-json`, `extract`, `replay` or
+`text`) and every attempt.
+
+### Resume
+
+Every Run is journaled under `.opencode/workflows/runs/<runId>/`. A plugin reload does not stop running Runs. If the
+OpenCode service dies, the Run reads back as `interrupted`. `resume` starts a new Run that matches Units by start order
+and prompt: each Unit whose prompt is unchanged returns its recorded result at once, answers to `ask` are replayed, and
+from the first changed prompt on everything runs live. Units that failed run again.
+
+## How it works
+
+<p align="center">
+  <img src="assets/pipeline.svg" alt="pipeline(files, review, verify): each file starts verify as soon as its own review Unit finishes, and typed results reach collect() in the order files finish; a dashed line shows where parallel() would have waited" width="100%">
+</p>
+
+```mermaid
+flowchart LR
+  you((You)) -->|"/key, or ask"| model["Your session's model"]
+  model -->|"workflow, workflow_inline"| engine["Workflow engine<br/>(server plugin)"]
+  engine -->|"agent()"| units["Units<br/>one OpenCode session each"]
+  units -->|"workflow_result"| engine
+  engine --> journal[("Run journal<br/>.opencode/workflows/runs")]
+  engine <-->|plugin RPC| tui["TUI plugin<br/>/workflows, run panel"]
+  engine <-->|"Gateway: HTTP + SSE"| web["Web app, scripts"]
+```
+
+- **The engine** runs inside the OpenCode server as a plugin, with no changes to OpenCode. It loads the Workflow
+  module, validates `args`, and runs `run(ctx)`. Each `agent()` call waits for a slot under the Run's concurrency cap
+  (and any per-provider cap), then creates a Unit session, prompts it, waits for it to finish and reads its result.
+  Runs beyond `maxConcurrentRuns` wait, queued.
+- **Units** are ordinary OpenCode sessions, so they use your providers, subagents and permission rules. They are not
+  linked into your conversation; the TUI and web app show them.
+- **The journal** records the Run, each Unit, the script source and the result, which is what resume replays.
+- **Clients** talk to the engine through one versioned protocol: the TUI over plugin RPC, the web app and scripts
+  over the Gateway.
+
+## Security
+
+Inline Workflows are model-written code that runs with your privileges, and they are not sandboxed: the approval is
+the control. By default a person approves each one (**Run once**, **Always for this project** or **Reject**) after
+seeing a preview of the source, its size and its SHA-256. Headless, an inline Run is refused unless the project was approved
+before.
+
+Units get OpenCode's permission rules plus the engine's own: `workflow_result` and `question` allowed, `workflow` and
+`workflow_inline` denied (no recursion). A Unit's permission request goes to a person when one is attached; headless,
+it is denied with a message the Unit can act on.
+
+The Gateway binds to loopback by default, checks `Host` and `Origin` headers, and needs a bearer token for every control action;
+remote browsers pair with a one-use code. Read [`docs/security.md`](packages/plugin/docs/security.md) for the trust
+model, capabilities, limits and data on disk, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+## Protocol
+
+Runs, Units, interactions, events and errors form a versioned protocol (v1) with two transports: OpenCode plugin RPC
+and the Gateway (HTTP + Server-Sent Events). The zod definitions are the source of truth, and JSON Schemas are
+published next to the [protocol reference](packages/plugin/docs/protocol/README.md). TypeScript clients can import the
+types from `@malhashemi/opencode-dynamic-workflows/protocol` and the RPC contract from
+`@malhashemi/opencode-dynamic-workflows/rpc`.
+
+```sh
+curl -s http://127.0.0.1:4320/v1/runs | jq '.runs[0]'
+curl -N "http://127.0.0.1:4320/v1/events?location=/my/project"
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| The plugin does not load from a local directory. | OpenCode resolves a directory plugin's entry by path (`<dir>/server` or `<dir>/index`), not through `package.json` exports. Point `plugins` at `packages/plugin`, which ships `server.ts`, `rpc.ts` and a `tui` entry at its root, and run `bun run build` first. |
+| Inline Workflows are refused in `opencode run`. | Nobody can approve them headless. Approve "always for this project" once from the TUI or web app, save the script as a durable Workflow, or set `inline: "allow"`. |
+| A Unit fails with "exceeded its step limit". | The Unit made more model requests than `limits.maxUnitSteps` (a loop guard, 250 by default). Raise the limit for Workflows whose Units do long work. |
+| The web app is not at port 4320. | Another process holds the port, so the Gateway took the next free one. Tool results and the TUI show the real URL. |
+
+Still stuck? [Open an issue](https://github.com/malhashemi/opencode-dynamic-workflows/issues) with your OS, OpenCode
+version and, if you can, the Run's journal (`.opencode/workflows/runs/<runId>/`).
+
+## Development
+
+```sh
+git clone https://github.com/malhashemi/opencode-dynamic-workflows
+cd opencode-dynamic-workflows
+bun install
+bun run check        # formatting, lint, types, tests (no OpenCode needed)
+bun run build        # dist/tui.js, dist/web, protocol schema check
+bun run pack         # build, then the publishable tarball
+bun run verify:live  # real OpenCode on a private server
+```
+
+The live tests start `opencode serve` with its own database under `$TMPDIR/opencode`; it never touches your
+configuration. `WF_LIVE_MODEL` picks the model (default `claude-work/claude-opus-5-5`).
+
+The repository has two packages: [`packages/plugin`](packages/plugin) (the published package: server plugin, TUI
+plugin, authoring API, protocol and Gateway) and [`packages/web`](packages/web) (the web app, built into
+`packages/plugin/dist/web`). `packages/plugin/README.md` is generated from this file for npm; after editing this
+README, run `bun run packages/plugin/script/sync-readme.ts`.
+
+## Contributing
+
+Bug reports, platform reports from Linux and Windows, example Workflows and code are all welcome. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md), and follow the [code of conduct](CODE_OF_CONDUCT.md). Changes are listed in the
+[changelog](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE) © M. Adel Alhashemi
+
+This is an independent project, not affiliated with or endorsed by the OpenCode team.

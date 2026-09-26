@@ -1,3 +1,11 @@
+import type {
+  ApprovalDetail,
+  InteractionQuestion,
+  PendingInteraction,
+  PermissionDetail,
+  ResolvedInteraction,
+} from "./protocol"
+import { isTerminal, type RunStore } from "./runs"
 /**
  * The interaction broker — everything in a Run that waits on a person, published as Run state and settled
  * through one path.
@@ -15,14 +23,6 @@
  * interrupting someone for are worth waiting for. Stopping the Run releases everything it was waiting on.
  */
 import type { AskOptions, AskQuestion } from "./workflow"
-import type {
-  ApprovalDetail,
-  InteractionQuestion,
-  PendingInteraction,
-  PermissionDetail,
-  ResolvedInteraction,
-} from "./protocol"
-import { isTerminal, type RunStore } from "./runs"
 
 export type PermissionDecision = "once" | "always" | "reject"
 
@@ -31,7 +31,12 @@ export interface BrokerOptions {
   /** Is a person watching right now? Read at the moment of asking, because surfaces come and go. */
   attached: () => boolean
   /** Answer a native permission request (host call). */
-  replyPermission?: (input: { sessionID: string; requestID: string; decision: PermissionDecision; message?: string }) => Promise<void>
+  replyPermission?: (input: {
+    sessionID: string
+    requestID: string
+    decision: PermissionDecision
+    message?: string
+  }) => Promise<void>
 }
 
 export interface Broker {
@@ -57,7 +62,13 @@ export interface Broker {
   /** The host reports a permission request resolved (by anyone). */
   permissionResolved(requestID: string, decision: string | undefined): void
   /** A native form raised inside a Run (not interceptable). Recorded so surfaces with the form API can answer it. */
-  form(input: { runId: string; unitId: string | null; sessionID: string; formID: string; questions: InteractionQuestion[] }): void
+  form(input: {
+    runId: string
+    unitId: string | null
+    sessionID: string
+    formID: string
+    questions: InteractionQuestion[]
+  }): void
   /** The host reports a native form replied or cancelled. */
   formResolved(formID: string, answers: string[][] | null): void
   /** Inline-run approval. Resolves to the decision; headless resolves at once to `null` (no one to ask). */
@@ -124,7 +135,11 @@ interface Waiter {
   runId: string
   interaction: PendingInteraction
   /** Settle with answers, or with the cancel path. */
-  settle: (result: { answers: string[][] | null; by: ResolvedInteraction["by"]; outcome: ResolvedInteraction["outcome"] }) => void
+  settle: (result: {
+    answers: string[][] | null
+    by: ResolvedInteraction["by"]
+    outcome: ResolvedInteraction["outcome"]
+  }) => void
   accept: (answers: string[][]) => string[][] | null
   timer: ReturnType<typeof setTimeout> | null
   /** A permission decision is on its way to the host: no second decision may start. */
@@ -136,7 +151,10 @@ interface Waiter {
 export function createBroker(options: BrokerOptions): Broker {
   const waiters = new Map<string, Waiter>()
   /** Native permission requestID → interactionId, so a host-side resolution files the record once. */
-  const permissions = new Map<string, { runId: string; unitId: string | null; interactionId: string; sessionID: string }>()
+  const permissions = new Map<
+    string,
+    { runId: string; unitId: string | null; interactionId: string; sessionID: string }
+  >()
   const forms = new Map<string, { runId: string; unitId: string | null; interactionId: string }>()
 
   const publish = (runId: string, interaction: PendingInteraction): boolean => {
@@ -159,7 +177,14 @@ export function createBroker(options: BrokerOptions): Broker {
     outcome: ResolvedInteraction["outcome"],
   ) => {
     try {
-      options.store.apply({ type: "interaction.resolved", runId, interactionId, by, ...(answers ? { answers } : {}), ...(outcome ? { outcome } : {}) })
+      options.store.apply({
+        type: "interaction.resolved",
+        runId,
+        interactionId,
+        by,
+        ...(answers ? { answers } : {}),
+        ...(outcome ? { outcome } : {}),
+      })
     } catch {
       // The Run may be gone (a store swapped in a test); the waiter is still released by the caller.
     }
@@ -182,7 +207,9 @@ export function createBroker(options: BrokerOptions): Broker {
     if (!options.replyPermission) return
     void options.replyPermission({ sessionID, requestID, decision: "reject", message }).catch((error: unknown) => {
       // The request may already be settled (answered, or its session interrupted): nothing is left to close.
-      console.warn(`[workflow] could not reject permission ${requestID}: ${error instanceof Error ? error.message : String(error)}`)
+      console.warn(
+        `[workflow] could not reject permission ${requestID}: ${error instanceof Error ? error.message : String(error)}`,
+      )
     })
   }
 
@@ -239,17 +266,30 @@ export function createBroker(options: BrokerOptions): Broker {
     accept: (answers: string[][]) => string[][] | null
     onGrace: () => { answers: string[][] | null; outcome: ResolvedInteraction["outcome"] }
   }) =>
-    new Promise<{ answers: string[][] | null; by: ResolvedInteraction["by"]; outcome: ResolvedInteraction["outcome"] }>((settle) => {
-      const waiter: Waiter = { runId: input.runId, interaction: input.interaction, settle, accept: input.accept, timer: null }
-      waiters.set(input.interaction.interactionId, waiter)
-      if (input.graceMs !== null) {
-        waiter.timer = setTimeout(() => finish(input.interaction.interactionId, { ...input.onGrace(), by: "automation" }), input.graceMs)
-      }
-      const onAbort = () => finish(input.interaction.interactionId, { ...input.onGrace(), by: "automation", outcome: "cancelled" })
-      if (input.signal.aborted) onAbort()
-      else input.signal.addEventListener("abort", onAbort, { once: true })
-      if (!publish(input.runId, input.interaction)) finish(input.interaction.interactionId, { ...input.onGrace(), by: "automation" })
-    })
+    new Promise<{ answers: string[][] | null; by: ResolvedInteraction["by"]; outcome: ResolvedInteraction["outcome"] }>(
+      (settle) => {
+        const waiter: Waiter = {
+          runId: input.runId,
+          interaction: input.interaction,
+          settle,
+          accept: input.accept,
+          timer: null,
+        }
+        waiters.set(input.interaction.interactionId, waiter)
+        if (input.graceMs !== null) {
+          waiter.timer = setTimeout(
+            () => finish(input.interaction.interactionId, { ...input.onGrace(), by: "automation" }),
+            input.graceMs,
+          )
+        }
+        const onAbort = () =>
+          finish(input.interaction.interactionId, { ...input.onGrace(), by: "automation", outcome: "cancelled" })
+        if (input.signal.aborted) onAbort()
+        else input.signal.addEventListener("abort", onAbort, { once: true })
+        if (!publish(input.runId, input.interaction))
+          finish(input.interaction.interactionId, { ...input.onGrace(), by: "automation" })
+      },
+    )
 
   const base = (input: { runId: string; unitId: string | null; sessionID: string }) => ({
     interactionId: crypto.randomUUID(),
@@ -265,11 +305,14 @@ export function createBroker(options: BrokerOptions): Broker {
       const questions = toInteractionQuestions(input.form)
       const fallback = coerceAnswers(questions, input.options.fallback)
       if (!fallback) {
-        throw new Error("ctx.ask: `fallback` must have one entry per question, each drawn from that question's offered labels")
+        throw new Error(
+          "ctx.ask: `fallback` must have one entry per question, each drawn from that question's offered labels",
+        )
       }
       if (input.signal.aborted || !options.attached()) return fallback
       const declared = input.options.graceMs ?? input.defaultGraceMs
-      const graceMs = declared === null || declared === undefined || !Number.isFinite(declared) ? null : Math.max(0, declared)
+      const graceMs =
+        declared === null || declared === undefined || !Number.isFinite(declared) ? null : Math.max(0, declared)
       const interaction: PendingInteraction = {
         ...base({ runId: input.runId, unitId: null, sessionID: input.sessionID }),
         kind: "question",
@@ -326,7 +369,12 @@ export function createBroker(options: BrokerOptions): Broker {
         permission: { ...input.detail, resources: [...input.detail.resources], save: [...input.detail.save] },
         graceEndsAt: null,
       }
-      permissions.set(input.detail.requestID, { runId: input.runId, unitId: input.unitId, interactionId: interaction.interactionId, sessionID: input.sessionID })
+      permissions.set(input.detail.requestID, {
+        runId: input.runId,
+        unitId: input.unitId,
+        interactionId: interaction.interactionId,
+        sessionID: input.sessionID,
+      })
       // Not awaited: the waiter exists only so `reply` has somewhere to land. The native request is the source
       // of truth and settles itself through the host.
       void wait({
@@ -343,7 +391,14 @@ export function createBroker(options: BrokerOptions): Broker {
       const entry = permissions.get(requestID)
       if (!entry) return
       permissions.delete(requestID)
-      const label = decision === "once" ? "Allow once" : decision === "always" ? "Always allow" : decision === "reject" ? "Reject" : undefined
+      const label =
+        decision === "once"
+          ? "Allow once"
+          : decision === "always"
+            ? "Always allow"
+            : decision === "reject"
+              ? "Reject"
+              : undefined
       finish(entry.interactionId, {
         answers: label ? [[label]] : null,
         by: "human",
@@ -422,7 +477,8 @@ export function createBroker(options: BrokerOptions): Broker {
       if (!accepted) return false
       if (waiter.interaction.kind === "permission" && waiter.interaction.permission) {
         const label = accepted[0]?.[0]
-        const decision: PermissionDecision = label === "Allow once" ? "once" : label === "Always allow" ? "always" : "reject"
+        const decision: PermissionDecision =
+          label === "Allow once" ? "once" : label === "Always allow" ? "always" : "reject"
         return sendPermission(interactionId, waiter, decision, accepted)
       }
       return finish(interactionId, { answers: accepted, by: "human", outcome: "answered" })

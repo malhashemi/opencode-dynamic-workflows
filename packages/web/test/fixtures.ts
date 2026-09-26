@@ -1,4 +1,13 @@
-import type { ActivityEntry, PendingInteraction, ProtocolEvent, ResolvedInteraction, Run, RunHeader, Unit, Usage } from "@malhashemi/opencode-dynamic-workflows/protocol"
+import type {
+  ActivityEntry,
+  PendingInteraction,
+  ProtocolEvent,
+  ResolvedInteraction,
+  Run,
+  RunHeader,
+  Unit,
+  Usage,
+} from "@malhashemi/opencode-dynamic-workflows/protocol"
 
 export const LOCATION = "/tmp/project"
 
@@ -68,7 +77,18 @@ export function pending(overrides: Partial<PendingInteraction> = {}): PendingInt
     origin: "script",
     sessionID: "ses_parent",
     phase: "facts",
-    questions: [{ header: "Go?", prompt: "Proceed?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }], multiple: false, custom: false }],
+    questions: [
+      {
+        header: "Go?",
+        prompt: "Proceed?",
+        options: [
+          { label: "Yes", description: "" },
+          { label: "No", description: "" },
+        ],
+        multiple: false,
+        custom: false,
+      },
+    ],
     raisedAt: 1200,
     graceEndsAt: null,
     ...overrides,

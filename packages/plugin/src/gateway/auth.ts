@@ -43,11 +43,15 @@ export interface TokenStore {
   redeem(code: string, name: string): Promise<{ token: string; id: string } | null>
 }
 
-export async function createTokenStore(file = path.join(gatewayStateDir(), "gateway-tokens.json")): Promise<TokenStore> {
+export async function createTokenStore(
+  file = path.join(gatewayStateDir(), "gateway-tokens.json"),
+): Promise<TokenStore> {
   let tokens: DeviceToken[] = []
   try {
     const parsed = JSON.parse(await readFile(file, "utf8")) as { tokens?: DeviceToken[] }
-    tokens = Array.isArray(parsed.tokens) ? parsed.tokens.filter((t) => typeof t.hash === "string" && typeof t.id === "string") : []
+    tokens = Array.isArray(parsed.tokens)
+      ? parsed.tokens.filter((t) => typeof t.hash === "string" && typeof t.id === "string")
+      : []
   } catch {
     tokens = []
   }
@@ -64,7 +68,14 @@ export async function createTokenStore(file = path.join(gatewayStateDir(), "gate
     async issue(name, scopes) {
       const token = `wfg_${randomBytes(24).toString("base64url")}`
       const id = randomBytes(6).toString("hex")
-      tokens.push({ id, name: name.slice(0, 80) || "device", hash: hash(token), scopes, createdAt: Date.now(), lastUsedAt: null })
+      tokens.push({
+        id,
+        name: name.slice(0, 80) || "device",
+        hash: hash(token),
+        scopes,
+        createdAt: Date.now(),
+        lastUsedAt: null,
+      })
       await persist()
       return { token, id }
     },
@@ -94,7 +105,10 @@ export async function createTokenStore(file = path.join(gatewayStateDir(), "gate
       return { code, expiresAt }
     },
     async redeem(code, name) {
-      const normalized = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")
+      const normalized = code
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
       const entry = codes.get(normalized)
       codes.delete(normalized)
       if (!entry || entry.expiresAt < Date.now()) return null

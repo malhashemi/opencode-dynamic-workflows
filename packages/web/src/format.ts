@@ -100,7 +100,8 @@ export type JsonToken = { kind: "key" | "string" | "number" | "literal" | "punct
 /** Tokenise pretty-printed JSON for highlighting (rendered as text nodes — never as HTML). */
 export function tokenizeJson(text: string): JsonToken[] {
   const out: JsonToken[] = []
-  const pattern = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(true|false|null)|([{}[\],:])|(\s+)|(.)/g
+  const pattern =
+    /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(true|false|null)|([{}[\],:])|(\s+)|(.)/g
   let match: RegExpExecArray | null
   while ((match = pattern.exec(text))) {
     if (match[1] !== undefined) {

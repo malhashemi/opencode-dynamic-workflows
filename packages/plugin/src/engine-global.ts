@@ -60,7 +60,8 @@ export function configureLimits(runs: number, perProvider: Record<string, number
   const singletons = engineGlobal().singletons
   const current = singletons.get("limit:runs") as Semaphore | undefined
   if (!current || current.size !== runs) singletons.set("limit:runs", new Semaphore(runs))
-  const providers = (singletons.get("limit:providers") as Map<string, Semaphore> | undefined) ?? new Map<string, Semaphore>()
+  const providers =
+    (singletons.get("limit:providers") as Map<string, Semaphore> | undefined) ?? new Map<string, Semaphore>()
   for (const [id, permits] of Object.entries(perProvider)) {
     if (providers.get(id)?.size !== permits) providers.set(id, new Semaphore(permits))
   }
@@ -81,7 +82,9 @@ export function runSlotsFull(): boolean {
 
 /** Take a slot for one Unit on its provider's cross-Run cap (when that provider has one). Returns the release. */
 export async function unitSlot(providerID: string | undefined, signal: AbortSignal): Promise<() => void> {
-  const provider = providerID ? (engineGlobal().singletons.get("limit:providers") as Map<string, Semaphore> | undefined)?.get(providerID) : undefined
+  const provider = providerID
+    ? (engineGlobal().singletons.get("limit:providers") as Map<string, Semaphore> | undefined)?.get(providerID)
+    : undefined
   return provider ? provider.slot(signal) : () => {}
 }
 

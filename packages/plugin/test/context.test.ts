@@ -3,9 +3,10 @@
  * extract fallbacks, same-session repair, limits, stopping, and resume replay.
  */
 import { describe, expect, test } from "bun:test"
-import { z } from "../src/workflow"
-import type { Unit } from "../src/protocol"
+
 import type { ReplayPlan } from "../src/context"
+import type { Unit } from "../src/protocol"
+import { z } from "../src/workflow"
 import { makeCtx } from "./helpers"
 
 describe("ctx.agent — text Units", () => {
@@ -17,7 +18,9 @@ describe("ctx.agent — text Units", () => {
     const create = host.creates[0]!
     expect(create.title).toBe("⟡ wf · test · greeter")
     expect(create.agent).toBe("general")
-    expect(create.metadata).toMatchObject({ workflow: { protocol: 1, runId: "run-test", ordinal: 1, parentSessionID: "ses_parent" } })
+    expect(create.metadata).toMatchObject({
+      workflow: { protocol: 1, runId: "run-test", ordinal: 1, parentSessionID: "ses_parent" },
+    })
     expect(create.permissions.slice(-4).map((rule) => `${rule.action}:${rule.effect}`)).toEqual([
       "workflow_result:allow",
       "question:allow",
@@ -39,7 +42,14 @@ describe("ctx.agent — text Units", () => {
   test("Workflow and Unit permission rules precede the engine rules", async () => {
     const { ctx, host } = makeCtx({}, { permissions: [{ action: "edit", resource: "*", effect: "allow" }] })
     await ctx.agent("x", { permissions: [{ action: "shell", resource: "*", effect: "deny" }] })
-    expect(host.creates[0]!.permissions.map((rule) => rule.action)).toEqual(["edit", "shell", "workflow_result", "question", "workflow", "workflow_inline"])
+    expect(host.creates[0]!.permissions.map((rule) => rule.action)).toEqual([
+      "edit",
+      "shell",
+      "workflow_result",
+      "question",
+      "workflow",
+      "workflow_inline",
+    ])
   })
 
   test("a provider failure resolves to null and is recorded", async () => {
@@ -80,7 +90,10 @@ describe("ctx.agent — typed Units", () => {
 
   test("a valid workflow_result call resolves to the parsed value", async () => {
     const units: Unit[] = []
-    const { ctx } = makeCtx({ reply: { result: { score: 7, reason: "ok" } } }, { events: { onUnit: (u) => units.push(u) } })
+    const { ctx } = makeCtx(
+      { reply: { result: { score: 7, reason: "ok" } } },
+      { events: { onUnit: (u) => units.push(u) } },
+    )
     const out = await ctx.agent("rate", { schema: Rating })
     expect(out).toEqual({ score: 7, reason: "ok" })
     expect(units.at(-1)?.resultPath).toBe("tool")
@@ -88,7 +101,14 @@ describe("ctx.agent — typed Units", () => {
   })
 
   test("an invalid call followed by a valid one in the same turn succeeds without a repair turn", async () => {
-    const { ctx, host } = makeCtx({ reply: { results: [{ score: 99, reason: "x" }, { score: 9, reason: "fixed" }] } })
+    const { ctx, host } = makeCtx({
+      reply: {
+        results: [
+          { score: 99, reason: "x" },
+          { score: 9, reason: "fixed" },
+        ],
+      },
+    })
     expect(await ctx.agent("rate", { schema: Rating })).toEqual({ score: 9, reason: "fixed" })
     expect(host.prompts).toHaveLength(1)
   })
@@ -109,7 +129,10 @@ describe("ctx.agent — typed Units", () => {
 
   test("JSON in the reply text is accepted when it validates (text-json path)", async () => {
     const units: Unit[] = []
-    const { ctx } = makeCtx({ reply: { text: 'Here:\n```json\n{"score": 4, "reason": "meh"}\n```' } }, { events: { onUnit: (u) => units.push(u) } })
+    const { ctx } = makeCtx(
+      { reply: { text: 'Here:\n```json\n{"score": 4, "reason": "meh"}\n```' } },
+      { events: { onUnit: (u) => units.push(u) } },
+    )
     expect(await ctx.agent("rate", { schema: Rating })).toEqual({ score: 4, reason: "meh" })
     expect(units.at(-1)?.resultPath).toBe("text-json")
   })
@@ -135,7 +158,12 @@ describe("ctx.agent — typed Units", () => {
   test("a plain JSON Schema works as `schema` (D7 alias)", async () => {
     const { ctx, index } = makeCtx({ reply: { results: [{ n: "x" }, { n: 3 }] } })
     const out = await ctx.agent("count", {
-      schema: { type: "object", properties: { n: { type: "integer", minimum: 0 } }, required: ["n"], additionalProperties: false },
+      schema: {
+        type: "object",
+        properties: { n: { type: "integer", minimum: 0 } },
+        required: ["n"],
+        additionalProperties: false,
+      },
     })
     expect(out).toEqual({ n: 3 })
     expect(index.size()).toBe(0) // bindings are released when the Unit settles
@@ -204,7 +232,10 @@ describe("ctx.agent — resume replay", () => {
 
   test("finished Units come back from the record without a session; failed ones re-run", async () => {
     const units: Unit[] = []
-    const { ctx, host } = makeCtx({ reply: { text: "live" } }, { replay: plan(), events: { onUnit: (u) => units.push(u) } })
+    const { ctx, host } = makeCtx(
+      { reply: { text: "live" } },
+      { replay: plan(), events: { onUnit: (u) => units.push(u) } },
+    )
     expect(await ctx.agent("first")).toBe("one")
     expect(await ctx.agent("second", { schema: z.object({ n: z.number() }) })).toEqual({ n: 2 })
     expect(await ctx.agent("third")).toBe("live")
@@ -224,7 +255,14 @@ describe("ctx.agent — resume replay", () => {
   test("recorded ctx.ask answers replay in order", async () => {
     const { ctx } = makeCtx({}, { replay: plan({ answers: [[["Thorough"]]] }) })
     const answer = await ctx.ask(
-      { header: "Depth", prompt: "How deep?", options: [{ label: "Fast", description: "" }, { label: "Thorough", description: "" }] },
+      {
+        header: "Depth",
+        prompt: "How deep?",
+        options: [
+          { label: "Fast", description: "" },
+          { label: "Thorough", description: "" },
+        ],
+      },
       { fallback: [["Fast"]] },
     )
     expect(answer).toEqual([["Thorough"]])
@@ -233,7 +271,14 @@ describe("ctx.agent — resume replay", () => {
   test("a recorded hand-back (null) replays the fallback", async () => {
     const { ctx } = makeCtx({}, { replay: plan({ answers: [null] }) })
     const answer = await ctx.ask(
-      { header: "Depth", prompt: "How deep?", options: [{ label: "Fast", description: "" }, { label: "Thorough", description: "" }] },
+      {
+        header: "Depth",
+        prompt: "How deep?",
+        options: [
+          { label: "Fast", description: "" },
+          { label: "Thorough", description: "" },
+        ],
+      },
       { fallback: [["Fast"]] },
     )
     expect(answer).toEqual([["Fast"]])
@@ -241,7 +286,14 @@ describe("ctx.agent — resume replay", () => {
 })
 
 describe("ctx.ask and Unit questions", () => {
-  const form = { header: "Region", prompt: "Where?", options: [{ label: "EU", description: "" }, { label: "US", description: "" }] }
+  const form = {
+    header: "Region",
+    prompt: "Where?",
+    options: [
+      { label: "EU", description: "" },
+      { label: "US", description: "" },
+    ],
+  }
 
   test("with no broker the fallback answers at once (headless contract)", async () => {
     const { ctx } = makeCtx()
@@ -309,7 +361,10 @@ describe("audit regressions — hard budget covers repairs and extraction", () =
   const Rating = z.object({ score: z.number() })
 
   test("no repair turn once a hard budget is spent", async () => {
-    const { ctx, host, state } = makeCtx({ reply: { text: "no json here" }, outputTokens: 80 }, { budget: 50, hardBudget: true })
+    const { ctx, host, state } = makeCtx(
+      { reply: { text: "no json here" }, outputTokens: 80 },
+      { budget: 50, hardBudget: true },
+    )
     expect(await ctx.agent("rate", { schema: Rating })).toBeNull()
     expect(host.prompts).toHaveLength(1)
     expect(state.errors[0]?.error).toContain("budget exhausted before repair turn 1")
@@ -342,13 +397,16 @@ describe("audit regressions — hard budget covers repairs and extraction", () =
 
 describe("audit round 2 — runner setup and restarts", () => {
   test("a throw after the Unit is bound still unbinds it, stops its session and reports it", async () => {
-    const { ctx, host, index, state } = makeCtx({}, {
-      events: {
-        onUnitSession: () => {
-          throw new Error("surface bug")
+    const { ctx, host, index, state } = makeCtx(
+      {},
+      {
+        events: {
+          onUnitSession: () => {
+            throw new Error("surface bug")
+          },
         },
       },
-    })
+    )
     expect(await ctx.agent("x")).toBeNull()
     expect(index.size()).toBe(0)
     expect(host.interrupts).toEqual(["ses_fake_1"])

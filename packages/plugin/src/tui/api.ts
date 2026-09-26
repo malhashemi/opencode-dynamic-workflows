@@ -28,7 +28,13 @@ export interface WorkflowApi {
   getTranscript(input: { runId: string; unitId: string }): Promise<GetTranscriptOutput>
   getActivity(input: { runId: string }): Promise<{ entries: ActivityEntry[] }>
   listWorkflows(): Promise<ListWorkflowsOutput>
-  startRun(input: { name?: string; source?: string; args?: unknown; parentSessionID?: string; requestId?: string }): Promise<{ runId: string }>
+  startRun(input: {
+    name?: string
+    source?: string
+    args?: unknown
+    parentSessionID?: string
+    requestId?: string
+  }): Promise<{ runId: string }>
   stopRun(input: { runId: string }): Promise<{ ok: true }>
   stopUnit(input: { runId: string; unitId: string }): Promise<{ ok: true }>
   restartUnit(input: { runId: string; unitId: string }): Promise<{ ok: true }>
@@ -39,7 +45,10 @@ export interface WorkflowApi {
   cleanupRun(input: { runId: string; deleted?: string[] }): Promise<{ deleted: number; pending: number }>
   attach(input: { surface: string; sessionID?: string; ttlMs?: number }): Promise<{ ok: true }>
   detach(input: { surface: string }): Promise<{ ok: true }>
-  eventsSince(input: { after?: number; epoch?: string }): Promise<{ events: ProtocolEvent[]; complete: boolean; latest: number; epoch?: string }>
+  eventsSince(input: {
+    after?: number
+    epoch?: string
+  }): Promise<{ events: ProtocolEvent[]; complete: boolean; latest: number; epoch?: string }>
   pair(): Promise<{ code: string; expiresAt: number; url: string }>
 }
 
@@ -86,7 +95,8 @@ export function bindApi(raw: unknown, location: Location | undefined): { api: Wo
       return [name, (input: unknown = {}) => method(input, location ? { location } : undefined)]
     }),
   ) as unknown as WorkflowApi
-  const events: EventStream = (signal) => client.events.subscribe("event", { signal }) as AsyncIterable<{ data: ProtocolEvent }>
+  const events: EventStream = (signal) =>
+    client.events.subscribe("event", { signal }) as AsyncIterable<{ data: ProtocolEvent }>
   return { api, events }
 }
 

@@ -1,0 +1,126 @@
+# Releases are driven by release-please: conventional commits on main keep a release PR up to
+# date (version bump + CHANGELOG). Merging that PR creates the GitHub release, and the publish
+# job builds the TUI bundle and the web app and publishes the package to npm with provenance
+# (trusted publishing: OIDC, no tokens).
+#
+# To finish a release that failed part-way, run this workflow manually with the tag: it
+# publishes that tag if it is not on npm yet.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)publish, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Pull requests opened with the workflow token do not trigger CI, but main requires its
+      # checks. Start CI on the release branch so the release pull request can merge normally.
+      - name: Run CI on the release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --label "autorelease: pending" \
+            --json headRefName -q '.[0].headRefName')
+          if [ -n "$branch" ]; then
+            gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
+            echo "Started CI on $branch"
+          else
+            echo "No open release pull request"
+          fi
+
+  plan:
+    needs: release-please
+    if: ${{ !cancelled() && needs.release-please.result != 'failure' }}
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          CREATED: ${{ needs.release-please.outputs.created }}
+          CREATED_TAG: ${{ needs.release-please.outputs.tag }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+            gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null
+          elif [ "$CREATED" = "true" ]; then
+            tag="$CREATED_TAG"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "publish=true"
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: plan
+    if: ${{ !cancelled() && !failure() && needs.plan.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      # npm trusted publishing (OIDC, no tokens) and provenance.
+      id-token: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      # The TUI bundle and the web app ship inside the package (dist/ is not committed).
+      - run: bun run build
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          # Never restore caches into a release build.
+          package-manager-cache: false
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+
+      - name: Publish the plugin
+        working-directory: packages/plugin
+        run: |
+          name=$(node -p "require('./package.json').name")
+          if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+            echo "$name@$VERSION is already published"
+          else
+            npm publish --provenance --access public
+          fi

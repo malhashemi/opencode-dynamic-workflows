@@ -1,4 +1,5 @@
 import { createContext, useContext, type Accessor } from "solid-js"
+
 import type { Api, GatewayInfo } from "./api"
 import type { EventHub } from "./hub"
 

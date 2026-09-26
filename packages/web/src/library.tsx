@@ -1,8 +1,18 @@
 import type { LibraryEntry, WorkflowListing } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+
 import { ActionButton, Empty, ErrorNote, Link, Meter, rowKeys, StatusBadge, Tag } from "./components"
 import { useApp } from "./context"
-import { elapsed, formatCost, formatCount, relativeTime, shortId, shortLocation, tokenBreakdown, totalTokens } from "./format"
+import {
+  elapsed,
+  formatCost,
+  formatCount,
+  relativeTime,
+  shortId,
+  shortLocation,
+  tokenBreakdown,
+  totalTokens,
+} from "./format"
 import { navigate, runPath } from "./router"
 import { describeFields, parseArgs, templateFor } from "./schema"
 import { filterLibrary, phasePosition, upsertLibraryEntry, type LibraryFilter } from "./state"
@@ -123,7 +133,10 @@ export function LibraryPage() {
       <section class="panel" aria-labelledby="runs-title">
         <header class="panel-head wrap">
           <h1 id="runs-title">
-            Runs <span class="muted num">{visible().length === runs().length ? runs().length : `${visible().length}/${runs().length}`}</span>
+            Runs{" "}
+            <span class="muted num">
+              {visible().length === runs().length ? runs().length : `${visible().length}/${runs().length}`}
+            </span>
           </h1>
           <div class="filters" role="search">
             <label class="sr-only" for="run-search">
@@ -164,9 +177,16 @@ export function LibraryPage() {
               <label class="sr-only" for="run-location">
                 Location
               </label>
-              <select id="run-location" class="input input-sm" value={filter().location} onChange={(event) => setFilter({ ...filter(), location: event.currentTarget.value })}>
+              <select
+                id="run-location"
+                class="input input-sm"
+                value={filter().location}
+                onChange={(event) => setFilter({ ...filter(), location: event.currentTarget.value })}
+              >
                 <option value="all">All locations</option>
-                <For each={locations()}>{(location) => <option value={location}>{shortLocation(location)}</option>}</For>
+                <For each={locations()}>
+                  {(location) => <option value={location}>{shortLocation(location)}</option>}
+                </For>
               </select>
             </Show>
           </div>
@@ -174,7 +194,18 @@ export function LibraryPage() {
         <Show when={error()}>
           <ErrorNote error={error()} retry={() => void fetchRuns()} />
         </Show>
-        <Show when={visible().length > 0} fallback={<Empty>{!loaded() ? "Loading Runs…" : runs().length === 0 ? "No Runs yet. Start a Workflow below, or from an OpenCode session." : "No Runs match the filter."}</Empty>}>
+        <Show
+          when={visible().length > 0}
+          fallback={
+            <Empty>
+              {!loaded()
+                ? "Loading Runs…"
+                : runs().length === 0
+                  ? "No Runs yet. Start a Workflow below, or from an OpenCode session."
+                  : "No Runs match the filter."}
+            </Empty>
+          }
+        >
           <div class="table-scroll">
             <table class="table" onKeyDown={rowKeys}>
               <thead>
@@ -219,7 +250,12 @@ export function LibraryPage() {
                         <span class="num">
                           {entry.settledUnits}/{entry.units}
                         </span>{" "}
-                        <Meter value={entry.settledUnits} total={entry.units} failed={entry.failedUnits} label="Units settled" />
+                        <Meter
+                          value={entry.settledUnits}
+                          total={entry.units}
+                          failed={entry.failedUnits}
+                          label="Units settled"
+                        />
                         <Show when={entry.failedUnits > 0}>
                           <span class="err small"> {entry.failedUnits} failed</span>
                         </Show>
@@ -228,7 +264,11 @@ export function LibraryPage() {
                         {formatCount(totalTokens(entry.usage))}
                       </td>
                       <td class="r num">{formatCost(entry.usage.cost)}</td>
-                      <td class="r num">{entry.endedAt === null && !entry.live ? "—" : elapsed(entry.startedAt, entry.endedAt, app.now())}</td>
+                      <td class="r num">
+                        {entry.endedAt === null && !entry.live
+                          ? "—"
+                          : elapsed(entry.startedAt, entry.endedAt, app.now())}
+                      </td>
                       <td class="r muted nowrap" title={new Date(entry.startedAt).toLocaleString()}>
                         {relativeTime(entry.startedAt, app.now())}
                       </td>
@@ -260,8 +300,13 @@ function WorkflowsPanel() {
         <h2 id="workflows-title">Durable Workflows</h2>
         <span class="muted small">saved under .opencode/workflows/</span>
       </header>
-      <Show when={locations().length > 0} fallback={<p class="muted pad">No location is registered with the Gateway.</p>}>
-        <For each={locations()}>{(location) => <LocationWorkflows location={location} showLocation={locations().length > 1} />}</For>
+      <Show
+        when={locations().length > 0}
+        fallback={<p class="muted pad">No location is registered with the Gateway.</p>}
+      >
+        <For each={locations()}>
+          {(location) => <LocationWorkflows location={location} showLocation={locations().length > 1} />}
+        </For>
       </Show>
     </section>
   )
@@ -269,7 +314,10 @@ function WorkflowsPanel() {
 
 function LocationWorkflows(props: { location: string; showLocation: boolean }) {
   const app = useApp()
-  const [listing, { refetch }] = createResource(() => props.location, (location) => app.api.listWorkflows(location))
+  const [listing, { refetch }] = createResource(
+    () => props.location,
+    (location) => app.api.listWorkflows(location),
+  )
   return (
     <div class="location-block">
       <Show when={props.showLocation}>
@@ -281,9 +329,14 @@ function LocationWorkflows(props: { location: string; showLocation: boolean }) {
         <Show when={listing()} fallback={<p class="muted pad">Loading…</p>}>
           {(data) => (
             <>
-              <Show when={data().workflows.length > 0} fallback={<p class="muted pad">No durable Workflows in this project.</p>}>
+              <Show
+                when={data().workflows.length > 0}
+                fallback={<p class="muted pad">No durable Workflows in this project.</p>}
+              >
                 <ul class="workflows">
-                  <For each={data().workflows}>{(workflow) => <WorkflowRow location={props.location} workflow={workflow} />}</For>
+                  <For each={data().workflows}>
+                    {(workflow) => <WorkflowRow location={props.location} workflow={workflow} />}
+                  </For>
                 </ul>
               </Show>
               <Show when={data().failures.length > 0}>
@@ -305,7 +358,8 @@ function LocationWorkflows(props: { location: string; showLocation: boolean }) {
                   <For each={data().collisions}>
                     {(collision) => (
                       <div>
-                        <span class="mono">{collision.key}</span>: using <span class="mono">{collision.kept}</span>, shadowing <span class="mono">{collision.shadowed}</span>
+                        <span class="mono">{collision.key}</span>: using <span class="mono">{collision.kept}</span>,
+                        shadowing <span class="mono">{collision.shadowed}</span>
                       </div>
                     )}
                   </For>
@@ -427,7 +481,10 @@ function WorkflowRow(props: { location: string; workflow: WorkflowListing }) {
                 onAction={async () => {
                   const result = parsed()
                   if (!result.ok) return
-                  const { runId } = await app.api.startRun(props.location, { name: w().key, ...(result.value !== undefined ? { args: result.value } : {}) })
+                  const { runId } = await app.api.startRun(props.location, {
+                    name: w().key,
+                    ...(result.value !== undefined ? { args: result.value } : {}),
+                  })
                   navigate(runPath(runId))
                 }}
               >

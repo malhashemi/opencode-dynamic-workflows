@@ -1,5 +1,6 @@
 import type { PendingInteraction } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js"
+
 import { ApiError, createApi, localTokenStorage, type GatewayInfo, type TokenStorage } from "./api"
 import { ErrorNote, Link } from "./components"
 import { App as AppCtx, type AppContext } from "./context"
@@ -55,7 +56,10 @@ export function App() {
     const id = ++toastId
     setToasts((list) => [...list.slice(-4), { ...toast, id }])
     setLiveText(toast.message)
-    setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), toast.tone === "error" ? 9000 : toast.tone === "attention" ? 12000 : 4000)
+    setTimeout(
+      () => setToasts((list) => list.filter((t) => t.id !== id)),
+      toast.tone === "error" ? 9000 : toast.tone === "attention" ? 12000 : 4000,
+    )
   }
 
   const requestPairing: AppContext["requestPairing"] = (reason) =>
@@ -97,11 +101,17 @@ export function App() {
       event(event) {
         if (event.type === "interaction.pending") {
           const interaction = event.data as PendingInteraction
-          const what = interaction.kind === "permission" ? "a permission decision" : interaction.kind === "approval" ? "approval to run an inline Workflow" : "an answer"
+          const what =
+            interaction.kind === "permission"
+              ? "a permission decision"
+              : interaction.kind === "approval"
+                ? "approval to run an inline Workflow"
+                : "an answer"
           const message = `A Run needs ${what} (${shortId(event.runId)}).`
           // On that Run's page the panel is right there: announce it, but skip the visual toast.
           if (runId() === event.runId) setLiveText(message)
-          else push({ message, tone: "attention", href: runPath(event.runId), interactionId: interaction.interactionId })
+          else
+            push({ message, tone: "attention", href: runPath(event.runId), interactionId: interaction.interactionId })
         } else if (event.type === "interaction.resolved") {
           const id = (event.data as { interactionId?: string }).interactionId
           setToasts((list) => list.filter((toast) => toast.interactionId !== id))
@@ -167,7 +177,11 @@ export function App() {
         <Show when={info()}>
           {(loaded) => (
             <>
-              <span class="conn" data-state={connection().state} title={[...statuses().entries()].map(([location, status]) => `${location}: ${status}`).join("\n")}>
+              <span
+                class="conn"
+                data-state={connection().state}
+                title={[...statuses().entries()].map(([location, status]) => `${location}: ${status}`).join("\n")}
+              >
                 <span class="dot" aria-hidden="true" />
                 {connection().label}
               </span>
@@ -246,7 +260,12 @@ export function App() {
                   Open
                 </Link>
               </Show>
-              <button type="button" class="btn btn-ghost btn-xs" aria-label="Dismiss" onClick={() => setToasts((list) => list.filter((t) => t.id !== toast.id))}>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs"
+                aria-label="Dismiss"
+                onClick={() => setToasts((list) => list.filter((t) => t.id !== toast.id))}
+              >
                 ×
               </button>
             </div>
@@ -284,11 +303,19 @@ function NotFound() {
 }
 
 function defaultDeviceName(): string {
-  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform ?? ""
+  const platform =
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    ""
   return `browser${platform ? ` on ${platform}` : ""}`
 }
 
-function PairingForm(props: { intro?: string; api: ReturnType<typeof createApi>; onPaired: () => void; loopback?: boolean }) {
+function PairingForm(props: {
+  intro?: string
+  api: ReturnType<typeof createApi>
+  onPaired: () => void
+  loopback?: boolean
+}) {
   const [code, setCode] = createSignal("")
   const [name, setName] = createSignal(defaultDeviceName())
   const [busy, setBusy] = createSignal(false)
@@ -356,7 +383,13 @@ function PairingForm(props: { intro?: string; api: ReturnType<typeof createApi>;
           Pair
         </button>
         <Show when={props.loopback}>
-          <button type="button" class="btn" disabled={busy()} onClick={() => void local()} title="This browser runs on the Gateway's machine">
+          <button
+            type="button"
+            class="btn"
+            disabled={busy()}
+            onClick={() => void local()}
+            title="This browser runs on the Gateway's machine"
+          >
             Pair this local browser
           </button>
         </Show>
@@ -366,7 +399,12 @@ function PairingForm(props: { intro?: string; api: ReturnType<typeof createApi>;
   )
 }
 
-function PairingDialog(props: { reason?: string; api: ReturnType<typeof createApi>; loopback: boolean; onClose: (ok: boolean) => void }) {
+function PairingDialog(props: {
+  reason?: string
+  api: ReturnType<typeof createApi>
+  loopback: boolean
+  onClose: (ok: boolean) => void
+}) {
   let dialog: HTMLDialogElement | undefined
   onMount(() => dialog?.showModal())
   return (
@@ -380,7 +418,10 @@ function PairingDialog(props: { reason?: string; api: ReturnType<typeof createAp
       }}
     >
       <PairingForm
-        intro={props.reason ?? "Control actions need a device token. Get a pairing code from the Workflows panel in the OpenCode TUI."}
+        intro={
+          props.reason ??
+          "Control actions need a device token. Get a pairing code from the Workflows panel in the OpenCode TUI."
+        }
         api={props.api}
         loopback={props.loopback}
         onPaired={() => props.onClose(true)}

@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">pipeline: no barrier between items</title>
+  <desc id="desc">Three files go through two stages, review then verify. Each file starts verify as soon as its own review Unit finishes, without waiting for the others. Each typed result flies into collect() in the order the files finish. A dashed line marks where parallel() would have waited for every review first.</desc>
+  <defs>
+    <filter id="glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="2.4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/>
+    </pattern>
+    
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    </style>
+  </defs>
+
+  <rect width="960" height="420" rx="18" fill="#0a0a0a"/>
+  <rect width="960" height="420" rx="18" fill="url(#dots)"/>
+  <rect x="0.5" y="0.5" width="959" height="419" rx="18" fill="none" stroke="#ffffff" stroke-opacity="0.07"/>
+
+  <text x="40" y="52" font-size="17" class="mono" xml:space="preserve"><tspan fill="#fab283">pipeline</tspan><tspan fill="#b5b5b5">(files, </tspan><tspan fill="#fab283">review</tspan><tspan fill="#b5b5b5">, </tspan><tspan fill="#9d7cd8">verify</tspan><tspan fill="#b5b5b5">)</tspan></text>
+  <text x="40" y="80" font-size="14" fill="#808080">Each item starts its next stage when its own Unit finishes. Results arrive in the order items finish.</text>
+
+  <!-- Where parallel() + parallel() would wait for every review. -->
+  <line x1="430" y1="116" x2="430" y2="314" stroke="#4c4c4c" stroke-dasharray="4 5"/>
+  <text x="438" y="116" font-size="11" class="mono" fill="#808080">barrier with parallel()</text>
+
+    <g>
+      <text x="148" y="153" font-size="14" class="mono" fill="#b5b5b5" text-anchor="end">a.ts</text>
+      <rect x="170" y="128" width="350" height="40" rx="8" fill="#141414" stroke="#2e2e2e" stroke-dasharray="3 4"/>
+      <rect x="170" y="128" width="0" height="40" rx="8" fill="#fab283" fill-opacity="0.16" stroke="#fab283" stroke-opacity="0.8">
+        <animate attributeName="width" dur="9s" repeatCount="indefinite" values="0;200;200;0;0" keyTimes="0.0000;0.2222;0.8778;0.9222;1.0000"/>
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.8778;0.9222;0.9989;1.0000"/>
+      </rect>
+      <text x="182" y="153" font-size="13" fill="#fab283" opacity="0">review
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.0278;0.0500;0.8778;0.9222;1.0000"/>
+      </text>
+      <rect x="370" y="128" width="0" height="40" rx="8" fill="#9d7cd8" fill-opacity="0.18" stroke="#9d7cd8" stroke-opacity="0.85">
+        <animate attributeName="width" dur="9s" repeatCount="indefinite" values="0;0;150;150;0;0" keyTimes="0.0000;0.2222;0.3889;0.8778;0.9222;1.0000"/>
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.8778;0.9222;0.9989;1.0000"/>
+      </rect>
+      <text x="382" y="153" font-size="13" fill="#9d7cd8" opacity="0">verify
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.2833;0.3056;0.8778;0.9222;1.0000"/>
+      </text>
+      <circle cx="536" cy="148" r="5" fill="#7fd88f" opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3878;0.3889;0.8778;0.9222;1.0000"/>
+      </circle>
+    </g>
+    <g>
+      <text x="148" y="215" font-size="14" class="mono" fill="#b5b5b5" text-anchor="end">b.ts</text>
+      <rect x="170" y="190" width="300" height="40" rx="8" fill="#141414" stroke="#2e2e2e" stroke-dasharray="3 4"/>
+      <rect x="170" y="190" width="0" height="40" rx="8" fill="#fab283" fill-opacity="0.16" stroke="#fab283" stroke-opacity="0.8">
+        <animate attributeName="width" dur="9s" repeatCount="indefinite" values="0;120;120;0;0" keyTimes="0.0000;0.1333;0.8778;0.9222;1.0000"/>
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.8778;0.9222;0.9989;1.0000"/>
+      </rect>
+      <text x="182" y="215" font-size="13" fill="#fab283" opacity="0">review
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.0278;0.0500;0.8778;0.9222;1.0000"/>
+      </text>
+      <rect x="290" y="190" width="0" height="40" rx="8" fill="#9d7cd8" fill-opacity="0.18" stroke="#9d7cd8" stroke-opacity="0.85">
+        <animate attributeName="width" dur="9s" repeatCount="indefinite" values="0;0;180;180;0;0" keyTimes="0.0000;0.1333;0.3333;0.8778;0.9222;1.0000"/>
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.8778;0.9222;0.9989;1.0000"/>
+      </rect>
+      <text x="302" y="215" font-size="13" fill="#9d7cd8" opacity="0">verify
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.1944;0.2167;0.8778;0.9222;1.0000"/>
+      </text>
+      <circle cx="486" cy="210" r="5" fill="#7fd88f" opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3322;0.3333;0.8778;0.9222;1.0000"/>
+      </circle>
+    </g>
+    <g>
+      <text x="148" y="277" font-size="14" class="mono" fill="#b5b5b5" text-anchor="end">c.ts</text>
+      <rect x="170" y="252" width="380" height="40" rx="8" fill="#141414" stroke="#2e2e2e" stroke-dasharray="3 4"/>
+      <rect x="170" y="252" width="0" height="40" rx="8" fill="#fab283" fill-opacity="0.16" stroke="#fab283" stroke-opacity="0.8">
+        <animate attributeName="width" dur="9s" repeatCount="indefinite" values="0;260;260;0;0" keyTimes="0.0000;0.2889;0.8778;0.9222;1.0000"/>
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.8778;0.9222;0.9989;1.0000"/>
+      </rect>
+      <text x="182" y="277" font-size="13" fill="#fab283" opacity="0">review
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.0278;0.0500;0.8778;0.9222;1.0000"/>
+      </text>
+      <rect x="430" y="252" width="0" height="40" rx="8" fill="#9d7cd8" fill-opacity="0.18" stroke="#9d7cd8" stroke-opacity="0.85">
+        <animate attributeName="width" dur="9s" repeatCount="indefinite" values="0;0;120;120;0;0" keyTimes="0.0000;0.2889;0.4222;0.8778;0.9222;1.0000"/>
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.8778;0.9222;0.9989;1.0000"/>
+      </rect>
+      <text x="442" y="277" font-size="13" fill="#9d7cd8" opacity="0">verify
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3500;0.3722;0.8778;0.9222;1.0000"/>
+      </text>
+      <circle cx="566" cy="272" r="5" fill="#7fd88f" opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.4211;0.4222;0.8778;0.9222;1.0000"/>
+      </circle>
+    </g>
+
+  <line x1="170" y1="322" x2="570" y2="322" stroke="#4c4c4c"/>
+  <line x1="170" y1="322" x2="170" y2="327" stroke="#4c4c4c"/><text x="170" y="342" font-size="11" class="mono" fill="#808080" text-anchor="middle">0s</text><line x1="270" y1="322" x2="270" y2="327" stroke="#4c4c4c"/><text x="270" y="342" font-size="11" class="mono" fill="#808080" text-anchor="middle">1s</text><line x1="370" y1="322" x2="370" y2="327" stroke="#4c4c4c"/><text x="370" y="342" font-size="11" class="mono" fill="#808080" text-anchor="middle">2s</text><line x1="470" y1="322" x2="470" y2="327" stroke="#4c4c4c"/><text x="470" y="342" font-size="11" class="mono" fill="#808080" text-anchor="middle">3s</text><line x1="570" y1="322" x2="570" y2="327" stroke="#4c4c4c"/><text x="570" y="342" font-size="11" class="mono" fill="#808080" text-anchor="middle">4s</text>
+  <!-- The playhead. -->
+  <line x1="170" y1="122" x2="170" y2="322" stroke="#eeeeee" stroke-opacity="0.5">
+    <animate attributeName="x1" dur="9s" repeatCount="indefinite" values="170;550;550;170;170" keyTimes="0.0000;0.4222;0.8778;0.8789;1.0000"/>
+    <animate attributeName="x2" dur="9s" repeatCount="indefinite" values="170;550;550;170;170" keyTimes="0.0000;0.4222;0.8778;0.8789;1.0000"/>
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0.0000;0.4222;0.4556;0.9778;1.0000"/>
+  </line>
+
+  <!-- collect(): typed values, nulls dropped. -->
+  <rect x="686" y="112" width="244" height="224" rx="12" fill="#141414" stroke="#3c3c3c"/>
+  <text x="702" y="142" font-size="14" class="mono" fill="#eeeeee">collect()</text>
+  <text x="702" y="160" font-size="11" fill="#808080">typed values, in finish order</text>
+    <path d="M486,210 C566,210 626,196 700,196" fill="none" stroke="#2e2e2e" stroke-width="1.2" stroke-dasharray="2 4" opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3333;0.3444;0.8778;0.9222;1.0000"/>
+      </path>
+      <circle r="3.5" fill="#7fd88f" filter="url(#glow)" opacity="0">
+      <animateMotion dur="9s" repeatCount="indefinite" path="M486,210 C566,210 626,196 700,196" keyPoints="0;0;1;1" keyTimes="0;0.3333;0.3889;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3322;0.3333;0.3889;0.3944;1.0000"/>
+    </circle>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3878;0.4056;0.8778;0.9222;1.0000"/>
+        <rect x="700" y="181" width="216" height="30" rx="7" fill="#1e1e1e" stroke="#7fd88f" stroke-opacity="0.45"/>
+        <text x="712" y="201" font-size="12" class="mono" fill="#b5b5b5">b.ts</text>
+        <text x="760" y="201" font-size="12" class="mono" fill="#9d7cd8">{ holds: false }</text>
+      </g>
+    <path d="M536,148 C616,148 626,242 700,242" fill="none" stroke="#2e2e2e" stroke-width="1.2" stroke-dasharray="2 4" opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3889;0.4000;0.8778;0.9222;1.0000"/>
+      </path>
+      <circle r="3.5" fill="#7fd88f" filter="url(#glow)" opacity="0">
+      <animateMotion dur="9s" repeatCount="indefinite" path="M536,148 C616,148 626,242 700,242" keyPoints="0;0;1;1" keyTimes="0;0.3889;0.4444;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.3878;0.3889;0.4444;0.4500;1.0000"/>
+    </circle>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.4433;0.4611;0.8778;0.9222;1.0000"/>
+        <rect x="700" y="227" width="216" height="30" rx="7" fill="#1e1e1e" stroke="#7fd88f" stroke-opacity="0.45"/>
+        <text x="712" y="247" font-size="12" class="mono" fill="#b5b5b5">a.ts</text>
+        <text x="760" y="247" font-size="12" class="mono" fill="#9d7cd8">{ holds: true }</text>
+      </g>
+    <path d="M566,272 C646,272 626,288 700,288" fill="none" stroke="#2e2e2e" stroke-width="1.2" stroke-dasharray="2 4" opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.4222;0.4333;0.8778;0.9222;1.0000"/>
+      </path>
+      <circle r="3.5" fill="#7fd88f" filter="url(#glow)" opacity="0">
+      <animateMotion dur="9s" repeatCount="indefinite" path="M566,272 C646,272 626,288 700,288" keyPoints="0;0;1;1" keyTimes="0;0.4222;0.4778;1" calcMode="linear"/>
+      <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.4211;0.4222;0.4778;0.4833;1.0000"/>
+    </circle>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0.0000;0.4767;0.4944;0.8778;0.9222;1.0000"/>
+        <rect x="700" y="273" width="216" height="30" rx="7" fill="#1e1e1e" stroke="#7fd88f" stroke-opacity="0.45"/>
+        <text x="712" y="293" font-size="12" class="mono" fill="#b5b5b5">c.ts</text>
+        <text x="760" y="293" font-size="12" class="mono" fill="#9d7cd8">{ holds: true }</text>
+      </g>
+
+  <g transform="translate(40 378)" font-size="12">
+    <rect width="12" height="12" y="-10" rx="3" fill="#fab283" fill-opacity="0.2" stroke="#fab283"/>
+    <text x="20" y="0" fill="#b5b5b5">review Unit</text>
+    <rect x="112" width="12" height="12" y="-10" rx="3" fill="#9d7cd8" fill-opacity="0.2" stroke="#9d7cd8"/>
+    <text x="132" y="0" fill="#b5b5b5">verify Unit</text>
+    <circle cx="232" cy="-4" r="5" fill="#7fd88f"/>
+    <text x="244" y="0" fill="#b5b5b5">typed result (a schema-validated value)</text>
+  </g>
+</svg>

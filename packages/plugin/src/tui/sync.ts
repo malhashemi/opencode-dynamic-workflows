@@ -8,7 +8,15 @@
  */
 import type { ProtocolEvent } from "../protocol"
 import { errorText, type EventStream, type WorkflowApi } from "./api"
-import { applyActivitySnapshot, applyEvent, applyRunSnapshot, emptyState, fromSnapshot, type Effect, type SyncState } from "./state"
+import {
+  applyActivitySnapshot,
+  applyEvent,
+  applyRunSnapshot,
+  emptyState,
+  fromSnapshot,
+  type Effect,
+  type SyncState,
+} from "./state"
 
 export interface SyncOptions {
   api: WorkflowApi
@@ -140,8 +148,26 @@ export class WorkflowSync {
       const { latest, epoch } = await api.eventsSince({ after: Number.MAX_SAFE_INTEGER })
       const { runs: entries } = await api.listRuns({ limit: this.options.historyLimit ?? 200 })
       const live = entries.filter((entry) => entry.live || entry.waiting).slice(0, this.options.hydrateLimit ?? 25)
-      const runs = (await Promise.all(live.map((entry) => api.getRun({ runId: entry.runId }).then((out) => out.run, () => null)))).filter((run) => run !== null)
-      this.set(fromSnapshot({ location: info.location, seq: latest, ...(epoch ? { epoch } : {}), entries, runs, previous: this.state }))
+      const runs = (
+        await Promise.all(
+          live.map((entry) =>
+            api.getRun({ runId: entry.runId }).then(
+              (out) => out.run,
+              () => null,
+            ),
+          ),
+        )
+      ).filter((run) => run !== null)
+      this.set(
+        fromSnapshot({
+          location: info.location,
+          seq: latest,
+          ...(epoch ? { epoch } : {}),
+          entries,
+          runs,
+          previous: this.state,
+        }),
+      )
     })
   }
 

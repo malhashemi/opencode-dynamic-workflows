@@ -5,8 +5,9 @@
  * invalid (or merely zod-refinement-invalid) payload with a recorded error.
  */
 import { describe, expect, it } from "bun:test"
-import { z } from "../src/workflow"
+
 import { DEFAULT_RETRIES, parseStructured, toJsonSchema, fromJsonSchema } from "../src/schema-bridge"
+import { z } from "../src/workflow"
 
 describe("toJsonSchema", () => {
   it("converts a worked-example object schema to a draft-7 JSON Schema (no $schema wrapper)", () => {
@@ -97,6 +98,9 @@ describe("audit round 4 — JSON Schema conversion matches JSON Schema", () => {
   it("boolean items: false accepts only an empty array, true anything", () => {
     expect(fromJsonSchema({ type: "array", items: false }).safeParse([1]).success).toBe(false)
     expect(fromJsonSchema({ type: "array", items: false }).safeParse([]).success).toBe(true)
-    expect(fromJsonSchema({ type: "object", properties: { a: { type: "array", items: true } } }).safeParse({ a: [1, "x"] }).success).toBe(true)
+    expect(
+      fromJsonSchema({ type: "object", properties: { a: { type: "array", items: true } } }).safeParse({ a: [1, "x"] })
+        .success,
+    ).toBe(true)
   })
 })

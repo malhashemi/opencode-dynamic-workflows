@@ -8,6 +8,7 @@
  * published to people instead of taking their headless defaults.
  */
 import type { ProtocolEvent } from "@malhashemi/opencode-dynamic-workflows/protocol"
+
 import { connectSse, type SseConnection, type SseMessage, type SseOptions, type SseStatus } from "./sse"
 import { SeqTracker } from "./state"
 

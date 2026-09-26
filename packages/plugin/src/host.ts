@@ -106,7 +106,11 @@ export function toHostModel(model: unknown): HostModelRef | undefined {
     const value = model as { providerID?: unknown; modelID?: unknown; id?: unknown; variant?: unknown }
     const id = typeof value.modelID === "string" ? value.modelID : typeof value.id === "string" ? value.id : undefined
     if (typeof value.providerID !== "string" || !id) return undefined
-    return { providerID: value.providerID, id, ...(typeof value.variant === "string" ? { variant: value.variant } : {}) }
+    return {
+      providerID: value.providerID,
+      id,
+      ...(typeof value.variant === "string" ? { variant: value.variant } : {}),
+    }
   }
   return undefined
 }
