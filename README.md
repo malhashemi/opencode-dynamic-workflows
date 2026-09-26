@@ -8,6 +8,7 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-9d7cd8"></a>
   <img alt="OpenCode 2.0.16 or newer" src="https://img.shields.io/badge/OpenCode-%E2%89%A5%202.0.16-7fd88f">
   <img alt="macOS, Linux, Windows" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-808080">
+  <a href="docs/integrating.md"><img alt="Protocol v1, OpenAPI 3.1" src="https://img.shields.io/badge/protocol-v1%20%C2%B7%20OpenAPI%203.1-56b6c2"></a>
 </p>
 
 <p align="center">
@@ -54,6 +55,7 @@ and permission requests while it runs, and every Unit is journaled so a stopped 
         <li><b>Typed results.</b> Pass a zod schema (or a JSON Schema) and get a validated value back. When a model answers in prose, the engine repairs or extracts the value.</li>
         <li><b>Any model per Unit.</b> <code>model: "provider/model#variant"</code> puts different models in one Run, for example an independent verifier.</li>
         <li><b>Watch and steer.</b> A TUI panel and a web app show phases, Units and transcripts. Stop a Run, restart a Unit, answer a question.</li>
+        <li><b>Build on it.</b> A versioned protocol with an OpenAPI 3.1 spec: any app can list, start, follow and answer Workflows, no TUI needed.</li>
         <li><b>Never hangs headless.</b> Questions carry a fallback answer, and permission requests are denied with a message when nobody is watching.</li>
         <li><b>Resumable.</b> Every Run is journaled. Resume replays the finished Units and runs the rest live.</li>
         <li><b>Bounded.</b> 5 Units per Run and 5 Runs at once by default, per-provider caps, token budgets and hard limits.</li>
@@ -117,20 +119,26 @@ it writes a Workflow for the task at hand and runs it with `workflow_inline` onc
 
 ## Install
 
-Add the package to `plugins` in `opencode.json` (one project) or in your global OpenCode config:
+```sh
+opencode plugin add @malhashemi/opencode-dynamic-workflows
+opencode service restart
+```
+
+That adds the package to your global OpenCode config. The TUI part loads with the server part; there is nothing else
+to install. `opencode plugin update` brings later releases.
+
+Or add it to `plugins` yourself, in a project's `opencode.json` or the global one. The object form takes
+[options](#configuration); a project entry for the same package overrides the global one's options:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["@malhashemi/opencode-dynamic-workflows"]
+  "plugins": [{ "package": "@malhashemi/opencode-dynamic-workflows", "options": { "inline": "ask" } }]
 }
 ```
 
-Restart OpenCode. The TUI part loads with the server part; there is nothing else to install.
-
-To run from a checkout of this repository, run `bun install && bun run build` and put the absolute path of
-`packages/plugin` in `plugins` instead. A git spec (`git+https://…#<ref>`) works for a repository whose root is the
-packed package (`bun run pack` output).
+To run from a checkout of this repository, see the [development guide](docs/development.md): a checkout and the
+installed package are two plugins to OpenCode, so do not load both in one place.
 
 ## Usage
 
@@ -160,21 +168,39 @@ preview arrives in the session that started it (plugin option `notify`).
 
 `/workflows` (or <kbd>leader</kbd> <kbd>f</kbd>) opens the Run library. From there you open a Run (phases, Units,
 activity, result) and a Unit (prompt, output, transcript). The session you are in also shows its Runs in a strip above
-the prompt, in the sidebar and in a run panel (`/workflows panel`).
+the prompt, in the sidebar and in a run panel (`/workflows panel`). The header links to the same page in the web app.
+
+<p align="center">
+  <a href="assets/tui-run.webp"><img src="assets/tui-run.webp" alt="The TUI's Run view: a header card for examples:research (done, 1m12s, 8.2k tokens, $0.66) with its phase stepper plan, research, synthesis and a budget meter; five Units with phase, agent, tokens, cost and time; the typed result as highlighted JSON" width="100%"></a><br>
+  <sub>A Run in the TUI: phases, Units, budget and the typed result.</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><a href="assets/tui-library.webp"><img src="assets/tui-library.webp" alt="The TUI's Run library: Live Runs (one running with a progress meter, two waiting) and Recent Runs (done and failed), with phase, Units, tokens, cost, time and the web app's address" width="100%"></a></td>
+    <td width="50%"><a href="assets/tui-unit.webp"><img src="assets/tui-unit.webp" alt="A Unit in the TUI: its header card with agent, model and phase, the prompt as a quote, and the output rendered as markdown" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The library: live Runs first, each with its progress.</sub></td>
+    <td align="center"><sub>A Unit: its prompt, and its output as markdown.</sub></td>
+  </tr>
+</table>
 
 | Where | Keys |
 | --- | --- |
-| Library | <kbd>↵</kbd> open · <kbd>a</kbd> answer · <kbd>f</kbd> filter · <kbd>d</kbd> clean up finished · <kbd>p</kbd> pair a browser · <kbd>r</kbd> refresh |
-| Run, while running | <kbd>↵</kbd> Unit · <kbd>o</kbd> transcript · <kbd>s</kbd> stop Run · <kbd>x</kbd> stop Unit · <kbd>r</kbd> restart Unit · <kbd>p</kbd> parent session |
+| Library | <kbd>↵</kbd> open · <kbd>a</kbd> answer · <kbd>f</kbd> filter · <kbd>d</kbd> clean up finished · <kbd>b</kbd> open in the browser · <kbd>p</kbd> pair a device · <kbd>r</kbd> refresh |
+| Run, while running | <kbd>↵</kbd> Unit · <kbd>o</kbd> transcript · <kbd>s</kbd> stop Run · <kbd>x</kbd> stop Unit · <kbd>r</kbd> restart Unit · <kbd>b</kbd> open in the browser · <kbd>p</kbd> parent session |
 | Run, when finished | <kbd>e</kbd> resume · <kbd>w</kbd> save as a durable Workflow · <kbd>d</kbd> delete its Unit sessions |
+| Approval | <kbd>↑</kbd>/<kbd>↓</kbd>, <kbd>PgUp</kbd>/<kbd>PgDn</kbd>, <kbd>Home</kbd>/<kbd>End</kbd> scroll the script · <kbd>←</kbd>/<kbd>→</kbd> choose · <kbd>↵</kbd> confirm |
 | Anywhere | <kbd>j</kbd>/<kbd>k</kbd> or arrows to move · <kbd>⌫</kbd> back |
 
 `/workflows` also takes `panel`, `answer`, `cleanup`, `pair`, `refresh`, or a Run id or Workflow name to open.
 
 ### In the browser
 
-Every tool result links to its Run in the web app, served by the plugin's Gateway at `http://127.0.0.1:4320` (the next
-free port if that one is taken). A browser on the same machine pairs itself for control actions. For a browser on
+The web app is served by the plugin's Gateway at `http://127.0.0.1:4320` (the next free port if that one is taken).
+The `/workflows` header shows its address and <kbd>b</kbd> opens the page you are on; every tool result also links to
+its Run. A browser on the same machine pairs itself for control actions. For a browser on
 another device (with `gateway.bind` set to `lan` or `tailscale`), run `/workflows pair` in the TUI and enter the
 one-use code.
 
@@ -322,8 +348,15 @@ flowchart LR
 Inline Workflows are model-written code that runs with your privileges, and they are not sandboxed: the approval is
 the control. By default a person approves each one (**Run once**, **Always for this project** or **Reject**) after
 reading the whole source, with its size and SHA-256, in the TUI (`/workflows`, a scrolling view) or the web app. The
-request waits until someone answers; there is no time limit. Headless, an inline Run is refused unless the project was
-approved before.
+script is not loaded, so none of its code runs, until then. Saving inline source as a durable Workflow asks the same
+way. The request waits until someone answers; there is no time limit. Headless, an inline Run is refused unless the
+project was approved before. The plugin option `inline` changes this: `"allow"` runs inline Workflows without asking,
+`"deny"` never runs them.
+
+<p align="center">
+  <a href="assets/tui-approval.webp"><img src="assets/tui-approval.webp" alt="The TUI's approval panel: Run this inline Workflow?, a warning that it runs with your permissions unsandboxed, its size and SHA-256, the whole script with syntax highlighting and line numbers in a scroll box, and the buttons Run once, Always for this project and Reject" width="100%"></a><br>
+  <sub>Approving an inline Workflow: the whole script, highlighted, before any of it runs.</sub>
+</p>
 
 Units get OpenCode's permission rules plus the engine's own: `workflow_result` and `question` allowed, `workflow` and
 `workflow_inline` denied (no recursion). A Unit's permission request goes to a person when one is attached; headless,
@@ -333,18 +366,27 @@ The Gateway binds to loopback by default, checks `Host` and `Origin` headers, an
 remote browsers pair with a one-use code. Read [`docs/security.md`](packages/plugin/docs/security.md) for the trust
 model, capabilities, limits and data on disk, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
-## Protocol
+## Build on it
 
-Runs, Units, interactions, events and errors form a versioned protocol (v1) with two transports: OpenCode plugin RPC
-and the Gateway (HTTP + Server-Sent Events). The zod definitions are the source of truth, and JSON Schemas are
-published next to the [protocol reference](packages/plugin/docs/protocol/README.md). TypeScript clients can import the
-types from `@malhashemi/opencode-dynamic-workflows/protocol` and the RPC contract from
-`@malhashemi/opencode-dynamic-workflows/rpc`.
+Your app can run Workflows too: an ADE, an editor extension, a dashboard, a bot. Everything the TUI and the web app do
+goes through one versioned protocol (v1, which changes only by addition), with two transports:
+
+- **OpenCode plugin RPC** on the OpenCode server (`POST /api/rpc/workflow/<method>`), for apps that already talk to
+  OpenCode. It uses your existing OpenCode credentials; the TypeScript contract is
+  `@malhashemi/opencode-dynamic-workflows/rpc`, the types `@malhashemi/opencode-dynamic-workflows/protocol`.
+- **The Gateway** (HTTP + Server-Sent Events), described by an [OpenAPI 3.1 document](packages/plugin/docs/protocol/openapi.json)
+  that a running Gateway also serves at `/v1/openapi.json`.
 
 ```sh
-curl -s http://127.0.0.1:4320/v1/runs | jq '.runs[0]'
+curl -s http://127.0.0.1:4320/v1/openapi.json | jq '.paths | keys'
 curl -N "http://127.0.0.1:4320/v1/events?location=/my/project"
 ```
+
+The [integration guide](docs/integrating.md) covers both, including how to be "attached" so that questions and
+approvals reach your users. The [protocol reference](packages/plugin/docs/protocol/README.md) and
+[JSON Schemas](packages/plugin/docs/protocol/schemas) have the details. If you add support to your app, tell us in an
+[issue](https://github.com/malhashemi/opencode-dynamic-workflows/issues): we will list it here and help with what the
+protocol is missing.
 
 ## Troubleshooting
 
