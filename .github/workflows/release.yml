@@ -43,13 +43,17 @@ jobs:
       # The branch comes from release-please's own output: a label search can run before
       # GitHub has labelled a new pull request.
       - name: Run CI on the release pull request
-        if: steps.release.outputs.pr
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          PRS: ${{ steps.release.outputs.prs }}
         run: |
-          gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH"
-          echo "Started CI on $BRANCH"
+          branch=$(printf '%s' "${PRS:-[]}" | jq -r '.[0].headBranchName // empty')
+          if [ -n "$branch" ]; then
+            gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
+            echo "Started CI on $branch"
+          else
+            echo "No release pull request was opened or updated"
+          fi
 
   plan:
     needs: release-please
