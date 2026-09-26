@@ -14,7 +14,7 @@ import { createFakeHost } from "./fake-host"
 const project = await mkdtemp(path.join(os.tmpdir(), "wf-service-"))
 afterAll(() => rm(project, { recursive: true, force: true }))
 
-function service() {
+function service(options: { approved?: boolean } = {}) {
   const index = createUnitIndex()
   const store = createRunStore(project)
   const journal = createJournal(journalRoot(project), { onError: () => {} })
@@ -30,11 +30,54 @@ function service() {
       config: DEFAULT_CONFIG,
       instance: "test",
       opencodeVersion: "2.0.16",
-      approvals: { get: async () => false, set: async () => {} },
+      approvals: { get: async () => options.approved === true, set: async () => {} },
       gatewayUrl: () => null,
     }),
   }
 }
+
+// Top-level code that marks the process when the module is loaded, i.e. when its code runs.
+const sideEffect = (flag: string) => `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"
+;(globalThis as Record<string, unknown>)[${JSON.stringify(flag)}] = true
+export default defineWorkflow({
+  meta: { name: "marker", description: "marks the process", phases: [{ title: "only" }] },
+  async run() {
+    return "ran"
+  },
+})
+`
+const marked = (flag: string) => (globalThis as Record<string, unknown>)[flag] === true
+
+describe("inline source runs only after approval", () => {
+  it("a refused inline Run never loads its script (top-level code does not run)", async () => {
+    const { service: svc } = service()
+    const started = await svc.startRun({ source: sideEffect("wfRefused"), parentSessionID: "p" })
+    const { error, run } = await started.done
+    expect(error).toContain("no one approved")
+    expect(run.status).toBe("failed")
+    expect(marked("wfRefused")).toBe(false)
+  })
+
+  it("resuming a refused inline Run asks again; the script still does not run", async () => {
+    const { service: svc } = service()
+    const started = await svc.startRun({ source: sideEffect("wfResumed"), parentSessionID: "p" })
+    await started.done
+    const resumed = await svc.resumeRun(started.runId)
+    const { error } = await resumed.done
+    expect(error).toContain("no one approved")
+    expect(marked("wfResumed")).toBe(false)
+  })
+
+  it("an approved inline Run loads, then takes its name and phases from meta", async () => {
+    const { service: svc } = service({ approved: true })
+    const started = await svc.startRun({ source: sideEffect("wfApproved"), parentSessionID: "p" })
+    const { output, run } = await started.done
+    expect(marked("wfApproved")).toBe(true)
+    expect(output?.result).toBe("ran")
+    expect(run.workflow.name).toBe("marker")
+    expect(run.phases).toEqual(["only"])
+  })
+})
 
 describe("audit round 4 — resume never duplicates a Run another process is running", () => {
   it("refuses while the journaled owner (another live process) still runs it", async () => {
