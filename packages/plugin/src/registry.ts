@@ -130,7 +130,9 @@ export async function scanWorkflowFiles(dir: string): Promise<DiscoveredFile[]> 
   if (!existsSync(dir)) return []
   const glob = new Bun.Glob(WORKFLOW_GLOB)
   const out: DiscoveredFile[] = []
-  for await (const relMatch of glob.scan({ cwd: dir, dot: true, followSymlinks: true, onlyFiles: true })) {
+  for await (const match of glob.scan({ cwd: dir, dot: true, followSymlinks: true, onlyFiles: true })) {
+    // `/` on every platform, so keys and paths read the same on Windows.
+    const relMatch = match.replaceAll("\\", "/")
     if (isJournalRecord(relMatch)) continue
     out.push({ absPath: path.join(dir, relMatch), relMatch })
   }

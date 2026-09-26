@@ -109,7 +109,7 @@ async function bundle(sourcePath: string, outFile: string): Promise<void> {
           const filter = new RegExp(
             `^(${AUTHORING_SPECIFIERS.map((s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})$`,
           )
-          builder.onResolve({ filter }, () => ({ path: AUTHORING_PATH, external: true }))
+          builder.onResolve({ filter }, () => ({ path: AUTHORING_PATH.replaceAll("\\", "/"), external: true }))
         },
       },
     ],
