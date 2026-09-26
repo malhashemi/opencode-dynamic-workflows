@@ -314,8 +314,9 @@ from the first changed prompt on everything runs live. Units that failed run aga
 
 Inline Workflows are model-written code that runs with your privileges, and they are not sandboxed: the approval is
 the control. By default a person approves each one (**Run once**, **Always for this project** or **Reject**) after
-seeing a preview of the source, its size and its SHA-256. Headless, an inline Run is refused unless the project was approved
-before.
+reading the whole source, with its size and SHA-256, in the TUI (`/workflows`, a scrolling view) or the web app. The
+request waits until someone answers; there is no time limit. Headless, an inline Run is refused unless the project was
+approved before.
 
 Units get OpenCode's permission rules plus the engine's own: `workflow_result` and `question` allowed, `workflow` and
 `workflow_inline` denied (no recursion). A Unit's permission request goes to a person when one is attached; headless,

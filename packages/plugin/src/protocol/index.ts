@@ -181,8 +181,8 @@ export type PermissionDetail = z.infer<typeof PermissionDetail>
 export const ApprovalDetail = z.object({
   sha256: z.string(),
   bytes: z.number(),
-  /** The first lines of the inline source, for a human to judge. */
-  preview: z.string(),
+  /** The whole inline source: a person reads all of it before the code runs. */
+  source: z.string(),
   requestingSessionID: z.string(),
 })
 export type ApprovalDetail = z.infer<typeof ApprovalDetail>

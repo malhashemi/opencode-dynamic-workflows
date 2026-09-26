@@ -136,7 +136,7 @@
         "bytes": {
           "type": "number"
         },
-        "preview": {
+        "source": {
           "type": "string"
         },
         "requestingSessionID": {
@@ -146,7 +146,7 @@
       "required": [
         "sha256",
         "bytes",
-        "preview",
+        "source",
         "requestingSessionID"
       ],
       "additionalProperties": false

@@ -619,7 +619,7 @@ export class WorkflowService {
       detail: {
         sha256: sha256(source),
         bytes: Buffer.byteLength(source),
-        preview: source.split("\n").slice(0, 40).join("\n"),
+        source,
         requestingSessionID: sessionID,
       },
       signal,

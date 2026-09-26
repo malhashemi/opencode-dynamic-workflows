@@ -905,6 +905,22 @@ input[type="search"] {
   word-break: break-word;
   line-height: 1.5;
 }
+/* Numbered code: a wrapped line hangs under its text, not under the number. */
+.code-line {
+  display: block;
+  min-height: 1.5em;
+  padding-left: calc(4ch + 12px);
+  text-indent: calc(-4ch - 12px);
+}
+.code-ln {
+  display: inline-block;
+  width: 4ch;
+  margin-right: 12px;
+  text-align: right;
+  text-indent: 0;
+  color: var(--fg-muted);
+  user-select: none;
+}
 .code-inline {
   padding: 6px 8px;
   max-height: 10rem;

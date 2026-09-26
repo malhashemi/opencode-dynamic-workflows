@@ -194,7 +194,7 @@ describe("live: attached surface", () => {
     const { runId } = await w().startRun({ source })
     const interaction = await pending(runId)
     expect(interaction.kind).toBe("approval")
-    expect(interaction.approval.preview).toContain("inline-y")
+    expect(interaction.approval.source).toContain("inline-y")
     expect((await w().getRun({ runId })).run.status).toBe("queued")
     await w().replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["Run once"]] })
     await settled(runId, 30_000)
