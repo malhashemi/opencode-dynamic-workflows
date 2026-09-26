@@ -99,6 +99,8 @@ export interface Actions {
   refresh(): Promise<void>
   openPanel(runId?: string, sessionID?: string): void
   openRoute(target?: { runId?: string; answer?: boolean }): void
+  /** Open a web app page in the system browser. */
+  openInBrowser(url: string): void
 }
 
 export interface Wf {
@@ -378,7 +380,8 @@ export function WorkflowsScreen(props: ScreenProps) {
         { key: "a", label: "answer", run: answerFirst },
         { key: "f", label: `filter: ${nav().filter}`, run: () => void setNav(cycleFilter(nav())) },
         { key: "d", label: "clean up finished", run: () => void wf.actions.cleanupPending() },
-        { key: "p", label: "pair browser", run: () => void wf.actions.pair() },
+        ...(webLink() ? [{ key: "b", label: "open in browser", run: () => wf.actions.openInBrowser(webLink()!) }] : []),
+        { key: "p", label: "pair a device", run: () => void wf.actions.pair() },
         { key: "r", label: "refresh", run: () => void wf.actions.refresh() },
         ...common,
       ]
@@ -401,6 +404,7 @@ export function WorkflowsScreen(props: ScreenProps) {
               { key: "x", label: "stop unit", run: withUnit((t, u) => wf.actions.stopUnit(t, u)) },
               { key: "r", label: "restart unit", run: withUnit((t, u) => wf.actions.restartUnit(t, u)) },
             ]),
+        ...(webLink() ? [{ key: "b", label: "open in browser", run: () => wf.actions.openInBrowser(webLink()!) }] : []),
         { key: "p", label: "parent session", run: withRun((t) => wf.actions.openTranscript(t.parentSessionID)) },
         ...common,
       ]
@@ -456,6 +460,13 @@ export function WorkflowsScreen(props: ScreenProps) {
       { title: "Back", group: "Workflows", bind: "backspace", run: goBack },
       ...(props.escapeBack ? [{ title: "Back", group: "Workflows", bind: "escape", run: goBack }] : []),
       { title: "Answer", group: "Workflows", bind: "a", enabled: inView("any"), run: answerFirst },
+      {
+        title: "Open in the web app",
+        group: "Workflows",
+        bind: "b",
+        enabled: () => view().kind !== "unit" && !!webLink(),
+        run: () => void (webLink() && wf.actions.openInBrowser(webLink()!)),
+      },
       {
         title: "Filter",
         group: "Workflows",
@@ -594,6 +605,13 @@ export function WorkflowsScreen(props: ScreenProps) {
     }
     return parts.map((part) => truncate(part, Math.max(12, Math.floor(innerWidth() / parts.length) - 4)))
   }
+  // The web app page for what is on screen: the library, or the Run being looked at.
+  const webLink = () => {
+    const base = wf.state().webUrl?.replace(/\/$/, "")
+    if (!base) return null
+    const v = view()
+    return v.kind === "library" ? base : `${base}/runs/${v.runId}`
+  }
   const libraryCounts = () => {
     const all = props.entries()
     const live = all.filter((entry) => entry.live).length
@@ -624,9 +642,21 @@ export function WorkflowsScreen(props: ScreenProps) {
             )}
           </For>
         </text>
-        <Show when={view().kind === "library" && innerWidth() > 60}>
-          <text fg={th().text.muted}>{libraryCounts()}</text>
-        </Show>
+        <box flexDirection="row" gap={3} flexShrink={0}>
+          <Show when={view().kind === "library" && innerWidth() > 60}>
+            <text fg={th().text.muted}>{libraryCounts()}</text>
+          </Show>
+          <Show when={webLink() && innerWidth() > 50}>
+            <text fg={th().text.muted}>
+              {"web "}
+              <a href={webLink()!} style={{ fg: th().text.feedback.info.base }}>
+                {webLink()!
+                  .replace(/^https?:\/\//, "")
+                  .replace(/\/runs\/([0-9a-f-]{8})[0-9a-f-]*$/, "/runs/$1…")}
+              </a>
+            </text>
+          </Show>
+        </box>
       </box>
       <Show when={wf.error()}>
         <text fg={th().text.feedback.error.base}>{truncate(`! ${wf.error()}`, innerWidth())}</text>

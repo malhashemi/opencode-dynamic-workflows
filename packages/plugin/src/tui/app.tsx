@@ -333,6 +333,20 @@ export function setupWorkflowsTui(context: Context): () => void {
     async refresh() {
       await sync.resync("refresh")
     },
+    openInBrowser(url) {
+      const command =
+        process.platform === "darwin"
+          ? ["open", url]
+          : process.platform === "win32"
+            ? ["cmd", "/c", "start", "", url]
+            : ["xdg-open", url]
+      try {
+        Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+        toast(`Opened ${url}`)
+      } catch {
+        toast(`Open ${url} in your browser.`, "warning")
+      }
+    },
     openPanel: (runId, sessionID) => openPanel(runId, sessionID),
     openRoute: (target) => openRoute(target),
   }
