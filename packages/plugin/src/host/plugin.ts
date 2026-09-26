@@ -203,6 +203,7 @@ function ensureService(
       set: async () => ctx.storage.set(approvalKey, true),
     },
     gatewayUrl: () => (engineGlobal().singletons.get("gateway") as GatewayHandle | undefined)?.url ?? null,
+    gatewayWeb: () => (engineGlobal().singletons.get("gateway") as GatewayHandle | undefined)?.web ?? false,
   })
   holder.gatewayAttached = () =>
     (engineGlobal().singletons.get("gateway") as GatewayHandle | undefined)?.attached(location) ?? false
@@ -241,8 +242,9 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   // Tools
   // --------------------------------------------------------------------------------------------------------------
 
-  // No link to a web app that is turned off (gateway.web: false).
-  const link = (runId: string) => (config.gateway.web ? runLink(service.deps.gatewayUrl(), runId) : null)
+  // No link to a web app that is turned off. The Gateway is shared by every location and keeps the settings of the
+  // one that started it, so ask the running Gateway, not this location's config.
+  const link = (runId: string) => (service.deps.gatewayWeb?.() ? runLink(service.deps.gatewayUrl(), runId) : null)
 
   const mirrorProgress = (runId: string, tc: ToolContext) => {
     let last = ""
