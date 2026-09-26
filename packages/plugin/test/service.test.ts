@@ -138,6 +138,34 @@ describe("saving inline source needs the same approval as running it", () => {
   })
 })
 
+describe("a cancelled request never runs or saves inline code, even when the project allows it", () => {
+  it("startRun with an aborted signal does not load the script", async () => {
+    const { service: svc } = service({ approved: true })
+    const controller = new AbortController()
+    controller.abort()
+    const started = await svc.startRun(
+      { source: sideEffect("wfAbortedRun"), parentSessionID: "p" },
+      { signal: controller.signal },
+    )
+    const { run } = await started.done
+    expect(run.status).toBe("stopped")
+    expect(marked("wfAbortedRun")).toBe(false)
+  })
+
+  it("saveInline with an aborted signal writes nothing and does not load the script", async () => {
+    const location = await mkdtemp(path.join(os.tmpdir(), "wf-save-abort-"))
+    const { service: svc } = service({ approved: true, location })
+    const controller = new AbortController()
+    controller.abort()
+    await expect(svc.saveInline(sideEffect("wfAbortedSave"), "kept", "p", controller.signal)).rejects.toThrow(
+      "cancelled",
+    )
+    expect(marked("wfAbortedSave")).toBe(false)
+    expect(existsSync(path.join(location, ".opencode", "workflows", "kept.ts"))).toBe(false)
+    await rm(location, { recursive: true, force: true })
+  })
+})
+
 describe("audit round 4 — resume never duplicates a Run another process is running", () => {
   it("refuses while the journaled owner (another live process) still runs it", async () => {
     const { journal, service: svc } = service()

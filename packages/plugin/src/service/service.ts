@@ -492,6 +492,11 @@ export class WorkflowService {
             await this.endQueued(runId, verdict)
             return { error: verdict, run: store.get(runId)! }
           }
+          // Approved (possibly by policy, with no wait): a request cancelled meanwhile never loads the script.
+          if (signal.aborted) {
+            await this.endQueued(runId, "stopped before it started", "stopped")
+            return { error: "stopped before it started", run: store.get(runId)! }
+          }
           try {
             config = await load()
           } catch (error) {
@@ -844,7 +849,11 @@ export class WorkflowService {
     const target = this.saveTarget(save)
     const gate = await this.inlineGate()
     if (typeof gate === "string") throw new WorkflowProtocolError("forbidden", gate)
-    if (gate === true) return this.writeDurable(source, target)
+    const cancelled = () => new WorkflowProtocolError("invalid_state", "The save was cancelled before it was written.")
+    if (gate === true) {
+      if (signal.aborted) throw cancelled()
+      return this.writeDurable(source, target)
+    }
 
     const runId = crypto.randomUUID()
     const store = this.deps.store
@@ -872,6 +881,10 @@ export class WorkflowService {
       if (verdict !== true) {
         await this.endQueued(runId, verdict)
         throw new WorkflowProtocolError("forbidden", verdict)
+      }
+      if (signal.aborted) {
+        await this.endQueued(runId, "cancelled before it was written", "stopped")
+        throw cancelled()
       }
       try {
         const saved = await this.writeDurable(source, target)

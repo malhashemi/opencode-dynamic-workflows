@@ -1153,6 +1153,25 @@ function AnswerPanel(props: {
   const width = () => props.width - 6
   let input: InputRenderable | undefined
   const promptLines = () => wrapLines(question()?.prompt ?? "", width()).slice(0, 3)
+  // Only the options that fit the rows this panel is given, kept around the cursor; the rest are counted.
+  const optionRows = () => rows(props.state)
+  const rowHeight = () => (optionRows().some((row) => row.kind === "option" && row.description) ? 2 : 1)
+  const optionRoom = () =>
+    Math.max(
+      1,
+      Math.floor(
+        (props.height -
+          8 -
+          promptLines().length -
+          (props.interaction.permission ? 1 : 0) -
+          (props.state.typing ? 2 : 0)) /
+          rowHeight(),
+      ),
+    )
+  const optionWindow = () =>
+    optionRows().length <= optionRoom()
+      ? { start: 0, end: optionRows().length }
+      : visibleWindow(optionRows().length, props.state.cursor, Math.max(1, optionRoom() - 1))
   const hint = (key: string, label: string) => (
     <text fg={th().text.base}>
       {key} <span style={{ fg: th().text.muted }}>{label}</span>
@@ -1191,8 +1210,12 @@ function AnswerPanel(props: {
           </box>
         </box>
         <box flexDirection="column" paddingLeft={2}>
-          <For each={rows(props.state)}>
-            {(row, index) => {
+          <Show when={optionWindow().start > 0}>
+            <text fg={th().text.muted}>{`↑ ${optionWindow().start} more`}</text>
+          </Show>
+          <For each={optionRows().slice(optionWindow().start, optionWindow().end)}>
+            {(row, offset) => {
+              const index = () => optionWindow().start + offset()
               const active = () => index() === props.state.cursor && !props.state.typing
               const fill = () => (active() ? th().background.formfield.focused : th().background.raised.base)
               const checked = () => (row.kind === "option" ? row.checked : row.typed.length > 0)
@@ -1248,6 +1271,9 @@ function AnswerPanel(props: {
               )
             }}
           </For>
+          <Show when={optionWindow().end < optionRows().length}>
+            <text fg={th().text.muted}>{`↓ ${optionRows().length - optionWindow().end} more`}</text>
+          </Show>
           <Show when={props.state.typing}>
             <box flexDirection="row" paddingTop={1}>
               <input
