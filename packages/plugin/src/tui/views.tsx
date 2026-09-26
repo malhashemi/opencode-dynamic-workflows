@@ -13,7 +13,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type Accessor } from "solid-js"
 
 import { formatClock, formatElapsed, formatTokens, meter, settledUnits } from "../progress"
-import type { LibraryEntry, PendingInteraction, Run, Unit } from "../protocol"
+import type { LibraryEntry, PendingInteraction, Run, Unit, WorkflowListing } from "../protocol"
 import { isTerminal } from "../runs"
 import {
   back,
@@ -43,6 +43,8 @@ import {
   libraryCells,
   renderHeader,
   runStatus,
+  savedArgs,
+  savedArgsText,
   shortId,
   sidebarLines,
   stripText,
@@ -97,6 +99,12 @@ export interface Actions {
   dismiss(run: Run, interaction: PendingInteraction): Promise<string | null>
   pair(): Promise<void>
   refresh(): Promise<void>
+  /** Re-read the saved (durable) Workflows. */
+  loadSaved(): Promise<void>
+  /** Ask what a saved Workflow should do, send `/<key> <request>` to the session the user came from, and go there. */
+  useSaved(listing: WorkflowListing): Promise<void>
+  /** Start a saved Workflow that needs no args; resolves to the new Run's id. */
+  startSaved(listing: WorkflowListing): Promise<string | null>
   openPanel(runId?: string, sessionID?: string): void
   openRoute(target?: { runId?: string; answer?: boolean }): void
   /** Open a web app page in the system browser. */
@@ -108,6 +116,8 @@ export interface Wf {
   readonly state: Accessor<SyncState>
   readonly now: Accessor<number>
   readonly error: Accessor<string | null>
+  /** The location's saved (durable) Workflows. */
+  readonly saved: Accessor<readonly WorkflowListing[]>
   readonly open: (runId: string) => Promise<void>
   readonly loadUnit: (runId: string, unitId: string) => Promise<Unit | null>
   readonly actions: Actions
@@ -145,6 +155,8 @@ export interface ScreenProps {
   wf: Wf
   /** Library rows: every Run of the location (page) or of one session (panel). */
   entries: () => LibraryEntry[]
+  /** Saved Workflows, listed after the Runs (the page only). */
+  saved?: () => readonly WorkflowListing[]
   start: () => { runId?: string; unitId?: string; answer?: boolean } | undefined
   root: "library" | "run"
   title: string
@@ -204,6 +216,24 @@ export function WorkflowsScreen(props: ScreenProps) {
   const entries = createMemo(() =>
     filterEntries(props.entries(), nav().filter).toSorted((a, b) => Number(b.live) - Number(a.live)),
   )
+  // Saved Workflows follow the Runs in the library, under the "all" filter; one cursor walks both.
+  const saved = () => (nav().filter === "all" ? (props.saved?.() ?? []) : [])
+  const libraryRows = () => entries().length + saved().length
+  const selectedSaved = (): WorkflowListing | undefined => {
+    if (view().kind !== "library") return undefined
+    const index = cursor(nav(), libraryRows()) - entries().length
+    return index >= 0 ? saved()[index] : undefined
+  }
+  const canStartSaved = () => {
+    const listing = selectedSaved()
+    return !!listing && savedArgs(listing).required.length === 0
+  }
+  const startSaved = async () => {
+    const listing = selectedSaved()
+    if (!listing || !canStartSaved()) return
+    const runId = await wf.actions.startSaved(listing)
+    if (runId) setNav(push(nav(), { kind: "run", runId }))
+  }
   const units = () => run()?.units ?? []
   const selectedUnit = () => {
     const list = units()
@@ -297,7 +327,7 @@ export function WorkflowsScreen(props: ScreenProps) {
 
   const count = () => {
     const v = view()
-    if (v.kind === "library") return entries().length
+    if (v.kind === "library") return libraryRows()
     if (v.kind === "run") return units().length
     return Number.MAX_SAFE_INTEGER
   }
@@ -313,7 +343,12 @@ export function WorkflowsScreen(props: ScreenProps) {
   function openSelected() {
     const v = view()
     if (v.kind === "library") {
-      const entry = entries()[cursor(nav(), entries().length)]
+      const listing = selectedSaved()
+      if (listing) {
+        void wf.actions.useSaved(listing)
+        return
+      }
+      const entry = entries()[cursor(nav(), libraryRows())]
       if (!entry) return
       // A queued Run that waits can only be waiting for its approval, and nothing else can happen before it:
       // open straight onto the script.
@@ -376,7 +411,12 @@ export function WorkflowsScreen(props: ScreenProps) {
     ]
     if (v.kind === "library") {
       return [
-        { key: "enter", label: "open", run: openSelected },
+        ...(selectedSaved()
+          ? [
+              { key: "enter", label: "run in session", run: openSelected },
+              ...(canStartSaved() ? [{ key: "s", label: "start now", run: () => void startSaved() }] : []),
+            ]
+          : [{ key: "enter", label: "open", run: openSelected }]),
         { key: "a", label: "answer", run: answerFirst },
         { key: "f", label: `filter: ${nav().filter}`, run: () => void setNav(cycleFilter(nav())) },
         { key: "d", label: "clean up finished", run: () => void wf.actions.cleanupPending() },
@@ -509,6 +549,13 @@ export function WorkflowsScreen(props: ScreenProps) {
         bind: "p",
         enabled: inView("run"),
         run: withRun((t) => wf.actions.openTranscript(t.parentSessionID)),
+      },
+      {
+        title: "Start the saved Workflow",
+        group: "Workflows",
+        bind: "s",
+        enabled: canStartSaved,
+        run: () => void startSaved(),
       },
       {
         title: "Stop Run",
@@ -671,13 +718,14 @@ export function WorkflowsScreen(props: ScreenProps) {
             <LibraryPane
               wf={wf}
               entries={entries()}
+              saved={saved()}
               filter={nav().filter}
-              cursor={cursor(nav(), entries().length)}
+              cursor={cursor(nav(), libraryRows())}
               width={innerWidth()}
               height={props.height() - 3}
               onPick={(index) => {
-                if (cursor(nav(), entries().length) === index) openSelected()
-                else setNav(setCursor(nav(), index, entries().length))
+                if (cursor(nav(), libraryRows()) === index) openSelected()
+                else setNav(setCursor(nav(), index, libraryRows()))
               }}
             />
           </Match>
@@ -771,9 +819,37 @@ function libraryRow(
   ])
 }
 
+/** One saved Workflow's row: a marker where the status goes, its key and description, then what args it takes. */
+function savedRow(theme: Context["theme"], listing: WorkflowListing, width: number): Cell[] {
+  const muted = theme.text.muted
+  const args = savedArgsText(listing)
+  const argsWidth = Math.min(Math.max(args.length, 8), Math.floor(width / 3))
+  const middle = Math.max(10, width - 13 - argsWidth - 2)
+  return [
+    ...fitCells([{ text: "◇ saved", fg: theme.text.feedback.info.base }], 13),
+    { text: " ", fg: muted },
+    ...fitCells(
+      [
+        { text: listing.key, fg: theme.text.base, bold: true },
+        { text: listing.description ? ` ${listing.description}` : "", fg: muted },
+      ],
+      middle,
+    ),
+    { text: " ", fg: muted },
+    ...fitCells(
+      [{ text: args, fg: savedArgs(listing).required.length ? theme.text.feedback.warning.base : muted }],
+      argsWidth,
+      "right",
+    ),
+  ]
+}
+
+type LibraryRow = { kind: "run"; entry: LibraryEntry } | { kind: "saved"; listing: WorkflowListing }
+
 function LibraryPane(props: {
   wf: Wf
   entries: LibraryEntry[]
+  saved: readonly WorkflowListing[]
   filter: string
   cursor: number
   width: number
@@ -783,19 +859,25 @@ function LibraryPane(props: {
   const th = () => props.wf.context.theme
   const columns = () => layout(LIBRARY_COLUMNS, props.width - 2)
   const live = () => props.entries.filter((entry) => entry.live).length
-  // Live Runs first (the list is sorted that way), each group under its own title.
-  const window = () => visibleWindow(props.entries.length, props.cursor, Math.max(3, props.height - 5))
+  // Live Runs first (the list is sorted that way), then Recent, then the saved Workflows: each group under a title.
+  const items = (): LibraryRow[] => [
+    ...props.entries.map((entry) => ({ kind: "run" as const, entry })),
+    ...props.saved.map((listing) => ({ kind: "saved" as const, listing })),
+  ]
+  const group = (row: LibraryRow) => (row.kind === "saved" ? "Saved" : row.entry.live ? "Live" : "Recent")
+  const groupSize = (title: string) =>
+    title === "Saved" ? props.saved.length : title === "Live" ? live() : props.entries.length - live()
+  const window = () => visibleWindow(items().length, props.cursor, Math.max(3, props.height - 5))
   const shown = () =>
-    props.entries.slice(window().start, window().end).map((entry, index) => ({ entry, index: window().start + index }))
-  const titleBefore = (index: number) => {
-    const entry = props.entries[index]!
-    if (index === window().start) return true
-    return props.entries[index - 1]!.live !== entry.live
-  }
+    items()
+      .slice(window().start, window().end)
+      .map((row, index) => ({ row, index: window().start + index }))
+  const titleBefore = (index: number) =>
+    index === window().start || group(items()[index - 1]!) !== group(items()[index]!)
   return (
     <box flexDirection="column">
       <Show
-        when={props.entries.length > 0}
+        when={items().length > 0}
         fallback={
           <box paddingTop={1}>
             <Card theme={th()} accent={th().border.base}>
@@ -804,7 +886,7 @@ function LibraryPane(props: {
               </text>
               <text fg={th().text.muted}>
                 {props.filter === "all"
-                  ? "Ask the agent to run a workflow, or type /workflow <name>."
+                  ? "Ask the agent to write a workflow, or save one under .opencode/workflows/."
                   : "Press f to change the filter."}
               </text>
             </Card>
@@ -815,23 +897,23 @@ function LibraryPane(props: {
           {(item) => (
             <>
               <Show when={titleBefore(item.index)}>
-                <Section
-                  theme={th()}
-                  title={item.entry.live ? "Live" : "Recent"}
-                  detail={item.entry.live ? String(live()) : String(props.entries.length - live())}
-                />
+                <Section theme={th()} title={group(item.row)} detail={String(groupSize(group(item.row)))} />
               </Show>
               <CellRow
                 theme={th()}
                 selected={item.index === props.cursor}
-                cells={libraryRow(th(), item.entry, columns(), props.wf.now())}
+                cells={
+                  item.row.kind === "saved"
+                    ? savedRow(th(), item.row.listing, props.width - 2)
+                    : libraryRow(th(), item.row.entry, columns(), props.wf.now())
+                }
                 onClick={() => props.onPick(item.index)}
               />
             </>
           )}
         </For>
-        <Show when={props.entries.length > window().end - window().start}>
-          <text fg={th().text.muted}>{`  ${props.cursor + 1} of ${props.entries.length}`}</text>
+        <Show when={items().length > window().end - window().start}>
+          <text fg={th().text.muted}>{`  ${props.cursor + 1} of ${items().length}`}</text>
         </Show>
       </Show>
     </box>
@@ -1580,9 +1662,12 @@ export function LibraryPage(props: {
   onExit: () => void
 }) {
   const dims = useTerminalDimensions()
+  // Workflow files may have changed since the last look.
+  onMount(() => void props.wf.actions.loadSaved())
   return (
     <WorkflowsScreen
       wf={props.wf}
+      saved={props.wf.saved}
       entries={() =>
         Object.values(props.wf.state().runs)
           .map((slot) => slot.entry)

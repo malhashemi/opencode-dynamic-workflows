@@ -7,7 +7,7 @@ import { formatClock, formatDay, formatElapsed, formatTokens, meter, phasePositi
  * every width (80 columns is a contract); status is a glyph AND a word, colour only a bonus (an adversarial theme
  * can make every feedback colour equal the text colour); never print a figure the system does not know.
  */
-import type { LibraryEntry, RunStatus, Unit, UnitStatus, Usage } from "../protocol"
+import type { LibraryEntry, RunStatus, Unit, UnitStatus, Usage, WorkflowListing } from "../protocol"
 
 export type Tone = "success" | "error" | "warning" | "info" | "muted" | "base"
 
@@ -293,4 +293,32 @@ export function wrapLines(text: string, width: number): string[] {
 /** "a3f9c1d2" — enough of an id to tell Runs apart in a list. */
 export function shortId(id: string): string {
   return id.replace(/-/g, "").slice(0, 8)
+}
+
+/** A saved Workflow's args, from its JSON Schema: the names it requires, then the optional ones. */
+export function savedArgs(listing: Pick<WorkflowListing, "args">): { required: string[]; optional: string[] } {
+  const schema = listing.args as { properties?: Record<string, unknown>; required?: unknown } | null
+  const names = Object.keys(schema?.properties ?? {})
+  const required = Array.isArray(schema?.required)
+    ? schema.required.filter((name): name is string => typeof name === "string")
+    : []
+  return { required, optional: names.filter((name) => !required.includes(name)) }
+}
+
+/** "no args", "needs question", "needs question · 2 optional", "1 optional". */
+export function savedArgsText(listing: Pick<WorkflowListing, "args">): string {
+  const { required, optional } = savedArgs(listing)
+  if (required.length === 0 && optional.length === 0) return "no args"
+  return [required.length ? `needs ${required.join(", ")}` : "", optional.length ? `${optional.length} optional` : ""]
+    .filter(Boolean)
+    .join(" · ")
+}
+
+/** The slash command that runs a saved Workflow (see the server's command list), and the text to send with it. */
+export function savedCommand(key: string, request: string): { name: string; text: string } {
+  const name = key.replaceAll(":", "/")
+  // `/workflow` and `/workflows` are taken: such a key goes through `/workflow <key> <request>`.
+  return name === "workflow" || name === "workflows"
+    ? { name: "workflow", text: `${key} ${request}`.trim() }
+    : { name, text: request }
 }
