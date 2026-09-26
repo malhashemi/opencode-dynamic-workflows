@@ -8,13 +8,13 @@ import { createSignal } from "solid-js"
 import { Show } from "solid-js"
 
 import { formatClock } from "../progress"
-import type { PendingInteraction, Run, Unit } from "../protocol"
+import type { PendingInteraction, Run, Unit, WorkflowListing } from "../protocol"
 import { isTerminal } from "../runs"
 import { WorkflowRpc } from "../service/rpc"
 import { formAnswer, findForm } from "./answer"
 import { bindApi, errorText } from "./api"
 import { cleanupPending, cleanupRun, cleanupTargets } from "./cleanup"
-import { shortId, workflowName } from "./format"
+import { savedArgs, savedCommand, shortId, workflowName } from "./format"
 import { anyLive, emptyState, libraryEntries, sessionEntries, waitingRuns, type Effect, type SyncState } from "./state"
 import { WorkflowSync } from "./sync"
 import { LibraryPage, PANEL, RunPanel, SidebarRuns, Strip, type Actions, type Wf } from "./views"
@@ -33,6 +33,7 @@ export function setupWorkflowsTui(context: Context): () => void {
   const [now, setNow] = createSignal(Date.now())
   const [panelTarget, setPanelTarget] = createSignal<{ runId?: string; answer?: boolean } | undefined>(undefined)
   const [panelFocus, setPanelFocus] = createSignal(false)
+  const [savedWorkflows, setSavedWorkflows] = createSignal<readonly WorkflowListing[]>([])
   let returnTo: ReturnType<Context["ui"]["router"]["current"]> | null = null
 
   const toast = (
@@ -95,6 +96,16 @@ export function setupWorkflowsTui(context: Context): () => void {
     const route = context.ui.router.current()
     return route.type === "session" ? route.sessionID : undefined
   }
+  /** The session the user came from: the one in view, or the one `/workflows` was opened over. */
+  const originSession = () => sessionInView() ?? (returnTo?.type === "session" ? returnTo.sessionID : undefined)
+
+  const loadSaved = async () => {
+    try {
+      setSavedWorkflows((await api.listWorkflows()).workflows)
+    } catch (err) {
+      setError(`saved Workflows: ${errorText(err)}`)
+    }
+  }
 
   const heartbeat = async () => {
     const sessionID = sessionInView()
@@ -107,6 +118,7 @@ export function setupWorkflowsTui(context: Context): () => void {
   }
 
   void heartbeat()
+  void loadSaved()
   void sync.start().then(() => {
     const waiting = waitingRuns(sync.current)
     if (waiting.length > 0)
@@ -331,7 +343,39 @@ export function setupWorkflowsTui(context: Context): () => void {
       })
     },
     async refresh() {
-      await sync.resync("refresh")
+      await Promise.all([sync.resync("refresh"), loadSaved()])
+    },
+    loadSaved,
+    async useSaved(listing) {
+      const { required } = savedArgs(listing)
+      const request = await context.ui.dialog.prompt({
+        title: `Run ${listing.key}`,
+        description: `${listing.description}\nSay what you want: the agent builds the args${required.length ? ` (${required.join(", ")})` : ""} and runs it.`,
+        placeholder: listing.whenToUse ?? "What should it do?",
+      })
+      if (request === undefined) return
+      const origin = originSession()
+      const sessionID =
+        origin ??
+        (await attempt("New session", () => context.client.session.create({ title: listing.key, location } as never)))
+          ?.id
+      if (!sessionID) return
+      const command = savedCommand(listing.key, request)
+      const sent = await attempt("Run", () =>
+        context.client.session.command({ sessionID, ...command, delivery: "queue" } as never),
+      )
+      if (sent === null) return
+      returnTo = null
+      context.ui.router.navigate({ type: "session", sessionID })
+      toast(`Sent /${command.name} to the session.`, "success")
+    },
+    async startSaved(listing) {
+      const origin = originSession()
+      const out = await attempt("Start", () =>
+        api.startRun({ name: listing.key, args: {}, ...(origin ? { parentSessionID: origin } : {}) }),
+      )
+      if (out) toast(`Started ${listing.key}.`, "success")
+      return out?.runId ?? null
     },
     openInBrowser(url) {
       const command =
@@ -359,6 +403,7 @@ export function setupWorkflowsTui(context: Context): () => void {
     state,
     now,
     error,
+    saved: savedWorkflows,
     open: (runId) => sync.open(runId),
     loadUnit: async (runId, unitId) => (await attempt("Load Unit", () => api.getUnit({ runId, unitId })))?.unit ?? null,
     actions,

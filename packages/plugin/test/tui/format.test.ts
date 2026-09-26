@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test"
 
 import {
   LIBRARY_COLUMNS,
+  savedArgs,
+  savedArgsText,
+  savedCommand,
   UNIT_COLUMNS,
   fit,
   formatCost,
@@ -105,5 +108,25 @@ describe("strip and sidebar", () => {
     const [first, second] = sidebarLines(entry(run({ currentPhase: "work" })), 5_000, 30)
     expect(first).toBe("● review")
     expect(second).toContain("phase 2/2")
+  })
+})
+
+describe("saved Workflows", () => {
+  const schema = (properties: string[], required?: string[]) => ({
+    args: { type: "object", properties: Object.fromEntries(properties.map((name) => [name, {}])), required },
+  })
+  test("args from the JSON Schema", () => {
+    expect(savedArgs({ args: null })).toEqual({ required: [], optional: [] })
+    expect(savedArgs(schema(["question", "depth"], ["question"]))).toEqual({
+      required: ["question"],
+      optional: ["depth"],
+    })
+    expect(savedArgsText({ args: null })).toBe("no args")
+    expect(savedArgsText(schema(["question", "depth", "files"], ["question"]))).toBe("needs question · 2 optional")
+    expect(savedArgsText(schema(["depth"]))).toBe("1 optional")
+  })
+  test("the slash command, with reserved names going through /workflow", () => {
+    expect(savedCommand("examples:research", "why?")).toEqual({ name: "examples/research", text: "why?" })
+    expect(savedCommand("workflows", "go")).toEqual({ name: "workflow", text: "workflows go" })
   })
 })

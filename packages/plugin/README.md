@@ -172,6 +172,10 @@ preview arrives in the session that started it (plugin option `notify`).
 activity, result) and a Unit (prompt, output, transcript). The session you are in also shows its Runs in a strip above
 the prompt, in the sidebar and in a run panel (`/workflows panel`). The header links to the same page in the web app.
 
+Below the Runs, **Saved** lists the project's durable Workflows with the args each one needs, so you do not have to
+remember their keys. <kbd>↵</kbd> asks what you want and sends it to your session as `/<key> <request>`: the agent
+builds the args and runs it. <kbd>s</kbd> starts a Workflow that needs no args at once.
+
 <p align="center">
   <a href="https://raw.githubusercontent.com/malhashemi/opencode-dynamic-workflows/main/assets/tui-run.webp"><img src="https://raw.githubusercontent.com/malhashemi/opencode-dynamic-workflows/main/assets/tui-run.webp" alt="The TUI's Run view: a header card for examples:research (done, 1m12s, 8.2k tokens, $0.66) with its phase stepper plan, research, synthesis and a budget meter; five Units with phase, agent, tokens, cost and time; the typed result as highlighted JSON" width="100%"></a><br>
   <sub>A Run in the TUI: phases, Units, budget and the typed result.</sub>
@@ -190,7 +194,7 @@ the prompt, in the sidebar and in a run panel (`/workflows panel`). The header l
 
 | Where | Keys |
 | --- | --- |
-| Library | <kbd>↵</kbd> open · <kbd>a</kbd> answer · <kbd>f</kbd> filter · <kbd>d</kbd> clean up finished · <kbd>b</kbd> open in the browser · <kbd>p</kbd> pair a device · <kbd>r</kbd> refresh |
+| Library | <kbd>↵</kbd> open (on a saved Workflow: run it in your session) · <kbd>s</kbd> start a saved Workflow that needs no args · <kbd>a</kbd> answer · <kbd>f</kbd> filter · <kbd>d</kbd> clean up finished · <kbd>b</kbd> open in the browser · <kbd>p</kbd> pair a device · <kbd>r</kbd> refresh |
 | Run, while running | <kbd>↵</kbd> Unit · <kbd>o</kbd> transcript · <kbd>s</kbd> stop Run · <kbd>x</kbd> stop Unit · <kbd>r</kbd> restart Unit · <kbd>b</kbd> open in the browser · <kbd>p</kbd> parent session |
 | Run, when finished | <kbd>e</kbd> resume · <kbd>w</kbd> save as a durable Workflow · <kbd>d</kbd> delete its Unit sessions |
 | Approval | <kbd>↑</kbd>/<kbd>↓</kbd>, <kbd>PgUp</kbd>/<kbd>PgDn</kbd>, <kbd>Home</kbd>/<kbd>End</kbd> scroll the script · <kbd>←</kbd>/<kbd>→</kbd> choose · <kbd>↵</kbd> confirm |
