@@ -241,7 +241,8 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
   // Tools
   // --------------------------------------------------------------------------------------------------------------
 
-  const link = (runId: string) => runLink(service.deps.gatewayUrl(), runId)
+  // No link to a web app that is turned off (gateway.web: false).
+  const link = (runId: string) => (config.gateway.web ? runLink(service.deps.gatewayUrl(), runId) : null)
 
   const mirrorProgress = (runId: string, tc: ToolContext) => {
     let last = ""

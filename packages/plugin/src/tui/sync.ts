@@ -161,7 +161,7 @@ export class WorkflowSync {
       this.set(
         fromSnapshot({
           location: info.location,
-          webUrl: info.gateway.url,
+          webUrl: info.gateway.web === false ? null : info.gateway.url,
           seq: latest,
           ...(epoch ? { epoch } : {}),
           entries,

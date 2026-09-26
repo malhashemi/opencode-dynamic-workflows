@@ -389,7 +389,11 @@ export const InfoOutput = z.object({
     maxConcurrentRuns: z.number().optional(),
     providerConcurrency: z.record(z.string(), z.number()).optional(),
   }),
-  gateway: z.object({ url: z.string().nullable() }),
+  gateway: z.object({
+    url: z.string().nullable(),
+    /** Whether the Gateway serves the web app (`gateway.web`); `url` may still serve the API when it does not. */
+    web: z.boolean().optional(),
+  }),
 })
 export type InfoOutput = z.infer<typeof InfoOutput>
 
