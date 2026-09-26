@@ -38,22 +38,30 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # Pull requests opened with the workflow token do not trigger CI, but main requires its
-      # checks. Start CI on the release branch so the release pull request can merge normally.
-      # The branch comes from release-please's own output: a label search can run before
-      # GitHub has labelled a new pull request.
-      - name: Run CI on the release pull request
+      # A pull request opened with the workflow token gets its CI run held for approval, and main
+      # requires those checks. Approve the release pull request's own run: a separately started
+      # run is not linked to the pull request, so its checks would not count.
+      - name: Approve CI on the release pull request
         env:
           GH_TOKEN: ${{ github.token }}
           PRS: ${{ steps.release.outputs.prs }}
         run: |
           branch=$(printf '%s' "${PRS:-[]}" | jq -r '.[0].headBranchName // empty')
-          if [ -n "$branch" ]; then
-            gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
-            echo "Started CI on $branch"
-          else
+          if [ -z "$branch" ]; then
             echo "No release pull request was opened or updated"
+            exit 0
           fi
+          for attempt in $(seq 1 12); do
+            run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$branch" --event pull_request \
+              --status action_required --limit 1 --json databaseId -q '.[0].databaseId // empty')
+            if [ -n "$run" ]; then
+              gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/approve"
+              echo "Approved CI run $run on $branch"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning::No CI run on $branch waits for approval; approve it in the Actions tab"
 
   plan:
     needs: release-please
