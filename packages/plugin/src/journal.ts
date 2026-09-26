@@ -401,9 +401,15 @@ export function subscribeJournal(store: RunStore, journal: Journal): () => void 
   })
 }
 
-/** This process's start time (ms since epoch). */
+/**
+ * This process's start time (ms since epoch), read the way {@link ownerAlive} reads it later: from `ps` when it
+ * works. On Linux `ps` derives it from the boot time, which can differ from the wall clock by seconds (a VM whose
+ * clock was corrected after boot), so a self-computed value would make a live owner look gone.
+ */
+let selfStartedAt: number | undefined
 export function processStartedAtSelf(): number {
-  return Math.round(Date.now() - process.uptime() * 1000)
+  selfStartedAt ??= processStartedAt(process.pid) ?? Math.round(Date.now() - process.uptime() * 1000)
+  return selfStartedAt
 }
 
 /** Another process's start time from `ps` (second precision), or null when it cannot be read. */
