@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.1.1...v0.2.0) (2026-09-26)
+
+
+### Features
+
+* **tui:** redesign the library, Run and Unit views in OpenCode's visual language ([b20f9e6](https://github.com/malhashemi/opencode-dynamic-workflows/commit/b20f9e6682b2b4909569e8cd7fb960d2665efa17))
+* **tui:** the approval and question panels look like OpenCode's own prompts ([440f570](https://github.com/malhashemi/opencode-dynamic-workflows/commit/440f570ed0903af3b3d1184c6f662ba0f5389459))
+
+
+### Bug fixes
+
+* a cancelled request never loads or saves inline code; long answer forms scroll ([f005abb](https://github.com/malhashemi/opencode-dynamic-workflows/commit/f005abb5aac18b6e00dd6f8dbcc22d9247cd337e))
+* an inline Workflow's code runs only after it is approved ([dea28ad](https://github.com/malhashemi/opencode-dynamic-workflows/commit/dea28ad658036e596991a345759dfb2827e0d3d8))
+* saving an inline Workflow needs the same approval as running it ([256b8cb](https://github.com/malhashemi/opencode-dynamic-workflows/commit/256b8cbf01100a3aa0fbfaf02174ee370026f0c4))
+
 ## [0.1.1](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.1.0...v0.1.1) (2026-09-26)
 
 
