@@ -5,7 +5,7 @@
  * single adaptation lives in `host/adapter.ts`. Tests supply an in-memory fake (`test/fake-host.ts`). Keeping
  * the slice narrow is what lets the whole engine run under `bun test` with no OpenCode at all.
  *
- * Shapes follow the 2.0.16 plugin types (verified in the P0 spikes: create/prompt/wait/context/interrupt/get).
+ * Shapes follow the 2.0.16 plugin types (create/prompt/wait/context/interrupt/get).
  */
 
 export interface HostModelRef {

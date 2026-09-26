@@ -1,5 +1,5 @@
 /**
- * The Gateway client (same origin). Auth rules (plan §9):
+ * The Gateway client (same origin). Auth rules:
  * - Loopback reads need no token; remote reads and every POST need `Authorization: Bearer <token>`.
  * - Tokens live in localStorage and only ever travel in that header — never in a URL.
  * - A browser on the Gateway's own machine and origin pairs itself (`POST /v1/pair/local`) on its first control

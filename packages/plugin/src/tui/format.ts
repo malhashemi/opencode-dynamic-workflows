@@ -12,7 +12,7 @@ import {
  * Pure text for every TUI surface: status glyphs and words, column layouts with density tiers, the composer
  * strip, sidebar lines.
  *
- * Plan §8.1: rows carry columns (right-aligned numbers, padded names); identity, status and counts survive at
+ * Rows carry columns (right-aligned numbers, padded names); identity, status and counts survive at
  * every width (80 columns is a contract); status is a glyph AND a word, colour only a bonus (an adversarial theme
  * can make every feedback colour equal the text colour); never print a figure the system does not know.
  */

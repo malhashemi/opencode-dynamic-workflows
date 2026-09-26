@@ -1,7 +1,7 @@
 /**
  * Keeps a {@link SyncState} current over the workflow RPC: snapshot, subscribe, apply, catch up, resync.
  *
- * OpenCode's event stream is volatile (no replay; the first event after subscribing can be missed — P0 S4 T14),
+ * OpenCode's event stream is volatile (no replay; the first event after subscribing can be missed),
  * so the controller never trusts it alone: it re-subscribes with backoff, and {@link WorkflowSync.poll} (run with
  * the attach heartbeat) asks `eventsSince` for anything the stream dropped. Every read goes through the pure
  * reducer in `state.ts`; this module only performs the I/O the reducer asks for.

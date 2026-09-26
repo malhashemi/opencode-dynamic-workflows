@@ -1,7 +1,7 @@
 /**
  * Gateway credentials: device tokens (stored hashed, revocable) and short-lived pairing codes.
  *
- * Rules (plan §9): no tokens in URLs; bearer tokens in the `Authorization` header only; codes are one-use and
+ * Rules: no tokens in URLs; bearer tokens in the `Authorization` header only; codes are one-use and
  * expire in five minutes; tokens are stored as SHA-256 hashes in a 0600 file under the user's state directory.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"

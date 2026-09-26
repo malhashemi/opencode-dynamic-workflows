@@ -1,5 +1,5 @@
 /**
- * The composed acceptance probe (plan P5): the package as users install it.
+ * The composed acceptance probe: the package as users install it.
  *
  * `bun pm pack` (runs `prepack` → the build) → the packed files in a throwaway git repo → a clean project that
  * configures `git+file://…#<sha>` → OpenCode installs it like any git plugin. Then: server, RPC, TUI entry,

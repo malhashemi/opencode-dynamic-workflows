@@ -4,7 +4,7 @@ import path from "node:path"
  * Precompile the TUI plugin (`src/tui/index.tsx` → `dist/tui.js`).
  *
  * OpenCode's runtime Solid transform skips files under `node_modules`, so an installed package's TSX would load
- * as React JSX or render nothing (P0 spike S4). The build applies OpenTUI's Solid transform ahead of time and
+ * as React JSX or render nothing. The build applies OpenTUI's Solid transform ahead of time and
  * leaves the host-provided runtime modules external: the TUI maps `solid-js`, `@opentui/*` and `@opencode/*` to
  * its own copies, and a second copy of Solid would break reactivity.
  *

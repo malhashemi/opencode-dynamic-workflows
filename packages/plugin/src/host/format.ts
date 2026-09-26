@@ -1,5 +1,5 @@
 /**
- * Tool-result text. OpenCode's TUI and web app show only the tool's name for plugin tools (P0 spike S10), so the
+ * Tool-result text. OpenCode's TUI and web app show only the tool's name for plugin tools, so the
  * text is written for the MODEL, which relays the summary line and the link to the person.
  */
 import { formatElapsed, formatTokens, phasePosition, settledUnits } from "../progress"

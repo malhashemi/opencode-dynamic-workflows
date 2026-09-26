@@ -1,10 +1,10 @@
 /**
  * The Workflow loader — turns Workflow source into a live `defineWorkflow` config, without `eval`.
  *
- * Proven in P0 spike S6 against an installed (non-workspace) package inside the host's embedded Bun:
+ * Checked against an installed (non-workspace) package inside the host's embedded Bun:
  *
  * - A Workflow's `import … from "<authoring package>"` cannot rely on the user's project: the authoring module
- *   ships inside this plugin. Every known authoring specifier is rewritten to this plugin's own resolved module,
+ *   ships inside this plugin. The authoring specifier is rewritten to this plugin's own resolved module,
  *   so the Workflow and the engine share ONE module instance (and one zod).
  * - Each module is written to a fresh directory named by its content hash. The host's resolver caches directory
  *   listings, so a new file in an already-read directory is not found; a new directory always is. The same bytes

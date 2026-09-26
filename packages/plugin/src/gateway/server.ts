@@ -1,10 +1,10 @@
 /**
  * The Gateway — protocol v1 over HTTP + SSE for the web app and third parties.
  *
- * A process-wide singleton (P0 S5): every location's plugin instance registers its workflow service with the one
+ * A process-wide singleton: every location's plugin instance registers its workflow service with the one
  * listener. It never belongs to a plugin instance, so a reload or a leaked instance cannot take it down.
  *
- * Security (plan §9):
+ * Security:
  * - Binds loopback by default; LAN / Tailscale / an explicit IP only by configuration.
  * - `Host` must be one we serve (DNS-rebinding defence); `Origin`, when present on a write, must be ours or an
  *   explicitly allowed origin (CSRF defence). CORS headers only for allowed origins.

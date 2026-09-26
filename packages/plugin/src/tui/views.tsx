@@ -4,7 +4,7 @@
  *
  * All logic lives in the plain modules beside this file; components only read state, lay out text and route keys
  * and clicks to actions. Colour comes only from the active theme. Selection is `background.raised.high` plus
- * a `▸` marker (the theme's "selected" action fill is transparent — P0 S4), and every status is a glyph and a word.
+ * a `▸` marker (the theme's "selected" action fill is transparent), and every status is a glyph and a word.
  */
 import type { Context, KeymapCommand, PanelInput } from "@opencode/plugin/tui/context"
 import type { BoxRenderable, InputRenderable, RGBA } from "@opentui/core"

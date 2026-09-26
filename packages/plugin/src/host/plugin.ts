@@ -6,7 +6,7 @@
  * module only (re)binds OpenCode surfaces around it:
  *
  * - tools `workflow`, `workflow_inline`, `workflow_result`, and a wrapper on the built-in `question` tool for
- *   Unit sessions (all `codemode: false`, so models call them by name — P0 S0);
+ *   Unit sessions (all `codemode: false`, so models call them by name);
  * - hooks: `context` (per-Unit result schema, instruction, step guard; hides `workflow_result` elsewhere),
  *   `permission evaluate` (workflow policy for Unit sessions), `model.request` (Copilot subagent headers);
  * - the event stream (permission and form requests raised inside Units → the Run's broker);
@@ -483,7 +483,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         return { content: "Result recorded. Your work is complete — reply with one short confirmation." }
       },
     })
-    // Unit questions go to the Run's broker instead of a native form nobody may be able to answer (P0 S3).
+    // Unit questions go to the Run's broker instead of a native form nobody may be able to answer.
     editor.update("question", (tool) => {
       const original = tool.execute
       ;(tool as { execute: typeof original }).execute = async (input, tc) => {
@@ -826,7 +826,7 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     if (reloadTimer) clearTimeout(reloadTimer)
     for (const watcher of watchers) watcher.close()
     // Only the current owner hands the location back: a leaked older instance cleaning up late must not unhook
-    // the instance that replaced it (P0 S9, R8).
+    // the instance that replaced it.
     const locationState = locationSlot(location)
     if (locationState.owner === instance) {
       locationState.owner = null

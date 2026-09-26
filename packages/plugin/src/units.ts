@@ -5,7 +5,7 @@
  * which schema its `workflow_result` must satisfy, how many model steps it has taken, and how to reach its Run's
  * interaction broker. It lives on `globalThis` (see {@link engineGlobal}) because OpenCode runs one plugin
  * instance per location and rebuilds instances on reload; an index held by one instance would orphan every
- * in-flight Unit the moment that instance is replaced (P0 spike S9, R5).
+ * in-flight Unit the moment that instance is replaced.
  */
 import type { z } from "zod"
 

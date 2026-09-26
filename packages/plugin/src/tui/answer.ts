@@ -1,7 +1,7 @@
 /**
  * Answer mode for a pending interaction — a pure state machine the panel renders.
  *
- * The TUI enters answer mode explicitly (P0 S4 T9): while answering, the view's navigation keys are off, so
+ * The TUI enters answer mode explicitly: while answering, the view's navigation keys are off, so
  * single-letter bindings cannot steal typing. Inside answer mode there are two sub-modes: choosing (arrow keys,
  * space, enter over the offered options) and typing (an `<input>` holds focus for a free-text answer, only where
  * the question allows `custom`). Each question gets one list of labels; the last confirmation yields the

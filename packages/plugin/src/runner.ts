@@ -3,7 +3,7 @@
  *
  *     create (title, agent, model, create-time metadata, ruleset) → prompt → wait → context → (repair) → result
  *
- * Decisions carried from the P0 spikes:
+ * Decisions:
  *
  * - The Unit is an ordinary, unlinked session. Its identity goes in `metadata.workflow` at create time —
  *   the plugin cannot update metadata later — and in the process-wide Unit index.
@@ -33,7 +33,7 @@ export const DEFAULT_SUBAGENT = "general"
 /** Extra repair turns for a typed Unit (the first turn is not counted). */
 export const DEFAULT_RETRIES = 2
 
-/** Model requests one Unit may make before the engine stops it (runaway guard; P0 spike S1 saw 170 in 40 s). */
+/** Model requests one Unit may make before the engine stops it (runaway guard; a looping model has made 170 in 40 s). */
 export const DEFAULT_MAX_UNIT_STEPS = 250
 
 /** How many times one Unit may be restarted from a surface. */

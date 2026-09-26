@@ -1,5 +1,5 @@
 /**
- * Retention from the TUI: the server plugin cannot delete sessions (P0 S8), so a Run marked `cleanup: "pending"`
+ * Retention from the TUI: the server plugin cannot delete sessions, so a Run marked `cleanup: "pending"`
  * waits for a surface with a full client. The TUI deletes the Unit sessions with `client.session.remove` and
  * reports what it deleted with `cleanupRun`. Only ever on an explicit user action.
  */

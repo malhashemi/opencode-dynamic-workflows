@@ -6,7 +6,7 @@
  * {@link WorkflowProtocolError} for expected failures, so every transport renders the same error.
  *
  * The service lives in the process-wide location slot: a plugin reload re-binds hooks and tools around the SAME
- * service, so Runs in flight keep their store, broker and stop handles (P0 spike S9).
+ * service, so Runs in flight keep their store, broker and stop handles.
  */
 import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
@@ -602,7 +602,7 @@ export class WorkflowService {
       this.deps.store.apply({ type: "run.ended", runId, patch })
   }
 
-  /** The inline-run gate (P0 S7): project approval, plugin policy, or a person — never silent. */
+  /** The inline-run gate: project approval, plugin policy, or a person — never silent. */
   private async approveInline(
     runId: string,
     source: string,
@@ -821,7 +821,7 @@ export class WorkflowService {
   }
 
   /**
-   * Retention for one Run's Unit sessions. The server plugin cannot delete sessions (P0 S8): a surface with a full
+   * Retention for one Run's Unit sessions. The server plugin cannot delete sessions: a surface with a full
    * client deletes them and reports `deleted`; without that, the Run is marked `cleanup: pending`.
    */
   async cleanupRun(runId: string, deleted: string[] = []): Promise<{ deleted: number; pending: number }> {

@@ -2,7 +2,7 @@
  * Process-wide engine state.
  *
  * OpenCode's shared service hosts one plugin instance per location and replaces instances on reload, but it is
- * one process: every instance sees the same `globalThis` (P0 spikes S5, S9, S12). Live Runs, the Unit index and
+ * one process: every instance sees the same `globalThis`. Live Runs, the Unit index and
  * pending interactions therefore live here, keyed by a versioned symbol, and instances attach to them. A reload
  * rebinds hooks and tools; it does not orphan anything that is running.
  *
