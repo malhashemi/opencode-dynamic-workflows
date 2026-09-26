@@ -14,6 +14,7 @@
     "packages/plugin/README.md",
     "packages/plugin/docs/protocol/schemas",
     "assets",
-    ".opencode"
+    ".opencode",
+    "packages/plugin/docs/protocol/openapi.json"
   ]
 }

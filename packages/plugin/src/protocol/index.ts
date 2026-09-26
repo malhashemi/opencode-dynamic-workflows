@@ -393,6 +393,22 @@ export const InfoOutput = z.object({
 })
 export type InfoOutput = z.infer<typeof InfoOutput>
 
+/** The Gateway's `GET /v1/info`: every location the process serves, and who the caller is. */
+export const GatewayInfoOutput = z.object({
+  protocol: z.literal(PROTOCOL_VERSION),
+  plugin: z.object({ name: z.string(), version: z.string() }),
+  locations: z.array(z.object({ location: z.string(), info: InfoOutput })),
+  auth: z.object({
+    device: z.object({ id: z.string(), name: z.string(), scopes: z.array(z.string()) }).nullable(),
+    loopback: z.boolean(),
+  }),
+})
+export type GatewayInfoOutput = z.infer<typeof GatewayInfoOutput>
+
+/** `POST /v1/pair` (a one-use code from `/workflows pair`) and `POST /v1/pair/local`. */
+export const PairInput = z.object({ code: z.string(), name: z.string().optional() })
+export const PairOutput = z.object({ token: z.string(), id: z.string() })
+
 export const ListRunsInput = z.object({
   status: z.array(RunStatus).optional(),
   parentSessionID: z.string().optional(),
@@ -525,6 +541,7 @@ export const PUBLISHED_SCHEMAS = {
   ProtocolEvent,
   ProtocolError,
   InfoOutput,
+  GatewayInfoOutput,
   ListRunsInput,
   StartRunInput,
   ReplyInteractionInput,
