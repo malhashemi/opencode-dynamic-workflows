@@ -82,23 +82,38 @@ const heartbeat = setInterval(() => {
 
 let runId: string | null = null
 const early: ProtocolEvent[] = [] // events that arrive before startRun returns the Run's id
-const answered = new Set<string>() // an event and the read below can both see one interaction
+// An event and a re-read can both see one interaction: ask about each once at a time. Something that failed is
+// left undone, so the next re-read tries again.
+const asking = new Set<string>()
+const answered = new Set<string>()
+let finishing = false
 let finished = false
 
 async function answer(interaction: PendingInteraction) {
-  if (!runId || answered.has(interaction.interactionId)) return
-  answered.add(interaction.interactionId)
-  const answers = await askPerson(interaction)
-  await workflow.replyInteraction({ runId, interactionId: interaction.interactionId, answers }, at)
+  const id = interaction.interactionId
+  if (!runId || answered.has(id) || asking.has(id)) return
+  asking.add(id)
+  try {
+    const answers = await askPerson(interaction)
+    await workflow.replyInteraction({ runId, interactionId: id, answers }, at)
+    answered.add(id)
+  } finally {
+    asking.delete(id)
+  }
 }
 
 async function finish() {
-  if (!runId || finished) return
-  finished = true
-  const { status, result } = await workflow.getResult({ runId }, at)
-  console.log(status, result)
-  clearInterval(heartbeat)
-  await workflow.detach({ surface }, at)
+  if (!runId || finished || finishing) return
+  finishing = true
+  try {
+    const { status, result } = await workflow.getResult({ runId }, at)
+    console.log(status, result)
+    clearInterval(heartbeat)
+    await workflow.detach({ surface }, at)
+    finished = true
+  } finally {
+    finishing = false
+  }
 }
 
 // Answer what is pending and finish a Run that has ended, from the Run itself rather than from events.
@@ -166,7 +181,7 @@ default). Control actions (start, stop, resume, answer, save, cleanup) need
 - A browser page served by the Gateway itself pairs automatically (`POST /v1/pair/local`).
 - Anything else gets a one-use code from the TUI (`/workflows pair`, valid five minutes) and exchanges it at
   `POST /v1/pair` with `{ "code": "…", "name": "my-app" }`. Store the token; revoke it by deleting its entry in
-  `$XDG_STATE_HOME/opencode-dynamic-workflows/gateway-tokens.json`.
+  `$XDG_STATE_HOME/opencode-dynamic-workflows/gateway-tokens.json` (the running Gateway notices at once).
 - The plugin RPC route needs no Gateway token: it uses your OpenCode credentials.
 
 The [security guide](../packages/plugin/docs/security.md) covers the Gateway's host, origin and CORS rules, and
