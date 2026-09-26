@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -53,6 +53,26 @@ function freePort(): number {
   return port
 }
 
+/**
+ * A config directory for the test server: the machine's global config (providers, models) without its plugins,
+ * so a copy of this plugin installed on the machine (say from npm, with other options) never loads beside the
+ * one under test.
+ */
+async function isolatedConfig(root: string): Promise<string> {
+  const home = path.join(root, "config")
+  const target = path.join(home, "opencode")
+  await mkdir(target, { recursive: true })
+  const global = path.join(
+    process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
+    "opencode",
+    "opencode.json",
+  )
+  const config = JSON.parse(await readFile(global, "utf8").catch(() => "{}")) as Record<string, unknown>
+  delete config.plugins
+  await writeFile(path.join(target, "opencode.json"), JSON.stringify(config, null, 2))
+  return home
+}
+
 export async function startLive(options: LiveOptions = {}): Promise<LiveServer> {
   const root = await mkdtemp(path.join(await realTmp(), "wf-live-"))
   const project = path.join(root, "project")
@@ -80,6 +100,7 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
     await mkdir(path.dirname(path.join(project, file)), { recursive: true })
     await writeFile(path.join(project, file), contents)
   }
+  const configHome = await isolatedConfig(root)
   if (options.commit)
     await Bun.$`git add -A && git -c user.email=live@test -c user.name=live commit -qm fixture`.cwd(project).quiet()
   let output = ""
@@ -91,6 +112,7 @@ export async function startLive(options: LiveOptions = {}): Promise<LiveServer> 
         ...process.env,
         OPENCODE_DB: path.join(root, "opencode.db"),
         XDG_CACHE_HOME: path.join(root, "cache"),
+        XDG_CONFIG_HOME: configHome,
         XDG_STATE_HOME: path.join(root, "state"),
       },
       stdout: "pipe",

@@ -53,6 +53,13 @@ entries by path):
   `WF_GATEWAY` (default `http://127.0.0.1:4320`).
 - **Worktree Units** (`isolation: "worktree"`) only work when the plugin is configured in a committed
   `opencode.json` (or globally): worktrees check out the committed tree.
+- **Do not load the checkout where the published package is installed.** A checkout (plugin id = its path) and the
+  npm package (id `@malhashemi/opencode-dynamic-workflows`) are two plugins to OpenCode: both load, both register
+  the same tools and RPC methods, and either may answer, with its own options (a global `inline: "allow"` would
+  bypass a project's approval). Test the checkout on a server with its own config directory, as the live tests do:
+  `XDG_CONFIG_HOME=/tmp/wf-dev-config opencode serve …` with that directory's `opencode/opencode.json` holding your
+  providers and no plugins. To change the published package's options for one project, name the same package in
+  the project config: its options override the global ones.
 
 ## Checks
 
