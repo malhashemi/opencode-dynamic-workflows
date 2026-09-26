@@ -20,7 +20,19 @@ const result = await Bun.build({
   naming: "tui.js",
   target: "bun",
   format: "esm",
-  plugins: [createSolidTransformPlugin()],
+  plugins: [
+    createSolidTransformPlugin(),
+    {
+      // The TUI uses only `generateSyntax` from `@opencode/theme/tui`, whose index also pulls in the whole theme
+      // schema (~500 KiB). Its own module is small and imports only `@opentui/core` (external, the host's copy).
+      name: "theme-syntax-only",
+      setup(builder) {
+        builder.onResolve({ filter: /^@opencode\/theme\/tui$/ }, () => ({
+          path: path.join(path.dirname(Bun.resolveSync("@opencode/theme/tui", root)), "syntax.js"),
+        }))
+      },
+    },
+  ],
   // No minify: any minified output (even whitespace-only) crashes the panel with "No renderer found" on 2.0.16.
   external: [
     // A dependency of this package: resolved from its own node_modules at run time instead of bundled.

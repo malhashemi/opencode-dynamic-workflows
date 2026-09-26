@@ -53,8 +53,8 @@ export function setupWorkflowsTui(context: Context): () => void {
       const what =
         interaction.kind === "approval"
           ? interaction.approval?.action === "save"
-            ? "wants approval to save an inline workflow"
-            : "wants approval to run an inline workflow"
+            ? "wants approval to be saved"
+            : "wants approval to run"
           : interaction.kind === "permission"
             ? `needs a permission: ${interaction.permission?.action ?? ""}`
             : `asks: ${question?.prompt ?? question?.header ?? ""}`

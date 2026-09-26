@@ -15,7 +15,6 @@ import {
   truncate,
   unitCells,
   unitName,
-  numberedLines,
   wrapLines,
 } from "../../src/tui/format"
 import { entry, run, unit } from "./fixtures"
@@ -106,35 +105,5 @@ describe("strip and sidebar", () => {
     const [first, second] = sidebarLines(entry(run({ currentPhase: "work" })), 5_000, 30)
     expect(first).toBe("● review")
     expect(second).toContain("phase 2/2")
-  })
-})
-
-describe("numberedLines", () => {
-  test("numbers every line, aligns the numbers, and keeps indentation", () => {
-    const source = Array.from({ length: 10 }, (_, index) => (index === 1 ? "  indented" : `line ${index + 1}`)).join(
-      "\n",
-    )
-    const out = numberedLines(source, 40)
-    expect(out).toHaveLength(10)
-    expect(out[0]).toBe(" 1 │ line 1")
-    expect(out[1]).toBe(" 2 │   indented")
-    expect(out[9]).toBe("10 │ line 10")
-  })
-
-  test("cuts a long line under a blank gutter and loses no text", () => {
-    const out = numberedLines(`const x = ${"a".repeat(30)}\nend`, 20)
-    expect(out.every((row) => row.length <= 20)).toBe(true)
-    expect(out.at(-1)).toBe("2 │ end")
-    expect(out.slice(1, -1).every((row) => row.startsWith("  │ "))).toBe(true)
-    expect(
-      out
-        .slice(0, -1)
-        .map((row) => row.slice(4))
-        .join(""),
-    ).toBe(`const x = ${"a".repeat(30)}`)
-  })
-
-  test("keeps blank lines", () => {
-    expect(numberedLines("a\n\nb", 20)).toEqual(["1 │ a", "2 │ ", "3 │ b"])
   })
 })

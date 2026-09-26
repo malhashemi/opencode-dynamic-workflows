@@ -7,7 +7,7 @@
  * a `▸` marker (the theme's "selected" action fill is transparent), and every status is a glyph and a word.
  */
 import type { Context, KeymapCommand, PanelInput } from "@opencode/plugin/tui/context"
-import type { BoxRenderable, InputRenderable, RGBA } from "@opentui/core"
+import type { BoxRenderable, InputRenderable, RGBA, ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type Accessor } from "solid-js"
 
@@ -27,6 +27,7 @@ import {
   type AnswerState,
   type AnswerStep,
 } from "./answer"
+import { ACCENT_BORDER, ApprovalPanel } from "./approval"
 import {
   LIBRARY_COLUMNS,
   UNIT_COLUMNS,
@@ -45,7 +46,6 @@ import {
   unitName,
   unitStatus,
   workflowName,
-  numberedLines,
   wrapLines,
   type Tone,
 } from "./format"
@@ -205,8 +205,8 @@ export function WorkflowsScreen(props: ScreenProps) {
   const [sending, setSending] = createSignal(false)
   const [autoAnswer, setAutoAnswer] = createSignal(props.start()?.answer === true)
   const [scroll, setScroll] = createSignal(0)
-  /** First source row shown in an inline-approval panel. The panel clamps it to the source's length. */
-  const [sourceScroll, setSourceScroll] = createSignal(0)
+  /** The approval panel's source view, for the scroll keys. */
+  let approvalScroller: ScrollBoxRenderable | undefined
 
   createEffect(
     on(
@@ -282,7 +282,6 @@ export function WorkflowsScreen(props: ScreenProps) {
   function beginAnswer(interaction: PendingInteraction | undefined) {
     if (!interaction) return
     setNote(null)
-    setSourceScroll(0)
     setAnswer(startAnswer(interaction))
   }
 
@@ -343,7 +342,11 @@ export function WorkflowsScreen(props: ScreenProps) {
     const v = view()
     if (v.kind === "library") {
       const entry = entries()[cursor(nav(), entries().length)]
-      if (entry) setNav(push(nav(), { kind: "run", runId: entry.runId }))
+      if (!entry) return
+      // A queued Run that waits can only be waiting for its approval, and nothing else can happen before it:
+      // open straight onto the script.
+      if (entry.status === "queued" && entry.waiting) setAutoAnswer(true)
+      setNav(push(nav(), { kind: "run", runId: entry.runId }))
       return
     }
     if (v.kind === "run") {
@@ -448,36 +451,25 @@ export function WorkflowsScreen(props: ScreenProps) {
 
   const navigating = () => props.active() && answer() === null
   const choosing = () => props.active() && answer() !== null && !answer()!.typing && !sending()
-  // Reading an inline Workflow before approving it: half a screen per page, the wheel scrolls 3 lines.
-  const approvalScrollKeys = (): KeymapCommand[] => {
-    const reading = () => !!pendingInteraction()?.approval
-    const halfScreen = () => Math.max(3, Math.floor(props.height() / 2))
-    const scrollBy = (delta: number) => void setSourceScroll((value) => Math.max(0, value + delta))
-    return [
-      {
-        title: "Scroll source down",
-        group: "Answer",
-        bind: "pagedown",
-        enabled: reading,
-        run: () => scrollBy(halfScreen()),
-      },
-      {
-        title: "Scroll source up",
-        group: "Answer",
-        bind: "pageup",
-        enabled: reading,
-        run: () => scrollBy(-halfScreen()),
-      },
-      { title: "Source top", group: "Answer", bind: "home", enabled: reading, run: () => void setSourceScroll(0) },
-      {
-        title: "Source end",
-        group: "Answer",
-        bind: "end",
-        enabled: reading,
-        run: () => void setSourceScroll(Number.MAX_SAFE_INTEGER),
-      },
-    ]
-  }
+  // An inline approval: ←/→ choose (the buttons are a row), ↑/↓ and the page keys scroll the script.
+  const approving = () => !!pendingInteraction()?.approval
+  const scrollSource = (delta: number, unit: "absolute" | "viewport" = "absolute") =>
+    approvalScroller?.scrollBy(delta, unit)
+  const approvalKeys = (): KeymapCommand[] => [
+    { title: "Previous choice", group: "Approval", bind: "left", run: () => void setAnswer(move(answer()!, -1)) },
+    { title: "Previous choice", group: "Approval", bind: "h", run: () => void setAnswer(move(answer()!, -1)) },
+    { title: "Next choice", group: "Approval", bind: "right", run: () => void setAnswer(move(answer()!, 1)) },
+    { title: "Next choice", group: "Approval", bind: "l", run: () => void setAnswer(move(answer()!, 1)) },
+    { title: "Scroll down", group: "Approval", bind: "down", run: () => scrollSource(1) },
+    { title: "Scroll down", group: "Approval", bind: "j", run: () => scrollSource(1) },
+    { title: "Scroll up", group: "Approval", bind: "up", run: () => scrollSource(-1) },
+    { title: "Scroll up", group: "Approval", bind: "k", run: () => scrollSource(-1) },
+    { title: "Page down", group: "Approval", bind: "pagedown", run: () => scrollSource(0.5, "viewport") },
+    { title: "Page down", group: "Approval", bind: "space", run: () => scrollSource(0.5, "viewport") },
+    { title: "Page up", group: "Approval", bind: "pageup", run: () => scrollSource(-0.5, "viewport") },
+    { title: "Top", group: "Approval", bind: "home", run: () => approvalScroller?.scrollTo(0) },
+    { title: "End", group: "Approval", bind: "end", run: () => approvalScroller?.scrollTo(Number.MAX_SAFE_INTEGER) },
+  ]
   const typing = () => props.active() && answer()?.typing === true
 
   context.keymap.layer(() => {
@@ -582,6 +574,13 @@ export function WorkflowsScreen(props: ScreenProps) {
   })
 
   context.keymap.layer(() => ({
+    // Above the answer layer: these keys scroll and pick here; Enter, Esc and 1-9 fall through to it.
+    enabled: () => choosing() && approving(),
+    priority: 70,
+    commands: approvalKeys(),
+  }))
+
+  context.keymap.layer(() => ({
     enabled: choosing,
     priority: 60,
     commands: [
@@ -589,7 +588,6 @@ export function WorkflowsScreen(props: ScreenProps) {
       { title: "Next option", group: "Answer", bind: "j", run: () => void setAnswer(move(answer()!, 1)) },
       { title: "Previous option", group: "Answer", bind: "up", run: () => void setAnswer(move(answer()!, -1)) },
       { title: "Previous option", group: "Answer", bind: "k", run: () => void setAnswer(move(answer()!, -1)) },
-      ...approvalScrollKeys(),
       { title: "Toggle", group: "Answer", bind: "space", run: () => void setAnswer(toggle(answer()!)) },
       { title: "Choose", group: "Answer", bind: "return", run: () => void step(confirm(answer()!)) },
       { title: "Dismiss", group: "Answer", bind: "x", run: () => void dismiss() },
@@ -669,8 +667,8 @@ export function WorkflowsScreen(props: ScreenProps) {
                 answer={answer()}
                 interaction={pendingInteraction()}
                 sending={sending()}
-                sourceScroll={sourceScroll()}
-                onSourceScroll={setSourceScroll}
+                onApprovalScroller={(box) => (approvalScroller = box)}
+                onSelectOption={(index) => void setAnswer({ ...answer()!, cursor: index })}
                 onAnswerText={(text) => void step(submitText(answer()!, text))}
                 onPickOption={(index) => void step(pick(answer()!, index + 1))}
                 onPick={(index) => {
@@ -802,8 +800,8 @@ function RunPane(props: {
   answer: AnswerState | null
   interaction: PendingInteraction | undefined
   sending: boolean
-  sourceScroll: number
-  onSourceScroll: (value: number) => void
+  onApprovalScroller: (box: ScrollBoxRenderable) => void
+  onSelectOption: (index: number) => void
   onPick: (index: number) => void
   onAnswer: () => void
   onAnswerText: (text: string) => void
@@ -820,17 +818,10 @@ function RunPane(props: {
       props.activity ?? props.run.logs.map((message) => ({ message, kind: "log", time: props.run.startedAt }))
     return entries.slice(-3)
   }
-  // An inline approval comes before the Run starts (no Units yet), so its source gets the whole view.
+  // An inline approval comes before the Run starts (no Units yet): it takes the whole view.
   const approving = () => !!(props.answer && props.interaction?.approval)
   const answerRows = () =>
-    !props.answer || !props.interaction
-      ? 0
-      : approving()
-        ? Math.max(
-            8,
-            props.height - 1 - (props.run.workflow.description ? 1 : 0) - (phaseLine(props.run).length ? 1 : 0),
-          )
-        : Math.min(props.height - 6, 8 + rows(props.answer).length)
+    !props.answer || !props.interaction ? 0 : Math.min(props.height - 6, 11 + 2 * rows(props.answer).length)
   const unitRows = () =>
     Math.max(
       3,
@@ -845,56 +836,73 @@ function RunPane(props: {
   const window = () => visibleWindow(props.run.units.length, props.cursor, unitRows())
 
   return (
-    <box flexDirection="column">
-      <box flexDirection="row">
-        <text fg={toneColor(context, look().tone)}>{`${look().glyph} ${look().word}`}</text>
-        <text fg={th().text.base}>
-          {truncate(`  ${runSummary(props.run, props.wf.now())}`, props.width - look().word.length - 2)}
-        </text>
-      </box>
-      <Show when={props.run.workflow.description}>
-        <text fg={th().text.muted}>{truncate(props.run.workflow.description, props.width)}</text>
-      </Show>
-      <Show when={phaseLine(props.run).length > 0}>
-        <box flexDirection="row" flexWrap="wrap">
-          <For each={phaseLine(props.run)}>
-            {(part, index) => (
-              <text
-                fg={toneColor(context, part.tone)}
-              >{`${part.text}${index() < phaseLine(props.run).length - 1 ? "  ›  " : ""}`}</text>
-            )}
-          </For>
-        </box>
-      </Show>
-      <Show
-        when={props.answer && props.interaction}
-        fallback={
-          <Show when={props.run.interactions.length > 0}>
-            <box flexDirection="row" backgroundColor={th().background.raised.base} onMouseDown={() => props.onAnswer()}>
-              <text fg={th().text.feedback.warning.base}>
-                {truncate(
-                  `? ${props.run.interactions.length} waiting — ${props.run.interactions[0]!.questions[0]?.header ?? props.run.interactions[0]!.kind}: ${props.run.interactions[0]!.questions[0]?.prompt ?? ""}  (a to answer)`,
-                  props.width,
-                )}
-              </text>
-            </box>
-          </Show>
-        }
-      >
-        <AnswerPanel
+    <Show
+      when={!approving()}
+      fallback={
+        <ApprovalPanel
           wf={props.wf}
-          state={props.answer!}
           interaction={props.interaction!}
-          width={props.width}
-          height={answerRows()}
+          selected={props.answer!.cursor}
           sending={props.sending}
-          sourceScroll={props.sourceScroll}
-          onSourceScroll={props.onSourceScroll}
-          onText={props.onAnswerText}
-          onPickOption={props.onPickOption}
+          height={props.height}
+          onSelect={props.onSelectOption}
+          onChoose={props.onPickOption}
+          scroller={props.onApprovalScroller}
         />
-      </Show>
-      <Show when={!approving()}>
+      }
+    >
+      <box flexDirection="column">
+        <box flexDirection="row">
+          <text fg={toneColor(context, look().tone)}>{`${look().glyph} ${look().word}`}</text>
+          <text fg={th().text.base}>
+            {truncate(`  ${runSummary(props.run, props.wf.now())}`, props.width - look().word.length - 2)}
+          </text>
+        </box>
+        <Show when={props.run.workflow.description}>
+          <text fg={th().text.muted}>{truncate(props.run.workflow.description, props.width)}</text>
+        </Show>
+        <Show when={phaseLine(props.run).length > 0}>
+          <box flexDirection="row" flexWrap="wrap">
+            <For each={phaseLine(props.run)}>
+              {(part, index) => (
+                <text
+                  fg={toneColor(context, part.tone)}
+                >{`${part.text}${index() < phaseLine(props.run).length - 1 ? "  ›  " : ""}`}</text>
+              )}
+            </For>
+          </box>
+        </Show>
+        <Show
+          when={props.answer && props.interaction}
+          fallback={
+            <Show when={props.run.interactions.length > 0}>
+              <box
+                flexDirection="row"
+                backgroundColor={th().background.raised.base}
+                onMouseDown={() => props.onAnswer()}
+              >
+                <text fg={th().text.feedback.warning.base}>
+                  {truncate(
+                    `? ${props.run.interactions.length} waiting — ${props.run.interactions[0]!.questions[0]?.header ?? props.run.interactions[0]!.kind}: ${props.run.interactions[0]!.questions[0]?.prompt ?? ""}  (a to answer)`,
+                    props.width,
+                  )}
+                </text>
+              </box>
+            </Show>
+          }
+        >
+          <AnswerPanel
+            wf={props.wf}
+            state={props.answer!}
+            interaction={props.interaction!}
+            width={props.width}
+            height={answerRows()}
+            sending={props.sending}
+            onText={props.onAnswerText}
+            onSelectOption={props.onSelectOption}
+            onPickOption={props.onPickOption}
+          />
+        </Show>
         <text fg={th().text.muted}>{`  ${renderHeader([statusColumn()])} ${renderHeader(rest())}`}</text>
         <Show when={props.run.units.length > 0} fallback={<text fg={th().text.muted}> No Units yet.</text>}>
           <For each={props.run.units.slice(window().start, window().end)}>
@@ -929,8 +937,8 @@ function RunPane(props: {
         <For each={activityLines()}>
           {(entry) => <text fg={th().text.muted}>{truncate(`· ${entry.message}`, props.width)}</text>}
         </For>
-      </Show>
-    </box>
+      </box>
+    </Show>
   )
 }
 
@@ -945,9 +953,8 @@ function AnswerPanel(props: {
   width: number
   height: number
   sending: boolean
-  sourceScroll: number
-  onSourceScroll: (value: number) => void
   onText: (text: string) => void
+  onSelectOption: (index: number) => void
   onPickOption: (index: number) => void
 }) {
   const context = props.wf.context
@@ -955,7 +962,6 @@ function AnswerPanel(props: {
   const question = () => currentQuestion(props.state)
   const kindLabel = () => {
     const interaction = props.interaction
-    if (interaction.kind === "approval") return "Approval"
     if (interaction.kind === "permission") return "Permission"
     return interaction.form
       ? "Question (OpenCode form)"
@@ -963,123 +969,144 @@ function AnswerPanel(props: {
         ? "Question from the workflow"
         : "Question from a Unit"
   }
-  const width = () => props.width - 2
+  const width = () => props.width - 6
   let input: InputRenderable | undefined
   const promptLines = () => wrapLines(question()?.prompt ?? "", width()).slice(0, 3)
-  // The whole inline source, numbered; the box takes every row the panel does not need for the rest.
-  const sourceLines = () =>
-    props.interaction.approval ? numberedLines(props.interaction.approval.source, width() - 1) : []
-  const sourceRoom = () => Math.max(3, props.height - 5 - promptLines().length - rows(props.state).length)
-  const sourceMax = () => Math.max(0, sourceLines().length - sourceRoom())
-  const sourceOffset = () => Math.min(props.sourceScroll, sourceMax())
-  // Keys may push past the end (End jumps there); pull the stored value back so the next PgUp moves at once.
-  createEffect(() => {
-    if (props.sourceScroll > sourceMax()) props.onSourceScroll(sourceMax())
-  })
+  const hint = (key: string, label: string) => (
+    <text fg={th().text.base}>
+      {key} <span style={{ fg: th().text.muted }}>{label}</span>
+    </text>
+  )
+  // Laid out like OpenCode's own question form: accent bar, numbered rows, a formfield highlight, ✓ for chosen.
   return (
-    <box flexDirection="column" backgroundColor={th().background.raised.base} paddingLeft={1} paddingRight={1}>
-      <text fg={th().text.feedback.warning.base}>
-        {truncate(
-          `? ${kindLabel()} · ${question()?.header ?? ""}${props.state.questions.length > 1 ? `  (${props.state.index + 1}/${props.state.questions.length})` : ""}`,
-          width(),
-        )}
-      </text>
-      <For each={promptLines()}>{(line) => <text fg={th().text.base}>{line}</text>}</For>
-      <Show when={props.interaction.permission}>
-        <text fg={th().text.muted}>
-          {truncate(
-            `${props.interaction.permission!.action}: ${props.interaction.permission!.resources.join(", ") || "(no resource)"}`,
-            width(),
-          )}
-        </text>
-      </Show>
-      <Show when={props.interaction.approval}>
-        <text fg={th().text.muted}>
-          {truncate(
-            `sha256 ${props.interaction.approval!.sha256} · ${props.interaction.approval!.bytes} bytes`,
-            width(),
-          )}
-        </text>
-        <box
-          flexDirection="column"
-          backgroundColor={th().background.raised.high}
-          paddingLeft={1}
-          onMouseScroll={(event: { scroll?: { direction?: string } }) =>
-            props.onSourceScroll(Math.max(0, sourceOffset() + (event.scroll?.direction === "up" ? -3 : 3)))
-          }
-        >
-          <For each={sourceLines().slice(sourceOffset(), sourceOffset() + sourceRoom())}>
-            {(line) => <text fg={th().text.base}>{line}</text>}
+    <box
+      flexDirection="column"
+      backgroundColor={th().background.raised.base}
+      border={["left"]}
+      borderColor={th().background.action.primary.focused}
+      customBorderChars={ACCENT_BORDER}
+    >
+      <box flexDirection="column" gap={1} paddingLeft={2} paddingRight={3} paddingTop={1} paddingBottom={1}>
+        <box flexDirection="column">
+          <box flexDirection="row" gap={1}>
+            <text fg={th().text.feedback.warning.base}>△</text>
+            <text fg={th().text.muted}>
+              {truncate(
+                `${kindLabel()}${question()?.header ? ` · ${question()!.header}` : ""}${props.state.questions.length > 1 ? `  (${props.state.index + 1} of ${props.state.questions.length})` : ""}`,
+                width(),
+              )}
+            </text>
+          </box>
+          <box flexDirection="column" paddingLeft={2}>
+            <For each={promptLines()}>{(line) => <text fg={th().text.base}>{line}</text>}</For>
+            <Show when={props.interaction.permission}>
+              <text fg={th().text.muted}>
+                {truncate(
+                  `${props.interaction.permission!.action}: ${props.interaction.permission!.resources.join(", ") || "(no resource)"}`,
+                  width(),
+                )}
+              </text>
+            </Show>
+          </box>
+        </box>
+        <box flexDirection="column" paddingLeft={2}>
+          <For each={rows(props.state)}>
+            {(row, index) => {
+              const active = () => index() === props.state.cursor && !props.state.typing
+              const fill = () => (active() ? th().background.formfield.focused : th().background.raised.base)
+              const checked = () => (row.kind === "option" ? row.checked : row.typed.length > 0)
+              const label = () =>
+                row.kind === "custom" ? (row.typed.length ? row.typed.join(", ") : row.label) : row.label
+              const description = () => (row.kind === "option" ? row.description : "")
+              return (
+                <box
+                  flexDirection="column"
+                  onMouseMove={() => props.onSelectOption(index())}
+                  onMouseUp={() => props.onPickOption(index())}
+                >
+                  <box flexDirection="row">
+                    <box backgroundColor={fill()} paddingRight={1}>
+                      <text fg={active() ? th().text.formfield.focused : th().text.muted}>{`${index() + 1}.`}</text>
+                    </box>
+                    <box backgroundColor={fill()} flexDirection="row">
+                      <Show when={question()?.multiple}>
+                        <text
+                          fg={
+                            active()
+                              ? th().text.formfield.focused
+                              : checked()
+                                ? th().text.formfield.selected
+                                : th().text.muted
+                          }
+                        >
+                          {`[${checked() ? "✓" : " "}] `}
+                        </text>
+                      </Show>
+                      <text
+                        fg={
+                          active()
+                            ? th().text.formfield.focused
+                            : row.kind === "custom" && !checked()
+                              ? th().text.muted
+                              : th().text.formfield.base
+                        }
+                      >
+                        {truncate(label(), width() - 8)}
+                      </text>
+                    </box>
+                    <Show when={!question()?.multiple && checked()}>
+                      <text fg={th().text.formfield.selected}> ✓</text>
+                    </Show>
+                  </box>
+                  <Show when={description()}>
+                    <box paddingLeft={question()?.multiple ? 7 : 3}>
+                      <text fg={th().text.muted}>{truncate(description(), width() - 8)}</text>
+                    </box>
+                  </Show>
+                </box>
+              )
+            }}
           </For>
-        </box>
-        <text fg={th().text.muted}>
-          {truncate(
-            sourceMax() > 0
-              ? `rows ${sourceOffset() + 1}-${sourceOffset() + Math.min(sourceRoom(), sourceLines().length)} of ${sourceLines().length} · pgup/pgdn · home/end · wheel`
-              : `all ${sourceLines().length} lines shown`,
-            width(),
-          )}
-        </text>
-      </Show>
-      <For each={rows(props.state)}>
-        {(row, index) => {
-          const selected = () => index() === props.state.cursor && !props.state.typing
-          const box = () =>
-            row.kind === "custom"
-              ? "✎"
-              : question()?.multiple
-                ? row.checked
-                  ? "[x]"
-                  : "[ ]"
-                : row.checked
-                  ? "(•)"
-                  : "( )"
-          const text = () =>
-            row.kind === "custom"
-              ? `${index() + 1}. ${box()} ${row.label}${row.typed.length ? `: ${row.typed.join(", ")}` : ""}`
-              : `${index() + 1}. ${box()} ${row.label}${row.description ? ` — ${row.description}` : ""}`
-          return (
-            <box
-              flexDirection="row"
-              backgroundColor={selected() ? th().background.raised.high : undefined}
-              onMouseDown={() => props.onPickOption(index())}
-            >
-              <text fg={th().text.base}>{selected() ? MARKER : "  "}</text>
-              <text fg={selected() ? th().text.base : th().text.base}>{truncate(text(), width() - 2)}</text>
+          <Show when={props.state.typing}>
+            <box flexDirection="row" paddingTop={1}>
+              <input
+                ref={(renderable: InputRenderable) => (input = renderable)}
+                focused={props.state.typing}
+                placeholder="Type your answer"
+                width={width() - 2}
+                backgroundColor={th().background.formfield.base}
+                textColor={th().text.formfield.base}
+                focusedBackgroundColor={th().background.formfield.focused}
+                focusedTextColor={th().text.formfield.focused}
+                placeholderColor={th().text.muted}
+                // OpenTUI types `onSubmit` as both a SubmitEvent and a value handler; read the value either way.
+                onSubmit={
+                  ((value: unknown) => props.onText(typeof value === "string" ? value : (input?.value ?? ""))) as never
+                }
+              />
             </box>
-          )
-        }}
-      </For>
-      <Show when={props.state.typing}>
-        <box flexDirection="row">
-          <text fg={th().text.base}>{MARKER}</text>
-          <input
-            ref={(renderable: InputRenderable) => (input = renderable)}
-            focused={props.state.typing}
-            placeholder="Type your answer · Enter to send · Esc to go back"
-            width={width() - 2}
-            backgroundColor={th().background.formfield.base}
-            textColor={th().text.formfield.base}
-            focusedBackgroundColor={th().background.formfield.focused}
-            focusedTextColor={th().text.formfield.focused}
-            placeholderColor={th().text.muted}
-            // OpenTUI types `onSubmit` as both a SubmitEvent and a value handler; read the value either way.
-            onSubmit={
-              ((value: unknown) => props.onText(typeof value === "string" ? value : (input?.value ?? ""))) as never
-            }
-          />
+          </Show>
         </box>
-      </Show>
-      <text fg={th().text.muted}>
-        {truncate(
-          props.sending
-            ? "Sending…"
-            : props.state.typing
-              ? "enter send · esc back"
-              : `↑↓ move · ${question()?.multiple ? "space toggle · " : ""}enter choose · 1-9 pick · x dismiss · esc back`,
-          width(),
-        )}
-      </text>
+      </box>
+      <box flexDirection="row" flexShrink={0} gap={2} paddingLeft={2} paddingRight={3} paddingBottom={1}>
+        <Show when={!props.sending} fallback={<text fg={th().text.muted}>Sending…</text>}>
+          <Show
+            when={!props.state.typing}
+            fallback={
+              <>
+                {hint("enter", "send")}
+                {hint("esc", "back")}
+              </>
+            }
+          >
+            {hint("↑↓", "select")}
+            <Show when={question()?.multiple}>{hint("space", "toggle")}</Show>
+            {hint("enter", "choose")}
+            {hint("x", "dismiss")}
+            {hint("esc", "back")}
+          </Show>
+        </Show>
+      </box>
     </box>
   )
 }

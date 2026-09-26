@@ -58,6 +58,7 @@ describe("inline source runs only after approval", () => {
     const { error, run } = await started.done
     expect(error).toContain("no one approved")
     expect(run.status).toBe("failed")
+    expect(run.workflow.name).toBe("unapproved script")
     expect(marked("wfRefused")).toBe(false)
   })
 

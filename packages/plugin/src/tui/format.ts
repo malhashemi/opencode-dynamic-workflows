@@ -315,27 +315,6 @@ export function wrapLines(text: string, width: number): string[] {
   return out
 }
 
-/**
- * Source code as display rows: a right-aligned line number, a bar, then the line. A long line is cut into pieces
- * under a blank gutter, so indentation stays as written.
- */
-export function numberedLines(source: string, width: number): string[] {
-  const lines = source.replace(/\t/g, "  ").split("\n")
-  const gutter = String(lines.length).length
-  const room = Math.max(1, width - gutter - 3)
-  const out: string[] = []
-  lines.forEach((line, index) => {
-    let rest = line.trimEnd()
-    let first = true
-    do {
-      out.push(`${first ? String(index + 1).padStart(gutter) : " ".repeat(gutter)} │ ${rest.slice(0, room)}`)
-      rest = rest.slice(room)
-      first = false
-    } while (rest.length > 0)
-  })
-  return out
-}
-
 /** "a3f9c1d2" — enough of an id to tell Runs apart in a list. */
 export function shortId(id: string): string {
   return id.replace(/-/g, "").slice(0, 8)

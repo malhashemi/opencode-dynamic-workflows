@@ -163,6 +163,9 @@ export function toTranscript(sessionID: string, messages: readonly HostMessage[]
   return { sessionID, messages: out, clipped }
 }
 
+/** The name an inline Run shows until it is approved and its script says its real name. */
+const UNAPPROVED_NAME = "unapproved script"
+
 export class WorkflowService {
   readonly deps: ServiceDeps
   private readonly live = new Map<string, LiveRun>()
@@ -427,7 +430,13 @@ export class WorkflowService {
       }
     } else {
       source = input.source!
-      identity = options.identity ?? { key: null, name: "inline", description: "", provenance: "inline" }
+      // The script's own name comes from running it, so until it is approved the Run has a placeholder name.
+      identity = options.identity ?? {
+        key: null,
+        name: UNAPPROVED_NAME,
+        description: "An inline Workflow waiting for approval",
+        provenance: "inline",
+      }
     }
 
     // Loading a module runs its top-level code. A durable Workflow is trusted and loads now; inline source loads
@@ -490,7 +499,7 @@ export class WorkflowService {
             await this.endQueued(runId, reason)
             return { error: reason, run: store.get(runId)! }
           }
-          if (identity.name === "inline")
+          if (identity.name === UNAPPROVED_NAME)
             identity = { ...identity, name: config.meta.name, description: config.meta.description }
           store.apply({
             type: "run.patch",
