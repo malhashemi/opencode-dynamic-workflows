@@ -99,11 +99,15 @@ export function setupWorkflowsTui(context: Context): () => void {
   /** The session the user came from: the one in view, or the one `/workflows` was opened over. */
   const originSession = () => sessionInView() ?? (returnTo?.type === "session" ? returnTo.sessionID : undefined)
 
+  // Loads can overlap (start, page open, refresh, save): only the newest one's answer is kept.
+  let savedLoads = 0
   const loadSaved = async () => {
+    const load = ++savedLoads
     try {
-      setSavedWorkflows((await api.listWorkflows()).workflows)
+      const { workflows } = await api.listWorkflows()
+      if (load === savedLoads) setSavedWorkflows(workflows)
     } catch (err) {
-      setError(`saved Workflows: ${errorText(err)}`)
+      if (load === savedLoads) setError(`saved Workflows: ${errorText(err)}`)
     }
   }
 
@@ -250,7 +254,9 @@ export function setupWorkflowsTui(context: Context): () => void {
       })
       if (!name) return
       const saved = await attempt("Save", () => api.saveRun({ runId: run.runId, name }))
-      if (saved) toast(`Saved as "${saved.key}" (${saved.path}).`, "success")
+      if (!saved) return
+      toast(`Saved as "${saved.key}" (${saved.path}).`, "success")
+      void loadSaved()
     },
     async cleanupRun(run) {
       if (!isTerminal(run.status)) {

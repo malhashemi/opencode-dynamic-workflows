@@ -295,19 +295,40 @@ export function shortId(id: string): string {
   return id.replace(/-/g, "").slice(0, 8)
 }
 
-/** A saved Workflow's args, from its JSON Schema: the names it requires, then the optional ones. */
-export function savedArgs(listing: Pick<WorkflowListing, "args">): { required: string[]; optional: string[] } {
-  const schema = listing.args as { properties?: Record<string, unknown>; required?: unknown } | null
-  const names = Object.keys(schema?.properties ?? {})
-  const required = Array.isArray(schema?.required)
+/**
+ * A saved Workflow's args, from its JSON Schema: the names a caller must give, the optional ones, and whether it
+ * can start with no args at all (`{}`; a Workflow without an args schema ignores them).
+ */
+export function savedArgs(listing: Pick<WorkflowListing, "args">): {
+  required: string[]
+  optional: string[]
+  startable: boolean
+} {
+  if (!listing.args) return { required: [], optional: [], startable: true }
+  const schema = listing.args as { type?: unknown; properties?: Record<string, unknown>; required?: unknown }
+  // A string, an array…: `{}` is never valid.
+  if (schema.type !== "object") return { required: [], optional: [], startable: false }
+  const properties = schema.properties ?? {}
+  const listed = Array.isArray(schema.required)
     ? schema.required.filter((name): name is string => typeof name === "string")
     : []
-  return { required, optional: names.filter((name) => !required.includes(name)) }
+  // zod lists a field with a default as required (its output always has it); a caller may leave it out.
+  const hasDefault = (name: string) => {
+    const property = properties[name]
+    return typeof property === "object" && property !== null && "default" in property
+  }
+  const required = listed.filter((name) => !hasDefault(name))
+  return {
+    required,
+    optional: Object.keys(properties).filter((name) => !required.includes(name)),
+    startable: required.length === 0,
+  }
 }
 
-/** "no args", "needs question", "needs question · 2 optional", "1 optional". */
+/** "no args", "needs question", "needs question · 2 optional", "1 optional", "needs args" (not an object). */
 export function savedArgsText(listing: Pick<WorkflowListing, "args">): string {
-  const { required, optional } = savedArgs(listing)
+  const { required, optional, startable } = savedArgs(listing)
+  if (!startable && required.length === 0) return "needs args"
   if (required.length === 0 && optional.length === 0) return "no args"
   return [required.length ? `needs ${required.join(", ")}` : "", optional.length ? `${optional.length} optional` : ""]
     .filter(Boolean)

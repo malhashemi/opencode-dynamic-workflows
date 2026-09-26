@@ -224,15 +224,22 @@ export function WorkflowsScreen(props: ScreenProps) {
     const index = cursor(nav(), libraryRows()) - entries().length
     return index >= 0 ? saved()[index] : undefined
   }
+  const [startingSaved, setStartingSaved] = createSignal(false)
   const canStartSaved = () => {
     const listing = selectedSaved()
-    return !!listing && savedArgs(listing).required.length === 0
+    return !!listing && savedArgs(listing).startable
   }
   const startSaved = async () => {
     const listing = selectedSaved()
-    if (!listing || !canStartSaved()) return
-    const runId = await wf.actions.startSaved(listing)
-    if (runId) setNav(push(nav(), { kind: "run", runId }))
+    // One start at a time: a repeated key must not start the Workflow twice.
+    if (!listing || !canStartSaved() || startingSaved()) return
+    setStartingSaved(true)
+    try {
+      const runId = await wf.actions.startSaved(listing)
+      if (runId) setNav(push(nav(), { kind: "run", runId }))
+    } finally {
+      setStartingSaved(false)
+    }
   }
   const units = () => run()?.units ?? []
   const selectedUnit = () => {
@@ -554,7 +561,7 @@ export function WorkflowsScreen(props: ScreenProps) {
         title: "Start the saved Workflow",
         group: "Workflows",
         bind: "s",
-        enabled: canStartSaved,
+        enabled: () => canStartSaved() && !startingSaved(),
         run: () => void startSaved(),
       },
       {
@@ -837,7 +844,7 @@ function savedRow(theme: Context["theme"], listing: WorkflowListing, width: numb
     ),
     { text: " ", fg: muted },
     ...fitCells(
-      [{ text: args, fg: savedArgs(listing).required.length ? theme.text.feedback.warning.base : muted }],
+      [{ text: args, fg: savedArgs(listing).startable ? muted : theme.text.feedback.warning.base }],
       argsWidth,
       "right",
     ),
