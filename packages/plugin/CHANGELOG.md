@@ -6,6 +6,7 @@
 ### Features
 
 * **tui:** a Saved section in /workflows ([81347b3](https://github.com/malhashemi/opencode-dynamic-workflows/commit/81347b3880cd14312b314437a81c279ae50f7c51))
+* **web:** syntax highlighting for inline Workflow source in the approval view ([5033ee8](https://github.com/malhashemi/opencode-dynamic-workflows/commit/5033ee84fdd6d2b56c3e1e71c3d77a44da424df5))
 
 
 ### Bug fixes
