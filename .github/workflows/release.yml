@@ -51,17 +51,20 @@ jobs:
             echo "No release pull request was opened or updated"
             exit 0
           fi
-          for attempt in $(seq 1 12); do
+          # Only the run for the branch's current head: older runs on the same branch are stale.
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" -q .object.sha)
+          for attempt in $(seq 1 24); do
             run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$branch" --event pull_request \
-              --status action_required --limit 1 --json databaseId -q '.[0].databaseId // empty')
+              --status action_required --limit 20 --json databaseId,headSha \
+              -q "[.[] | select(.headSha == \"$sha\")][0].databaseId // empty")
             if [ -n "$run" ]; then
               gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/approve"
-              echo "Approved CI run $run on $branch"
+              echo "Approved CI run $run for $branch at $sha"
               exit 0
             fi
             sleep 5
           done
-          echo "::warning::No CI run on $branch waits for approval; approve it in the Actions tab"
+          echo "::warning::No CI run for $branch at $sha waits for approval; approve it in the Actions tab"
 
   plan:
     needs: release-please
