@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.1.0...v0.1.1) (2026-09-26)
+
+
+### Bug fixes
+
+* a live Run owner is not mistaken for a gone one on Linux VMs ([6101590](https://github.com/malhashemi/opencode-dynamic-workflows/commit/61015908a313a994ca53d3cd917dc9e437f2e303))
+* show the whole inline source before approval ([f3a8e06](https://github.com/malhashemi/opencode-dynamic-workflows/commit/f3a8e06b58490c7c8e45bc3ffd69b521d5d40fa2))
+
 ## 0.1.0 (2026-09-26)
 
 
