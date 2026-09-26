@@ -430,27 +430,28 @@ export class WorkflowService {
       identity = options.identity ?? { key: null, name: "inline", description: "", provenance: "inline" }
     }
 
-    let config: DefineWorkflowConfig
-    try {
-      config = (
-        await loadWorkflow(source, {
-          ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
-          ...(sourcePath ? { sourcePath } : {}),
-        })
-      ).config
-    } catch (error) {
-      throw new WorkflowProtocolError(
-        "invalid_args",
-        `The Workflow did not load: ${error instanceof Error ? error.message : String(error)}`,
-      )
+    // Loading a module runs its top-level code. A durable Workflow is trusted and loads now; inline source loads
+    // only after it is approved (below), on every path including resume: a rejected Run keeps its script.
+    const load = async (): Promise<DefineWorkflowConfig> => {
+      try {
+        return (
+          await loadWorkflow(source, {
+            ...(this.deps.cacheDir ? { cacheDir: this.deps.cacheDir } : {}),
+            ...(sourcePath ? { sourcePath } : {}),
+          })
+        ).config
+      } catch (error) {
+        throw new WorkflowProtocolError(
+          "invalid_args",
+          `The Workflow did not load: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
-    if (identity.provenance === "inline" && identity.name === "inline") {
-      identity = { ...identity, name: config.meta.name, description: config.meta.description }
-    }
+    const inline = identity.provenance === "inline"
+    let config: DefineWorkflowConfig | null = inline ? null : await load()
 
     const runId = crypto.randomUUID()
     if (input.requestId) this.started.set(input.requestId, runId)
-    const needsApproval = identity.provenance === "inline" && !options.resumeOf
     const store = this.deps.store
     store.create(
       newRun({
@@ -458,7 +459,7 @@ export class WorkflowService {
         workflow: identity,
         location: this.deps.location,
         parentSessionID,
-        phases: (config.meta.phases ?? []).map((phase) => phase.title),
+        phases: (config?.meta.phases ?? []).map((phase) => phase.title),
         background: options.background ?? false,
         resumeOf: options.resumeOf ?? null,
         status: "queued",
@@ -476,13 +477,28 @@ export class WorkflowService {
     let releaseRun: () => void = () => {}
     const done = (async (): Promise<{ output?: RunWorkflowOutput; error?: string; run: Run }> => {
       try {
-        if (needsApproval) {
+        if (inline) {
           const verdict = await this.approveInline(runId, source, parentSessionID, signal)
           if (verdict !== true) {
             await this.endQueued(runId, verdict)
             return { error: verdict, run: store.get(runId)! }
           }
+          try {
+            config = await load()
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error)
+            await this.endQueued(runId, reason)
+            return { error: reason, run: store.get(runId)! }
+          }
+          if (identity.name === "inline")
+            identity = { ...identity, name: config.meta.name, description: config.meta.description }
+          store.apply({
+            type: "run.patch",
+            runId,
+            patch: { workflow: identity, phases: (config.meta.phases ?? []).map((phase) => phase.title) },
+          })
         }
+        if (!config) throw new Error("the Workflow was not loaded")
         if (signal.aborted) {
           await this.endQueued(runId, "stopped before it started", "stopped")
           return { error: "stopped before it started", run: store.get(runId)! }
