@@ -40,18 +40,16 @@ jobs:
 
       # Pull requests opened with the workflow token do not trigger CI, but main requires its
       # checks. Start CI on the release branch so the release pull request can merge normally.
+      # The branch comes from release-please's own output: a label search can run before
+      # GitHub has labelled a new pull request.
       - name: Run CI on the release pull request
+        if: steps.release.outputs.pr
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
         run: |
-          branch=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --label "autorelease: pending" \
-            --json headRefName -q '.[0].headRefName')
-          if [ -n "$branch" ]; then
-            gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
-            echo "Started CI on $branch"
-          else
-            echo "No open release pull request"
-          fi
+          gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          echo "Started CI on $BRANCH"
 
   plan:
     needs: release-please
