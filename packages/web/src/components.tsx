@@ -2,7 +2,7 @@ import { createMemo, createSignal, For, Show, splitProps, type JSX } from "solid
 
 import { ApiError } from "./api"
 import { useApp } from "./context"
-import { prettyValue, tokenizeJson } from "./format"
+import { prettyValue, tokenizeJson, tokenizeTs, type CodeToken } from "./format"
 import { navigate } from "./router"
 
 /** An anchor that routes in-app on a plain click and behaves like a link otherwise (new tab, copy link…). */
@@ -98,7 +98,41 @@ export function ValueBlock(props: { value: unknown; label?: string; maxHeight?: 
   )
 }
 
-export function CodeBlock(props: { text: string; label?: string; maxHeight?: string; numbered?: boolean }) {
+const TOKEN_CLASS: Record<CodeToken["kind"], string | undefined> = {
+  comment: "t-comment",
+  string: "j-string",
+  number: "j-number",
+  keyword: "t-keyword",
+  literal: "j-literal",
+  type: "t-type",
+  fn: "t-fn",
+  plain: undefined,
+}
+
+function CodeLine(props: { tokens: CodeToken[] }) {
+  return (
+    <For each={props.tokens}>
+      {(token) => {
+        const cls = TOKEN_CLASS[token.kind]
+        return cls ? <span class={cls}>{token.text}</span> : token.text
+      }}
+    </For>
+  )
+}
+
+/** Plain or numbered code; `language: "ts"` colours it (as text nodes, never HTML). */
+export function CodeBlock(props: {
+  text: string
+  label?: string
+  maxHeight?: string
+  numbered?: boolean
+  language?: "ts"
+}) {
+  const lines = createMemo(() =>
+    props.language === "ts" && props.text.length < 200_000
+      ? tokenizeTs(props.text)
+      : props.text.split("\n").map((line): CodeToken[] => (line ? [{ kind: "plain", text: line }] : [])),
+  )
   return (
     <div class="code-wrap">
       <div class="code-tools">
@@ -113,14 +147,28 @@ export function CodeBlock(props: { text: string; label?: string; maxHeight?: str
         style={props.maxHeight ? { "max-height": props.maxHeight } : undefined}
         aria-label={props.label}
       >
-        <Show when={props.numbered} fallback={props.text}>
-          <For each={props.text.split("\n")}>
+        <Show
+          when={props.numbered}
+          fallback={
+            <Show when={props.language} fallback={props.text}>
+              <For each={lines()}>
+                {(line, index) => (
+                  <>
+                    {index() > 0 ? "\n" : ""}
+                    <CodeLine tokens={line} />
+                  </>
+                )}
+              </For>
+            </Show>
+          }
+        >
+          <For each={lines()}>
             {(line, index) => (
               <span class="code-line">
                 <span class="code-ln" aria-hidden="true">
                   {index() + 1}
                 </span>
-                {line}
+                <CodeLine tokens={line} />
               </span>
             )}
           </For>
