@@ -1,13 +1,4 @@
-import {
-  formatClock,
-  formatDay,
-  formatElapsed,
-  formatTokens,
-  meter,
-  phasePosition,
-  phaseProgress,
-  settledUnits,
-} from "../progress"
+import { formatClock, formatDay, formatElapsed, formatTokens, meter, phasePosition, phaseProgress } from "../progress"
 /**
  * Pure text for every TUI surface: status glyphs and words, column layouts with density tiers, the composer
  * strip, sidebar lines.
@@ -16,7 +7,7 @@ import {
  * every width (80 columns is a contract); status is a glyph AND a word, colour only a bonus (an adversarial theme
  * can make every feedback colour equal the text colour); never print a figure the system does not know.
  */
-import type { LibraryEntry, Run, RunStatus, Unit, UnitStatus, Usage } from "../protocol"
+import type { LibraryEntry, RunStatus, Unit, UnitStatus, Usage } from "../protocol"
 
 export type Tone = "success" | "error" | "warning" | "info" | "muted" | "base"
 
@@ -166,7 +157,7 @@ export const LIBRARY_COLUMNS: readonly ColumnSpec<LibraryColumn>[] = [
   { id: "status", title: "status", width: 13, priority: 100 },
   { id: "workflow", title: "workflow", width: 14, flex: true, priority: 100 },
   { id: "phase", title: "phase", width: 10, priority: 10 },
-  { id: "units", title: "units", width: 7, align: "right", priority: 90 },
+  { id: "units", title: "units", width: 10, align: "right", priority: 90 },
   { id: "tokens", title: "tokens", width: 7, align: "right", priority: 30 },
   { id: "cost", title: "cost", width: 7, align: "right", priority: 50 },
   { id: "elapsed", title: "elapsed", width: 7, align: "right", priority: 80 },
@@ -276,22 +267,6 @@ export function sidebarLines(entry: LibraryEntry, now: number, width: number): [
     .filter(Boolean)
     .join(" · ")
   return [truncate(first, width), truncate(`  ${second}`, width)]
-}
-
-/** One header line for a Run view. */
-export function runSummary(run: Run, now: number): string {
-  return [
-    `${settledUnits(run)}/${run.units.length} units`,
-    phasePosition(run),
-    formatTokens(totalTokens(run.usage)) + " tok",
-    formatCost(run.usage.cost),
-    formatElapsed(elapsedOf(run, now)),
-    run.budget.total !== null
-      ? `budget ${formatTokens(run.tokensSpent)}/${formatTokens(run.budget.total)}${run.budget.hard ? " (hard)" : ""}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" · ")
 }
 
 /** Hard-wrap text to `width` cells per line (words where possible), keeping blank lines. */
