@@ -1,4 +1,4 @@
-import type { ActivityEntry, Run } from "opencode-dynamic-workflows/protocol"
+import type { ActivityEntry, Run } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createResource, createSignal, For, on, Show } from "solid-js"
 import { ActionButton, CopyButton, Empty, ErrorNote, Link, Meter, rowKeys, Stat, StatusBadge, Tag, ValueBlock } from "./components"
 import { useApp } from "./context"

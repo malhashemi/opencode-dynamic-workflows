@@ -14,7 +14,7 @@ import os from "node:os"
 import path from "node:path"
 import { drive, PLUGIN_PATH, startLive, toolOutput, until, type LiveServer } from "./harness"
 
-const ACCEPT = `import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+const ACCEPT = `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
   meta: { name: "accept", description: "acceptance: typed Unit, capability, headless ask", args: z.object({ n: z.number().int() }) },
   async run({ agent, ask, $, args, phase }) {

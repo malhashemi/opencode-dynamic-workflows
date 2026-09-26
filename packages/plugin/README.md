@@ -10,7 +10,7 @@ versioned [protocol](./docs/protocol/README.md).
 
 ```ts
 // .opencode/workflows/review-files.ts
-import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 
 export default defineWorkflow({
   meta: { name: "review-files", description: "review each file, then summarise", args: z.object({ files: z.array(z.string()) }) },
@@ -37,9 +37,9 @@ Add the package to `plugins` in `opencode.json` (project) or your global config:
 ```jsonc
 {
   "plugins": [
-    "opencode-dynamic-workflows",
+    "@malhashemi/opencode-dynamic-workflows",
     // or with options:
-    { "package": "opencode-dynamic-workflows", "options": { "inline": "ask", "gateway": { "port": 4320 } } }
+    { "package": "@malhashemi/opencode-dynamic-workflows", "options": { "inline": "ask", "gateway": { "port": 4320 } } }
   ]
 }
 ```
@@ -118,7 +118,7 @@ Every tool result links to the Run in the web app, served by the Gateway (defaul
 `budget` (`number`, or `{ tokens, hard: true }` to stop at the limit), `permissions` (rules for every Unit),
 `limits`, `interaction: { permissions: "ask" | "auto" | "deny", graceMs }`.
 
-Import from `opencode-dynamic-workflows/workflow`. Workflows written for the old name
+Import from `@malhashemi/opencode-dynamic-workflows/workflow`. Workflows written for the old name
 `@opencode-ai/workflow` still load. More in [`docs/examples/`](./docs/examples).
 
 ### How typed results work

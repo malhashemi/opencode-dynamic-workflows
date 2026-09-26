@@ -9,7 +9,7 @@
     "dev": "vite"
   },
   "devDependencies": {
-    "opencode-dynamic-workflows": "workspace:*",
+    "@malhashemi/opencode-dynamic-workflows": "workspace:*",
     "solid-js": "1.9.12",
     "vite": "^8.3.1",
     "vite-plugin-solid": "^2.11.14"

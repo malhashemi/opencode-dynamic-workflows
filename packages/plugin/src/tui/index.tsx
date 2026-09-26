@@ -1,5 +1,5 @@
 /**
- * The TUI plugin entry (`opencode-dynamic-workflows/tui`). Published precompiled (`script/build-tui.ts` →
+ * The TUI plugin entry (`@malhashemi/opencode-dynamic-workflows/tui`). Published precompiled (`script/build-tui.ts` →
  * `dist/tui.js`): OpenCode's runtime Solid transform skips `node_modules`, so an installed package's TSX would
  * not render (P0 spike S4).
  */

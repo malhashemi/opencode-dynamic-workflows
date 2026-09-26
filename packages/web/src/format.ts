@@ -1,5 +1,5 @@
 /** Formatting for dense tables: short, fixed-shape figures that right-align well. */
-import type { Usage } from "opencode-dynamic-workflows/protocol"
+import type { Usage } from "@malhashemi/opencode-dynamic-workflows/protocol"
 
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—"

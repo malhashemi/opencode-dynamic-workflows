@@ -25,7 +25,12 @@ import { pathToFileURL } from "node:url"
 import type { DefineWorkflowConfig } from "./workflow"
 
 /** Import specifiers that mean "the authoring API" — current, and the V1 name older Workflows use. */
-export const AUTHORING_SPECIFIERS = ["opencode-dynamic-workflows/workflow", "@opencode-ai/workflow"] as const
+export const AUTHORING_SPECIFIERS = [
+  "@malhashemi/opencode-dynamic-workflows/workflow",
+  // Earlier names: the unscoped working name and the V1 package.
+  "opencode-dynamic-workflows/workflow",
+  "@opencode-ai/workflow",
+] as const
 
 /** This plugin's own authoring module, wherever the host installed the package. */
 export const AUTHORING_PATH = path.join(import.meta.dir, "workflow", "index.ts")
@@ -46,7 +51,9 @@ const SPECIFIER_PATTERN = new RegExp(
 
 /** Point every authoring import at this plugin's module. Other imports are untouched. */
 export function rewriteAuthoringImports(source: string, target = AUTHORING_PATH): string {
-  return source.replace(SPECIFIER_PATTERN, (_match, lead: string, quote: string) => `${lead}${quote}${target}${quote}`)
+  // Forward slashes: a Windows path's backslashes would be read as escapes inside the string literal.
+  const specifier = target.replaceAll("\\", "/")
+  return source.replace(SPECIFIER_PATTERN, (_match, lead: string, quote: string) => `${lead}${quote}${specifier}${quote}`)
 }
 
 export function hasRelativeImports(source: string): boolean {

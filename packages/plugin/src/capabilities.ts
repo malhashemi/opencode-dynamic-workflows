@@ -50,11 +50,22 @@ export function confine(root: string, target: string): string {
   return real
 }
 
-/** Quote one value for `sh`. */
-export function shellQuote(value: unknown): string {
-  if (Array.isArray(value)) return value.map(shellQuote).join(" ")
+const WINDOWS = process.platform === "win32"
+
+/** The shell `ctx.$` runs a command line in: `sh -c` on macOS/Linux, `cmd.exe /d /s /c` on Windows. */
+export function shellCommand(command: string, windows = WINDOWS): string[] {
+  return windows ? [process.env.ComSpec || "cmd.exe", "/d", "/s", "/c", command] : ["sh", "-c", command]
+}
+
+/** Quote one value for the platform's shell (`sh`, or `cmd.exe` on Windows). */
+export function shellQuote(value: unknown, windows = WINDOWS): string {
+  if (Array.isArray(value)) return value.map((entry) => shellQuote(entry, windows)).join(" ")
   const text = String(value)
-  return /^[A-Za-z0-9_\/.,:=@%+-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`
+  if (/^[A-Za-z0-9_\/.,:=@+-]+$/.test(text)) return text
+  // cmd.exe: double quotes with inner quotes doubled. `%NAME%` still expands inside them (cmd has no escape for it
+  // on a command line) — values containing `%` are the one case that is not literal on Windows.
+  if (windows) return `"${text.replace(/"/g, '""')}"`
+  return `'${text.replace(/'/g, `'\\''`)}'`
 }
 
 export function createCapabilities(options: CapabilityOptions): WorkflowCapabilities {
@@ -69,7 +80,7 @@ export function createCapabilities(options: CapabilityOptions): WorkflowCapabili
     options.audit(`$ ${clip(command)}`)
     const timeout = opts.timeoutMs ?? options.shellTimeoutMs ?? 120_000
     const signal = AbortSignal.any([options.signal, AbortSignal.timeout(timeout)])
-    const child = Bun.spawn(["sh", "-c", command], {
+    const child = Bun.spawn(shellCommand(command), {
       cwd,
       env: { ...process.env, ...opts.env },
       stdin: "ignore",

@@ -10,8 +10,8 @@ and third-party tools. It has two transports that carry the same resources, comm
 
 The zod definitions in `src/protocol/index.ts` are the source of truth. The JSON Schemas in
 [`schemas/`](./schemas) are generated from them (`bun run script/protocol-schemas.ts`). TypeScript clients can
-import the types from `opencode-dynamic-workflows/protocol` and the RPC contract from
-`opencode-dynamic-workflows/rpc`.
+import the types from `@malhashemi/opencode-dynamic-workflows/protocol` and the RPC contract from
+`@malhashemi/opencode-dynamic-workflows/rpc`.
 
 ## Versioning
 
@@ -141,7 +141,7 @@ Over RPC it arrives as the declared `workflow` error; over the Gateway as `{ "er
 
 ```ts
 import { OpenCode } from "@opencode/client"
-import { WorkflowRpc } from "opencode-dynamic-workflows/rpc"
+import { WorkflowRpc } from "@malhashemi/opencode-dynamic-workflows/rpc"
 
 const client = OpenCode.make({ baseUrl: "http://127.0.0.1:4096", headers: { "x-opencode-directory": "/my/project" } })
 const workflow = client.rpc(WorkflowRpc)

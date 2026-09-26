@@ -41,7 +41,7 @@ import type { UnitIndex } from "../units"
 import type { DefineWorkflowConfig } from "../workflow"
 import type { PluginConfig } from "./config"
 
-export const PLUGIN_NAME = "opencode-dynamic-workflows"
+export const PLUGIN_NAME = "@malhashemi/opencode-dynamic-workflows"
 export const PLUGIN_VERSION = "0.1.0"
 
 export interface ServiceDeps {

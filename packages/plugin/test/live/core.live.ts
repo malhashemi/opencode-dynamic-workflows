@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { drive, startLive, toolOutput, until, type LiveServer } from "./harness"
 
-const FANOUT = `import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+const FANOUT = `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
   meta: {
     name: "fanout",
@@ -27,7 +27,7 @@ export default defineWorkflow({
 })
 `
 
-const CAPS = `import { defineWorkflow } from "opencode-dynamic-workflows/workflow"
+const CAPS = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
   meta: { name: "caps", description: "capabilities in the host" },
   async run({ $, file }) {
@@ -90,7 +90,7 @@ describe("live: core", () => {
   }, 240_000)
 
   test("workflow_inline runs model-authored source (inline allowed by option)", async () => {
-    const source = `import { defineWorkflow } from "opencode-dynamic-workflows/workflow"\nexport default defineWorkflow({ meta: { name: "hello-inline", description: "one unit" }, async run({ agent }) { return agent("Reply with exactly: INLINE-OK") } })`
+    const source = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"\nexport default defineWorkflow({ meta: { name: "hello-inline", description: "one unit" }, async run({ agent }) { return agent("Reply with exactly: INLINE-OK") } })`
     const { messages } = await drive(server, `Call the workflow_inline tool with this exact source and no args:\n\n${source}\n\nThen reply with its output.`)
     const output = toolOutput(messages, "workflow_inline")
     console.log(output)

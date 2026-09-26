@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { TranscriptMessage } from "opencode-dynamic-workflows/protocol"
+import type { TranscriptMessage } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createApi } from "../src/api"
 import { messageView, partItem, reasoningSummary, summarizeTranscript, summaryLine, toolTitle } from "../src/transcript"
 

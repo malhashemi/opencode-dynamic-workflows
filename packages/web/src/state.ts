@@ -17,7 +17,7 @@ import type {
   Run,
   RunHeader,
   Unit,
-} from "opencode-dynamic-workflows/protocol"
+} from "@malhashemi/opencode-dynamic-workflows/protocol"
 
 // ---------------------------------------------------------------------------------------------------------------
 // Sequence tracking (one per location stream)

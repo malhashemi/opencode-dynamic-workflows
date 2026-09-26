@@ -1,5 +1,5 @@
 /** Display logic for a Unit's session transcript (the view lives in unit.tsx). */
-import type { TranscriptMessage, TranscriptPart } from "opencode-dynamic-workflows/protocol"
+import type { TranscriptMessage, TranscriptPart } from "@malhashemi/opencode-dynamic-workflows/protocol"
 
 export type TranscriptTool = NonNullable<TranscriptPart["tool"]>
 

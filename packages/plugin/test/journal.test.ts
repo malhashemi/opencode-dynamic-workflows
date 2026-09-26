@@ -145,7 +145,7 @@ describe("audit regressions — journal", () => {
     expect(ownerAlive({ pid: 2 ** 30, instance: "i", startedAt: 1 })).toBe(false)
   })
 
-  it("records the owning process's start time", async () => {
+  it.skipIf(process.platform === "win32")("records the owning process's start time", async () => {
     await journal.begin(baseRun(), { source: SOURCE, args: null, instance: "i" })
     await journal.flush()
     const record = await journal.read("r1")

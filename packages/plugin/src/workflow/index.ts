@@ -1,5 +1,5 @@
 /**
- * `opencode-dynamic-workflows/workflow` — the author-facing surface (the legacy `@opencode-ai/workflow` import
+ * `@malhashemi/opencode-dynamic-workflows/workflow` — the author-facing surface (the legacy `@opencode-ai/workflow` import
  * still resolves: the engine rewrites it when it loads a Workflow).
  *
  * A Workflow is a TypeScript module that exports `defineWorkflow({ meta, run })`. Authors import

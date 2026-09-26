@@ -1,4 +1,4 @@
-import type { InteractionQuestion, PendingInteraction, ResolvedInteraction, Run } from "opencode-dynamic-workflows/protocol"
+import type { InteractionQuestion, PendingInteraction, ResolvedInteraction, Run } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createMemo, createSignal, For, Index, Show } from "solid-js"
 import { ActionButton, CodeBlock, Link, Tag } from "./components"
 import { useApp } from "./context"

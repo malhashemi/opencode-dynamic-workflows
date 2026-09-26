@@ -2,7 +2,7 @@
  * The workflow RPC contract — protocol v1 over OpenCode's plugin RPC (`POST /api/rpc/workflow/<method>`,
  * events `rpc.workflow.event` on `/api/event`).
  *
- * Import it from `opencode-dynamic-workflows/rpc` and pass it to an OpenCode client:
+ * Import it from `@malhashemi/opencode-dynamic-workflows/rpc` and pass it to an OpenCode client:
  *
  *     const workflow = client.rpc(WorkflowRpc)
  *     const { runs } = await workflow.listRuns({}, { location: { directory } })

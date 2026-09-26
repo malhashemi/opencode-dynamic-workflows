@@ -1,4 +1,4 @@
-import type { PendingInteraction } from "opencode-dynamic-workflows/protocol"
+import type { PendingInteraction } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js"
 import { ApiError, createApi, localTokenStorage, type GatewayInfo, type TokenStorage } from "./api"
 import { ErrorNote, Link } from "./components"

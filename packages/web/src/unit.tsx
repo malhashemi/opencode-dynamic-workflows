@@ -1,4 +1,4 @@
-import type { GetTranscriptOutput, Run, Unit } from "opencode-dynamic-workflows/protocol"
+import type { GetTranscriptOutput, Run, Unit } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
 import { ActionButton, CodeBlock, CopyButton, Empty, ErrorNote, Link, Stat, StatusBadge, Tag, ValueBlock } from "./components"
 import { useApp } from "./context"

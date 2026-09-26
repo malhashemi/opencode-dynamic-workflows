@@ -1,5 +1,5 @@
 {
-  "name": "opencode-dynamic-workflows",
+  "name": "@malhashemi/opencode-dynamic-workflows",
   "version": "0.1.0",
   "description": "OpenCode V2 plugin: deterministic multi-subagent Workflows with typed results, a live TUI panel, a web app and a versioned protocol.",
   "type": "module",

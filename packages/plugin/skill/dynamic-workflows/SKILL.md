@@ -25,7 +25,7 @@ Common single-phase shapes, which you can chain across turns (read each result b
 ## The module
 
 ```ts
-import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 
 export default defineWorkflow({
   meta: {
@@ -276,7 +276,7 @@ value in a prompt makes resume re-run it. Units that failed are re-run.
 ## Worked example — every Unit typed, two models, verify before reporting
 
 ```ts
-import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 
 const Plan = z.object({ areas: z.array(z.object({ name: z.string(), files: z.array(z.string()).min(1), question: z.string() })).max(4) })
 const Findings = z.object({ findings: z.array(z.object({ file: z.string(), line: z.number().int().nullable(), claim: z.string() })).max(5) })

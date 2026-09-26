@@ -18,7 +18,7 @@ import type {
   RunStatus,
   StartRunInput,
   Unit,
-} from "opencode-dynamic-workflows/protocol"
+} from "@malhashemi/opencode-dynamic-workflows/protocol"
 
 export class ApiError extends Error {
   readonly status: number

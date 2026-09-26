@@ -15,7 +15,7 @@ describe("loader", () => {
   it("rewrites every authoring specifier (static, dynamic, side-effect) and leaves others alone", () => {
     const input = [
       `import { defineWorkflow } from "@opencode-ai/workflow"`,
-      `import type { AgentFn } from 'opencode-dynamic-workflows/workflow'`,
+      `import type { AgentFn } from '@malhashemi/opencode-dynamic-workflows/workflow'`,
       `const m = await import("@opencode-ai/workflow")`,
       `import "@opencode-ai/workflow"`,
       `import fs from "node:fs"`,
@@ -24,10 +24,14 @@ describe("loader", () => {
     expect(output.match(/\/x\/index\.ts/g)).toHaveLength(4)
     expect(output).toContain(`import fs from "node:fs"`)
     expect(output).toContain(`from '/x/index.ts'`)
+    // A Windows path becomes forward slashes (backslashes would be escapes inside the string literal).
+    expect(rewriteAuthoringImports(`import { z } from "@opencode-ai/workflow"`, "C:\\plug\\src\\workflow\\index.ts")).toBe(
+      `import { z } from "C:/plug/src/workflow/index.ts"`,
+    )
   })
 
   it("loads inline source that imports either authoring name, sharing the engine's module", async () => {
-    for (const specifier of ["@opencode-ai/workflow", "opencode-dynamic-workflows/workflow"]) {
+    for (const specifier of ["@opencode-ai/workflow", "@malhashemi/opencode-dynamic-workflows/workflow"]) {
       const loaded = await loadWorkflow(source(specifier, specifier.replace(/\W/g, "")), { cacheDir })
       expect(await loaded.config.run({ args: { n: 21 } } as never)).toBe(42)
       expect(loaded.config.meta.args?.safeParse({ n: 1 }).success).toBe(true)

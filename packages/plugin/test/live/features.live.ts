@@ -8,19 +8,19 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { startLive, until, type LiveServer } from "./harness"
 
-const CHILD = `import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+const CHILD = `import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
   meta: { name: "child", description: "one Unit", args: z.object({ word: z.string() }) },
   async run({ agent, args }) { return agent(\`Reply with exactly: \${args.word.toUpperCase()}\`, { label: "shout" }) },
 })
 `
-const PARENT = `import { defineWorkflow } from "opencode-dynamic-workflows/workflow"
+const PARENT = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
   meta: { name: "parent", description: "calls a saved Workflow" },
   async run({ workflow }) { return { nested: await workflow("child", { word: "nested" }) } },
 })
 `
-const EDIT = `import { defineWorkflow } from "opencode-dynamic-workflows/workflow"
+const EDIT = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
   meta: { name: "edit", description: "two Units edit files in their own worktrees" },
   async run({ agent, parallel, worktrees }) {

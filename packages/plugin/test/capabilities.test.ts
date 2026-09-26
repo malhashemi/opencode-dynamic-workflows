@@ -2,7 +2,9 @@ import { afterAll, describe, expect, it } from "bun:test"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { confine, createCapabilities, shellQuote } from "../src/capabilities"
+import { confine, createCapabilities, shellCommand, shellQuote } from "../src/capabilities"
+
+const posix = process.platform !== "win32"
 
 const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wf-cap-")))
 const outside = await realpath(await mkdtemp(path.join(os.tmpdir(), "wf-cap-out-")))
@@ -22,7 +24,7 @@ describe("confine", () => {
     expect(confine(root, "a/b.txt")).toBe(path.join(root, "a", "b.txt"))
     expect(confine(root, ".")).toBe(root)
   })
-  it("refuses .., absolute paths elsewhere and symlinks that point out", async () => {
+  it.skipIf(!posix)("refuses .., absolute paths elsewhere and symlinks that point out", async () => {
     expect(() => confine(root, "../x")).toThrow("escapes")
     expect(() => confine(root, outside)).toThrow("escapes")
     await symlink(outside, path.join(root, "link"))
@@ -41,7 +43,7 @@ describe("capabilities", () => {
     expect(audit[0]).toBe("write notes/a.txt (5 bytes)")
   })
 
-  it("$ runs in the project, returns the exit code, and quotes template values", async () => {
+  it.skipIf(!posix)("$ runs in the project, returns the exit code, and quotes template values", async () => {
     await mkdir(path.join(root, "sub"), { recursive: true })
     await writeFile(path.join(root, "sub", "f.txt"), "x")
     const { caps, audit } = make()
@@ -57,7 +59,7 @@ describe("capabilities", () => {
     expect(audit.some((line) => line.startsWith("$ printf"))).toBe(true)
   })
 
-  it("$ stops with the Run and on its timeout", async () => {
+  it.skipIf(!posix)("$ stops with the Run and on its timeout", async () => {
     const controller = new AbortController()
     const { caps } = make({ signal: controller.signal })
     const slow = caps.$("sleep 5")
@@ -74,8 +76,24 @@ describe("capabilities", () => {
   })
 
   it("shellQuote leaves safe words and quotes the rest", () => {
-    expect(shellQuote("abc/d.ts")).toBe("abc/d.ts")
-    expect(shellQuote("it's")).toBe(`'it'\\''s'`)
-    expect(shellQuote(["a", "b c"])).toBe(`a 'b c'`)
+    expect(shellQuote("abc/d.ts", false)).toBe("abc/d.ts")
+    expect(shellQuote("it's", false)).toBe(`'it'\\''s'`)
+    expect(shellQuote(["a", "b c"], false)).toBe(`a 'b c'`)
+  })
+
+  it("on Windows, commands run through cmd.exe and values are double-quoted", () => {
+    expect(shellCommand("dir", true).slice(-4)).toEqual(["/d", "/s", "/c", "dir"])
+    expect(shellCommand("ls", false)).toEqual(["sh", "-c", "ls"])
+    expect(shellQuote('say "hi" now', true)).toBe('"say ""hi"" now"')
+    expect(shellQuote("plain", true)).toBe("plain")
+  })
+})
+
+describe("cross-platform", () => {
+  it("$ runs a command in the project on this platform", async () => {
+    const { caps } = make()
+    const out = await caps.$(posix ? "echo ok" : "echo ok")
+    expect(out.stdout.trim()).toBe("ok")
+    expect(out.exitCode).toBe(0)
   })
 })

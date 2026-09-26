@@ -13,7 +13,7 @@ import {
   withFullUnit,
   type RunView,
 } from "../src/state"
-import type { LibraryEntry } from "opencode-dynamic-workflows/protocol"
+import type { LibraryEntry } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { activity, event, header, pending, resolved, run, unit, usage } from "./fixtures"
 
 function ready(overrides = {}, log = [] as ReturnType<typeof activity>[]): RunView {

@@ -3,7 +3,7 @@
  *
  *   workflow({ name: "research", args: { question: "How does X handle Y?" } })
  */
-import { defineWorkflow, z } from "opencode-dynamic-workflows/workflow"
+import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"
 
 export default defineWorkflow({
   meta: {

@@ -1,4 +1,4 @@
-import type { ActivityEntry, PendingInteraction, ProtocolEvent, ResolvedInteraction, Run, RunHeader, Unit, Usage } from "opencode-dynamic-workflows/protocol"
+import type { ActivityEntry, PendingInteraction, ProtocolEvent, ResolvedInteraction, Run, RunHeader, Unit, Usage } from "@malhashemi/opencode-dynamic-workflows/protocol"
 
 export const LOCATION = "/tmp/project"
 
