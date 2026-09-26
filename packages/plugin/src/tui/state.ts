@@ -42,6 +42,8 @@ export interface SyncState {
   readonly runs: Readonly<Record<string, RunSlot>>
   /** False until the first snapshot has loaded. */
   readonly ready: boolean
+  /** The web app's address (the Gateway), when it is running. */
+  readonly webUrl?: string
 }
 
 export type Effect =
@@ -82,6 +84,7 @@ export function fromSnapshot(input: {
   entries: readonly LibraryEntry[]
   runs: readonly Run[]
   previous?: SyncState
+  webUrl?: string | null
 }): SyncState {
   const runs: Record<string, RunSlot> = {}
   for (const entry of input.entries)
@@ -96,7 +99,14 @@ export function fromSnapshot(input: {
   for (const [runId, slot] of Object.entries(input.previous?.runs ?? {})) {
     if (!runs[runId] && slot.run) runs[runId] = slot
   }
-  return { location: input.location, seq: input.seq, ...(input.epoch ? { epoch: input.epoch } : {}), runs, ready: true }
+  return {
+    location: input.location,
+    seq: input.seq,
+    ...(input.epoch ? { epoch: input.epoch } : {}),
+    ...(input.webUrl ? { webUrl: input.webUrl } : {}),
+    runs,
+    ready: true,
+  }
 }
 
 /** Apply a full `getRun` snapshot (a hydrate or a view opening a Run). Never goes backwards. */
