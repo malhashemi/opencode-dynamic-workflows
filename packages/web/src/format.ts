@@ -115,3 +115,61 @@ export function tokenizeJson(text: string): JsonToken[] {
   }
   return out
 }
+
+export type CodeToken = {
+  kind: "comment" | "string" | "number" | "keyword" | "literal" | "type" | "fn" | "plain"
+  text: string
+}
+
+const TS_KEYWORDS = new Set(
+  (
+    "as async await break case catch class const continue debugger declare default delete do else enum export " +
+    "extends finally for from function if implements import in instanceof interface let new of private protected " +
+    "public readonly return satisfies static super switch throw try type typeof var void while with yield"
+  ).split(" "),
+)
+const TS_LITERALS = new Set(["true", "false", "null", "undefined", "this", "NaN", "Infinity"])
+
+/**
+ * Tokenise TypeScript for highlighting, one token list per line (rendered as text nodes — never as HTML). A light
+ * lexer, not a parser: comments, strings, template literals, numbers, keywords, types and calls. Joining every
+ * token of every line with "\n" gives back the source exactly.
+ */
+export function tokenizeTs(text: string): CodeToken[][] {
+  const pattern =
+    /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|`(?:[^`\\]|\\[\s\S])*`?)|(\b(?:0[xXbBoO][\da-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)n?\b)|([A-Za-z_$][\w$]*)(?=(\s*\()?)|([\s\S])/g
+  const lines: CodeToken[][] = [[]]
+  const push = (kind: CodeToken["kind"], value: string) => {
+    const parts = value.split("\n")
+    parts.forEach((part, index) => {
+      if (index > 0) lines.push([])
+      if (!part) return
+      const line = lines[lines.length - 1]!
+      const last = line[line.length - 1]
+      if (last && last.kind === kind) last.text += part
+      else line.push({ kind, text: part })
+    })
+  }
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text))) {
+    if (match[1] !== undefined) push("comment", match[1])
+    else if (match[2] !== undefined) push("string", match[2])
+    else if (match[3] !== undefined) push("number", match[3])
+    else if (match[4] !== undefined) {
+      const word = match[4]
+      push(
+        TS_KEYWORDS.has(word)
+          ? "keyword"
+          : TS_LITERALS.has(word)
+            ? "literal"
+            : match[5]
+              ? "fn"
+              : /^[A-Z]/.test(word)
+                ? "type"
+                : "plain",
+        word,
+      )
+    } else push("plain", match[6] ?? "")
+  }
+  return lines
+}

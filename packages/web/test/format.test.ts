@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test"
 
-import { formatCost, formatCount, formatDuration, prettyValue, shortLocation, tokenizeJson } from "../src/format"
+import {
+  formatCost,
+  formatCount,
+  formatDuration,
+  prettyValue,
+  shortLocation,
+  tokenizeJson,
+  tokenizeTs,
+} from "../src/format"
 import { describeFields, parseArgs, templateFor, validateJson } from "../src/schema"
 
 describe("format", () => {
@@ -85,5 +93,47 @@ describe("args schema", () => {
       'mode:"fast" | "deep":false',
       "tags:string[]:false",
     ])
+  })
+})
+
+describe("code tokens", () => {
+  test("TypeScript tokens: lines, kinds, and the exact source back", () => {
+    const source = [
+      'import { defineWorkflow, z } from "@malhashemi/opencode-dynamic-workflows/workflow"',
+      "/** A doc",
+      " * comment */",
+      "const Plan = z.object({ n: z.number().min(2) }) // tail",
+      "export default defineWorkflow({ async run({ agent }) { return `a",
+      "b ${1}` ?? null } })",
+      "",
+    ].join("\n")
+    const lines = tokenizeTs(source)
+    expect(lines).toHaveLength(7)
+    expect(lines.map((line) => line.map((t) => t.text).join("")).join("\n")).toBe(source)
+    const kinds = (text: string) =>
+      lines
+        .flat()
+        .filter((t) => t.text === text)
+        .map((t) => t.kind)
+    expect(kinds("import")).toEqual(["keyword"])
+    expect(kinds('"@malhashemi/opencode-dynamic-workflows/workflow"')).toEqual(["string"])
+    expect(lines[1]!.map((t) => t.kind)).toEqual(["comment"])
+    expect(lines[2]!.map((t) => t.kind)).toEqual(["comment"])
+    expect(kinds("Plan")).toEqual(["type"])
+    expect(kinds("object")).toEqual(["fn"])
+    expect(kinds("2")).toEqual(["number"])
+    expect(kinds("// tail")).toEqual(["comment"])
+    expect(kinds("null")).toEqual(["literal"])
+    expect(lines[4]!.at(-1)).toEqual({ kind: "string", text: "`a" })
+    expect(lines[5]![0]).toEqual({ kind: "string", text: "b ${1}`" })
+  })
+
+  test("TypeScript tokens: an unterminated string or comment still round-trips", () => {
+    for (const source of ['const s = "open', "/* never closed\nstill", "`tick\n\nend", "a / b / c"])
+      expect(
+        tokenizeTs(source)
+          .map((line) => line.map((t) => t.text).join(""))
+          .join("\n"),
+      ).toBe(source)
   })
 })

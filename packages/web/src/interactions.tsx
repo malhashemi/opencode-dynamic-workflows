@@ -127,7 +127,7 @@ function PendingCard(props: { run: Run; interaction: PendingInteraction }) {
             <div class="muted small">
               {approval().bytes} bytes · sha256 <span class="mono">{approval().sha256}</span>
             </div>
-            <CodeBlock text={approval().source} label="Inline source" maxHeight="60vh" numbered />
+            <CodeBlock text={approval().source} label="Inline source" maxHeight="60vh" numbered language="ts" />
           </div>
         )}
       </Show>

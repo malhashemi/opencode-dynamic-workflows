@@ -39,6 +39,10 @@
   --j-string: #0a6b39;
   --j-number: #953800;
   --j-literal: #8250df;
+  --t-comment: #6e7781;
+  --t-keyword: #cf222e;
+  --t-type: #953800;
+  --t-fn: #8250df;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -75,6 +79,10 @@
     --j-string: #7ee2a8;
     --j-number: #ffa657;
     --j-literal: #d2a8ff;
+    --t-comment: #8b949e;
+    --t-keyword: #ff7b72;
+    --t-type: #ffa657;
+    --t-fn: #d2a8ff;
   }
 }
 
@@ -939,6 +947,19 @@ input[type="search"] {
 }
 .j-literal {
   color: var(--j-literal);
+}
+.t-comment {
+  color: var(--t-comment);
+  font-style: italic;
+}
+.t-keyword {
+  color: var(--t-keyword);
+}
+.t-type {
+  color: var(--t-type);
+}
+.t-fn {
+  color: var(--t-fn);
 }
 
 /* ---------- activity ---------- */
