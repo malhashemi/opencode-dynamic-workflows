@@ -5,7 +5,8 @@
  * expire in five minutes; tokens are stored as SHA-256 hashes in a 0600 file under the user's state directory.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { readFileSync, statSync } from "node:fs"
+import { mkdir, rename, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -47,14 +48,34 @@ export async function createTokenStore(
   file = path.join(gatewayStateDir(), "gateway-tokens.json"),
 ): Promise<TokenStore> {
   let tokens: DeviceToken[] = []
-  try {
-    const parsed = JSON.parse(await readFile(file, "utf8")) as { tokens?: DeviceToken[] }
-    tokens = Array.isArray(parsed.tokens)
-      ? parsed.tokens.filter((t) => typeof t.hash === "string" && typeof t.id === "string")
-      : []
-  } catch {
-    tokens = []
+  /** The file's modification time and size at the last load: a change means someone edited it. */
+  let loadedStamp: string | null = null
+  const stamp = (): string | null => {
+    try {
+      const stat = statSync(file)
+      return `${stat.mtimeMs}:${stat.size}`
+    } catch {
+      return null
+    }
   }
+  /**
+   * Re-read the file when it changed since the last load, so deleting an entry revokes that token at once, in the
+   * running Gateway. A missing or unreadable file means no tokens: a broken file never grants access.
+   */
+  const load = () => {
+    const current = stamp()
+    if (current !== null && current === loadedStamp) return
+    loadedStamp = current
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as { tokens?: DeviceToken[] }
+      tokens = Array.isArray(parsed.tokens)
+        ? parsed.tokens.filter((t) => typeof t.hash === "string" && typeof t.id === "string")
+        : []
+    } catch {
+      tokens = []
+    }
+  }
+  load()
   const codes = new Map<string, { expiresAt: number; scopes: Scope[] }>()
 
   const persist = async () => {
@@ -62,10 +83,12 @@ export async function createTokenStore(
     const temp = `${file}.${randomBytes(6).toString("hex")}.tmp`
     await writeFile(temp, `${JSON.stringify({ tokens }, null, 2)}\n`, { mode: 0o600 })
     await rename(temp, file)
+    loadedStamp = stamp()
   }
 
   const store: TokenStore = {
     async issue(name, scopes) {
+      load()
       const token = `wfg_${randomBytes(24).toString("base64url")}`
       const id = randomBytes(6).toString("hex")
       tokens.push({
@@ -81,12 +104,14 @@ export async function createTokenStore(
     },
     verify(token) {
       if (!token.startsWith("wfg_")) return null
+      load()
       const digest = hash(token)
       const match = tokens.find((candidate) => sameHash(candidate.hash, digest))
       if (match) match.lastUsedAt = Date.now()
       return match ?? null
     },
     async revoke(id) {
+      load()
       const before = tokens.length
       tokens = tokens.filter((token) => token.id !== id)
       if (tokens.length === before) return false
@@ -94,6 +119,7 @@ export async function createTokenStore(
       return true
     },
     list() {
+      load()
       return tokens.map((token) => ({ ...token, scopes: [...token.scopes] }))
     },
     createPairingCode(scopes = ["read", "control"]) {

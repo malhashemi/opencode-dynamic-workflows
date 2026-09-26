@@ -89,7 +89,8 @@ Rules the Gateway enforces:
   (`POST /v1/pair/local`). A remote browser needs a one-use code from the TUI (`/workflows pair`), valid for
   five minutes, exchanged at `POST /v1/pair`.
 - Tokens are stored as SHA-256 hashes in `$XDG_STATE_HOME/opencode-dynamic-workflows/gateway-tokens.json`
-  (mode 0600). Delete an entry to revoke it.
+  (mode 0600). Delete an entry to revoke it: the running Gateway re-reads the file when it changes. A missing or
+  unreadable file grants nothing.
 - Writes are rate-limited per client. Control actions are recorded in the Run's activity with the device name.
 - Responses carry a strict Content-Security-Policy, `nosniff`, `no-referrer` and `frame-ancestors 'none'`.
 
