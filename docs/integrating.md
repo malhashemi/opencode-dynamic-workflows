@@ -45,7 +45,7 @@ Workflow is refused, so a Run never hangs.
   or so while your app shows Workflows. `sessionID` is the session in view, if any. Call `detach` on exit.
 - **Gateway:** an open `GET /v1/events` stream counts as attached.
 
-Show pending interactions from `run.interactions` (and the `interaction.requested` / `interaction.resolved`
+Show pending interactions from `run.interactions` (and the `interaction.pending` / `interaction.resolved`
 events), and answer with `replyInteraction`: one list of chosen labels per question. For an inline approval,
 `interaction.approval` carries the whole `source`, its `sha256` and `bytes`, the `action` (`run` or `save`) and,
 for a save, the `target` file. Show the source to the person before they choose; that approval is the only thing
@@ -56,6 +56,7 @@ between model-written code and their machine. The choices are `Run once`, `Alway
 
 ```ts
 import { OpenCode } from "@opencode/client"
+import type { PendingInteraction } from "@malhashemi/opencode-dynamic-workflows/protocol"
 import { WorkflowRpc } from "@malhashemi/opencode-dynamic-workflows/rpc"
 
 const directory = "/path/to/project"
@@ -67,22 +68,28 @@ const at = { location: { directory } }
 await workflow.attach({ surface: "my-app", ttlMs: 45_000 }, at)
 const heartbeat = setInterval(() => void workflow.attach({ surface: "my-app", ttlMs: 45_000 }, at), 20_000)
 
-const { workflows } = await workflow.listWorkflows({}, at) // each with its args JSON Schema
-const { runId } = await workflow.startRun({ name: workflows[0]!.key, args: {} }, at)
+// Show an interaction to the person, then send their answer (one list of chosen labels per question).
+const answer = async (runId: string, interaction: PendingInteraction) => {
+  await workflow.replyInteraction({ runId, interactionId: interaction.interactionId, answers: [["Quick"]] }, at)
+}
 
+// Listen before starting, so nothing the Run asks early is missed.
+let runId: string | null = null
 workflow.events.on("event", async ({ data: event }) => {
-  if (event.runId !== runId) return
-  if (event.type === "interaction.requested") {
-    // Show event.data (a PendingInteraction) to the person, then send their answer:
-    await workflow.replyInteraction({ runId, interactionId: event.data.interactionId, answers: [["Quick"]] }, at)
-  }
+  if (!runId || event.runId !== runId) return
+  if (event.type === "interaction.pending") await answer(runId, event.data as PendingInteraction)
   if (event.type === "run.ended") {
     const { result } = await workflow.getResult({ runId }, at)
-    console.log(event.data.status, result)
+    console.log(event.data, result)
     clearInterval(heartbeat)
     await workflow.detach({ surface: "my-app" }, at)
   }
 })
+
+const { workflows } = await workflow.listWorkflows({}, at) // each with its args JSON Schema
+runId = (await workflow.startRun({ name: workflows[0]!.key, args: {} }, at)).runId
+// Anything that became pending before `runId` was known: read it from the Run.
+for (const interaction of (await workflow.getRun({ runId }, at)).run.interactions) await answer(runId, interaction)
 ```
 
 Without the typed client, a plugin RPC call is a plain POST to the OpenCode server: the input goes in `input`,
@@ -119,7 +126,8 @@ point your client generator at it, or at `GET /v1/openapi.json` on a running Gat
 
 ## Tokens
 
-Reads from the same machine need no token. Control actions (start, stop, resume, answer, save, cleanup) need
+Reads need a token with `read` scope, except from the same machine to a Gateway bound to loopback (the
+default). Control actions (start, stop, resume, answer, save, cleanup) need
 `Authorization: Bearer <token>` with `control` scope:
 
 - A browser page served by the Gateway itself pairs automatically (`POST /v1/pair/local`).
@@ -133,13 +141,14 @@ binding it beyond loopback.
 
 ## Events worth handling
 
-| Event                                           | What to do                                                                    |
-| ----------------------------------------------- | ----------------------------------------------------------------------------- |
-| `run.started`, `run.updated`, `run.ended`       | Update the Run's row: status, phase, usage, result preview.                   |
-| `unit.updated`                                  | Update one Unit. `output` may be elided; fetch the Unit when you show it.     |
-| `interaction.requested`, `interaction.resolved` | Show or clear a question, permission request or approval.                     |
-| `activity.appended`                             | The Run's log line, phase change or capability use.                           |
-| `resync.required`                               | You missed events (a restart, or you fell behind): re-read the Runs you show. |
+| Event                                         | What to do                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------- |
+| `run.started`, `run.updated`, `run.ended`     | Update the Run's row: status, phase, usage, result preview.                   |
+| `unit.updated`                                | Update one Unit. `output` may be elided; fetch the Unit when you show it.     |
+| `interaction.pending`, `interaction.resolved` | Show or clear a question, permission request or approval.                     |
+| `library.changed`                             | A Run was added to or removed from history: refresh your list of Runs.        |
+| `activity.appended`                           | The Run's log line, phase change or capability use.                           |
+| `resync.required`                             | You missed events (a restart, or you fell behind): re-read the Runs you show. |
 
 Events carry a `seq` and an `epoch`. Over SSE, reconnect with `Last-Event-ID` to receive what you missed; over
 RPC, `eventsSince({ after, epoch })` does the same.

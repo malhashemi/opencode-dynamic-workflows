@@ -405,7 +405,7 @@ export async function startGateway(config: GatewayConfig, options: GatewayOption
       const location = url.searchParams.get("location")
 
       if (request.method === "GET") {
-        if (parts[0] === "openapi.json" && parts.length === 1) return json(openApiDocument(), 200, extra)
+        if (parts[0] === "openapi.json" && parts.length === 1) return json(openApiDocument(baseUrl), 200, extra)
         if (parts[0] === "info" && parts.length === 1) {
           return json(
             {
