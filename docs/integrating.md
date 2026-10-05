@@ -144,9 +144,10 @@ await reconcile()
 This is a script: if a call throws, the process ends and the heartbeat with it. In a long-lived app, stop the
 heartbeat and `detach` when the view closes, whatever happened, or questions keep waiting for a view that is gone.
 
-A pending interaction with a `form` field is a native OpenCode form (a Unit's `question` call the engine could not
-take over). Answer it with OpenCode's form API, `client.session.form.reply({ sessionID, formID, answer })` with
-the interaction's `sessionID` and `form.formID`, not with `replyInteraction`.
+A pending interaction with a `form` field is a native OpenCode form the engine could not take over (for example, a
+question raised by a nested subagent). Answer it with OpenCode's form API,
+`client.session.form.reply({ sessionID, formID, answer })` with the interaction's `sessionID` and `form.formID`, not
+with `replyInteraction`.
 
 Without the typed client, a plugin RPC call is a plain POST to the OpenCode server: the input goes in `input`,
 the answer comes back in `output`, and the project is the `x-opencode-directory` header (or `?location=`):

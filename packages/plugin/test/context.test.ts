@@ -21,9 +21,10 @@ describe("ctx.agent — text Units", () => {
     expect(create.metadata).toMatchObject({
       workflow: { protocol: 1, runId: "run-test", ordinal: 1, parentSessionID: "ses_parent" },
     })
-    expect(create.permissions.slice(-4).map((rule) => `${rule.action}:${rule.effect}`)).toEqual([
+    expect(create.permissions.slice(-5).map((rule) => `${rule.action}:${rule.effect}`)).toEqual([
       "workflow_result:allow",
-      "question:allow",
+      "workflow_question:allow",
+      "question:deny",
       "workflow:deny",
       "workflow_inline:deny",
     ])
@@ -46,6 +47,7 @@ describe("ctx.agent — text Units", () => {
       "edit",
       "shell",
       "workflow_result",
+      "workflow_question",
       "question",
       "workflow",
       "workflow_inline",

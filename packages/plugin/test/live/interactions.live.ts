@@ -25,9 +25,9 @@ export default defineWorkflow({
 
 const UNIT_QUESTION = `import { defineWorkflow } from "@malhashemi/opencode-dynamic-workflows/workflow"
 export default defineWorkflow({
-  meta: { name: "unit-question", description: "a Unit asks the person through the question tool" },
+  meta: { name: "unit-question", description: "a Unit asks the person through the workflow_question tool" },
   async run({ agent }) {
-    return agent("Use the question tool exactly once to ask the user which colour they prefer, with the options red and blue. Then reply with exactly: COLOUR=<their answer>, or COLOUR=none if nobody answered.")
+    return agent("Use the workflow_question tool exactly once to ask the user which colour they prefer, with the options red and blue. Then reply with exactly: COLOUR=<their answer>, or COLOUR=none if nobody answered.")
   },
 })
 `
@@ -157,7 +157,7 @@ describe("live: attached surface", () => {
     expect(run.resolved[0]).toMatchObject({ by: "human", answers: [["Thorough"]] })
   }, 60_000)
 
-  test("a Unit's question tool call becomes a Run interaction (question-tool wrapper)", async () => {
+  test("a Unit's question tool call becomes a Run interaction (workflow_question tool)", async () => {
     await attach()
     const { runId } = await w().startRun({ name: "unit-question" })
     const interaction = await pending(runId)

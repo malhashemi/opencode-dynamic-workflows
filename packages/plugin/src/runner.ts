@@ -42,12 +42,19 @@ export const MAX_RESTARTS = 5
 /** Rules every Unit session carries after the author's: typed results always work, recursion never does. */
 export const ENGINE_UNIT_RULES: HostPermissionRule[] = [
   { action: "workflow_result", resource: "*", effect: "allow" },
-  // Subagents lack `question` by default (observed on 2.0.16). In a Unit the engine's wrapper answers it: the
-  // Run's person when one is attached, else "nobody available" — so it never blocks a headless Run.
-  { action: "question", resource: "*", effect: "allow" },
+  // Units ask through the broker via the plugin's `workflow_question` tool, never through a native form: a form
+  // raised in a headless Run would wait forever. The `context` hook also hides `question` from the Unit's toolset;
+  // this rule keeps that guarantee even for a subagent whose own rules would allow it.
+  { action: "workflow_question", resource: "*", effect: "allow" },
+  { action: "question", resource: "*", effect: "deny" },
   { action: "workflow", resource: "*", effect: "deny" },
   { action: "workflow_inline", resource: "*", effect: "deny" },
 ]
+
+export const QUESTION_INSTRUCTION =
+  "To ask a person something, call the `workflow_question` tool — the native `question` tool is not available in a " +
+  "Unit. When the Run is unattended the tool reports that nobody is available; proceed with your best judgement and " +
+  "state the assumption you made."
 
 export const RESULT_INSTRUCTION =
   "You are a workflow Unit. When your work is complete, call the `workflow_result` tool exactly once with your " +

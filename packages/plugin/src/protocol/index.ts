@@ -164,7 +164,7 @@ export const InteractionKind = z.enum(["question", "permission", "approval"])
 export type InteractionKind = z.infer<typeof InteractionKind>
 
 /**
- * Who raised it: `script` (`ctx.ask`), `agent` (a Unit's model called `question`), `permission` (a Unit's
+ * Who raised it: `script` (`ctx.ask`), `agent` (a Unit's model called `workflow_question`), `permission` (a Unit's
  * tool call needs a permission decision), `engine` (the engine itself, e.g. inline-run approval).
  */
 export const InteractionOrigin = z.enum(["script", "agent", "permission", "engine"])
