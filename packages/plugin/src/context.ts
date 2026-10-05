@@ -93,7 +93,7 @@ export interface CreateContextInput<A> {
   unitTimeout?: number
   /** Publish `ctx.ask` (the broker). Absent ⇒ the fallback answers at once — the headless contract. */
   ask?: (form: AskQuestion[], options: AskOptions) => Promise<string[][]>
-  /** Route a Unit model's `question` call to the broker. */
+  /** Route a Unit model's `workflow_question` call to the broker. */
   askAgent?: (unitId: string, sessionID: string) => UnitBinding["ask"]
   permissionPolicy?: UnitBinding["permissionPolicy"]
   /** Workflow-level rules applied to every Unit session. */

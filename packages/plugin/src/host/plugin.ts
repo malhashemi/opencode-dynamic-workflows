@@ -5,9 +5,10 @@
  * an instance (the service, its store, broker and live Runs, the Unit index) sits in process-wide state, so this
  * module only (re)binds OpenCode surfaces around it:
  *
- * - tools `workflow`, `workflow_inline`, `workflow_result`, and a wrapper on the built-in `question` tool for
- *   Unit sessions (all `codemode: false`, so models call them by name);
- * - hooks: `context` (per-Unit result schema, instruction, step guard; hides `workflow_result` elsewhere),
+ * - tools `workflow`, `workflow_inline`, `workflow_result`, and `workflow_question` (a Unit's broker-routed
+ *   question tool; all `codemode: false`, so models call them by name);
+ * - hooks: `context` (per-Unit result schema, instruction, step guard; hides `workflow_result`,
+ *   `workflow_question` and the native `question` outside/inside a Unit as fits),
  *   `permission evaluate` (workflow policy for Unit sessions), `model.request` (Copilot subagent headers);
  * - the event stream (permission and form requests raised inside Units → the Run's broker);
  * - plugin RPC (`workflow`), the protocol for the TUI and other clients;
@@ -31,7 +32,7 @@ import { createJournal, journalRoot, subscribeJournal } from "../journal"
 import { InvalidArgsError } from "../orchestrator"
 import { WorkflowProtocolError, type InteractionQuestion, type ProtocolEvent } from "../protocol"
 import { configDirs } from "../registry"
-import { RESULT_INSTRUCTION, RESULT_INSTRUCTION_REPAIR } from "../runner"
+import { QUESTION_INSTRUCTION, RESULT_INSTRUCTION, RESULT_INSTRUCTION_REPAIR } from "../runner"
 import { createRunStore, elideEvent, isTerminal } from "../runs"
 import { parseConfig, type PluginConfig } from "../service/config"
 import { WorkflowRpc } from "../service/rpc"
@@ -427,7 +428,6 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     )
   }
 
-  let questionWrapperEnabled = true
   await ctx.tool.transform((editor) => {
     editor.add({
       name: "workflow",
@@ -486,20 +486,72 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
         return { content: "Result recorded. Your work is complete — reply with one short confirmation." }
       },
     })
-    // Unit questions go to the Run's broker instead of a native form nobody may be able to answer.
-    editor.update("question", (tool) => {
-      const original = tool.execute
-      ;(tool as { execute: typeof original }).execute = async (input, tc) => {
+    // A Unit's questions go to the Run's broker through this dedicated tool, NOT through the built-in
+    // `question`: updating `question` from a transform makes OpenCode 2.0.23 emit `form.created` without a
+    // `location`, and a location-scoped client (every ordinary session) then drops the form. This tool is
+    // deleted outside Unit sessions in the `context` hook, so ordinary sessions keep the native `question`.
+    editor.add({
+      name: "workflow_question",
+      description:
+        "Ask the person running this Workflow a question and wait for their answer. The engine routes it to " +
+        "the Run's broker: when someone is attached they answer, and when the Run is unattended the tool says " +
+        "so and you should proceed with your best judgement. Use the same shape as the built-in `question` tool.",
+      input: {
+        type: "object",
+        properties: {
+          questions: {
+            type: "array",
+            description: "Questions to ask.",
+            items: {
+              type: "object",
+              properties: {
+                question: { type: "string", description: "The question to ask." },
+                header: { type: "string", description: "Short label for the question (max ~30 chars)." },
+                options: {
+                  type: "array",
+                  description: "Selectable options.",
+                  items: {
+                    type: "object",
+                    properties: {
+                      label: { type: "string", description: "Display text (1-5 words)." },
+                      description: { type: "string", description: "Explanation of the option." },
+                    },
+                    required: ["label"],
+                  },
+                },
+                multiple: { type: "boolean", description: "Allow selecting several options." },
+              },
+              required: ["question"],
+            },
+          },
+        },
+        required: ["questions"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: {
+          answers: { type: "array", items: { type: "array", items: { type: "string" } } },
+        },
+        additionalProperties: false,
+      },
+      options: { codemode: false },
+      execute: async (input, tc) => {
         const binding = units.get(tc.sessionID)
-        if (!binding || !questionWrapperEnabled) return original(input, tc)
         const questions = toQuestions(input as QuestionToolInput)
+        if (!binding) {
+          return {
+            output: { answers: [] as string[][] },
+            content: "This question tool only works inside a Workflow Unit. Use the built-in `question` tool instead.",
+          } as never
+        }
         const answer = await binding.ask(questions, tc.signal)
         const answers = answer ? answer.answers : questions.map(() => [] as string[])
         const content = answer
           ? `User has answered your questions: ${questions.map((q, i) => `"${q.prompt}"="${(answers[i] ?? []).join(", ")}"`).join(", ")}. You can now continue with the user's answers in mind.`
           : "No person is available to answer (the workflow is running unattended, or the question was dismissed). Proceed with your best judgement and state the assumption you made."
         return { output: { answers }, content, metadata: { answers } } as never
-      }
+      },
     })
   })
 
@@ -511,17 +563,6 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     })
   }
 
-  // If OpenCode ever rejects the wrapper's output shape, fall back to native forms instead of failing Units.
-  await ctx.tool.hook("execute.after", (event) => {
-    if (event.tool !== "question" || event.status !== "error" || !units.get(event.sessionID)) return
-    if (/declared output/i.test(event.error.message)) {
-      questionWrapperEnabled = false
-      console.warn(
-        "[workflow] the question-tool wrapper was rejected by this OpenCode version; Unit questions now use native forms",
-      )
-    }
-  })
-
   // --------------------------------------------------------------------------------------------------------------
   // Hooks
   // --------------------------------------------------------------------------------------------------------------
@@ -530,10 +571,14 @@ export async function setup(ctx: Context): Promise<() => Promise<void>> {
     const binding = units.get(event.sessionID)
     if (!binding) {
       delete event.tools.workflow_result
+      delete event.tools.workflow_question
       return
     }
+    // A Unit must ask through the broker, never through a native form nobody may be able to answer.
+    delete event.tools.question
     binding.steps += 1
     if (binding.steps > binding.maxSteps) binding.onStepLimit()
+    event.system.push({ type: "text", text: QUESTION_INSTRUCTION } as never)
     if (binding.schema && binding.jsonSchema && event.tools.workflow_result) {
       event.tools.workflow_result = { description: RESULT_TOOL_DESCRIPTION, input: binding.jsonSchema as never }
       event.system.push({

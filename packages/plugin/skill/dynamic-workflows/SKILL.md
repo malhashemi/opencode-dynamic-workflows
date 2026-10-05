@@ -126,8 +126,10 @@ the question to the fallback after a wait; without it the question waits for an 
 several labels, `custom: true` allows free text. Ask only what arguments could not have told you in advance —
 typically a choice that depends on what an earlier phase found.
 
-A Unit's model can also ask through its own `question` tool; the person answers it the same way (headless, the
-Unit is told nobody is available and proceeds).
+A Unit's model can also ask the person. Inside a Unit the native `question` tool is replaced by the engine's
+`workflow_question` tool, which routes the call to the Run's broker so it reaches whatever surface is watching
+(the TUI, the web app, or any RPC client) instead of a native form; headless, the Unit is told nobody is
+available and proceeds.
 
 ### Capabilities
 

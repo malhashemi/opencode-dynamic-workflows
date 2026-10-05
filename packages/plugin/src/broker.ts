@@ -13,8 +13,8 @@ import { isTerminal, type RunStore } from "./runs"
  * Four kinds share it (protocol `InteractionOrigin`):
  *
  * - `script`: `ctx.ask` — a closed set of labels with a REQUIRED fallback, so a headless Run never waits.
- * - `agent`: a Unit's model called the built-in `question` tool; the plugin wraps that tool for Unit sessions
- *   and routes the call here. Headless → `null`, and the tool tells the model to proceed.
+ * - `agent`: a Unit's model called the plugin's `workflow_question` tool; the engine routes that call here.
+ *   Headless → `null`, and the tool tells the model to proceed.
  * - `permission`: a Unit's tool call hit an `ask` rule. The native request stays in OpenCode; this records it
  *   against the Run and answers it through the host (`ctx.permission.reply`).
  * - `engine`: the engine's own questions — today, approval of an inline (model-authored) Workflow.

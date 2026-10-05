@@ -150,7 +150,7 @@ installed package are two plugins to OpenCode, so do not load both in one place.
 | --- | --- |
 | `workflow` | `list` the saved Workflows; run one by `name` (with `args`, optionally `background: true`); `status`, `result`, `stop` or `resume` (alias `resumeFromRunId`) a Run by id; `save_run` to keep an inline Run's script. |
 | `workflow_inline` | Run model-written `source` (or a project file via `scriptPath`) after approval, or `save` it as a durable Workflow instead of running it. |
-| `workflow_result`, `question` | Inside Units only: the typed-result tool, and a `question` tool the engine answers. |
+| `workflow_result`, `workflow_question` | Inside Units only: the typed-result tool, and a broker-routed question tool a person answers from any surface. |
 
 The plugin also registers the **`dynamic-workflows` skill**, the full authoring guide: API, pipeline vs parallel, typed
 Units, questions, resume, quality patterns and worked examples. The tool descriptions tell the model to load it before
@@ -355,7 +355,8 @@ project was approved before. The plugin option `inline` changes this: `"allow"` 
   <sub>Approving an inline Workflow: the whole script, highlighted, before any of it runs.</sub>
 </p>
 
-Units get OpenCode's permission rules plus the engine's own: `workflow_result` and `question` allowed, `workflow` and
+Units get OpenCode's permission rules plus the engine's own: `workflow_result` and `workflow_question` allowed, the
+native `question` denied (a Unit asks through the broker instead of a blocking form), and `workflow` and
 `workflow_inline` denied (no recursion). A Unit's permission request goes to a person when one is attached; headless,
 it is denied with a message the Unit can act on.
 
