@@ -35,7 +35,7 @@ export function ApprovalPanel(props: {
     return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`
   }
 
-  const syntax = useSyntax(theme)
+  const syntax = useSyntax(theme, (props.wf.context.renderer as { nativeScene?: unknown }).nativeScene)
 
   const variant = (label: string) => (label === "Reject" ? "destructive" : "primary")
 

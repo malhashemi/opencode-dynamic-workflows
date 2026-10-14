@@ -997,7 +997,7 @@ function RunPane(props: {
 }) {
   const context = props.wf.context
   const th = () => context.theme
-  const syntax = useSyntax(th)
+  const syntax = useSyntax(th, (context.renderer as { nativeScene?: unknown }).nativeScene)
   const look = () => runStatus(props.run)
   const columns = () => layout(UNIT_COLUMNS, props.width - 2)
   // The activity tail only when there is room for it after the Units.
@@ -1452,7 +1452,7 @@ function UnitPane(props: {
 }) {
   const context = props.wf.context
   const th = () => context.theme
-  const syntax = useSyntax(th)
+  const syntax = useSyntax(th, (context.renderer as { nativeScene?: unknown }).nativeScene)
   const [full, setFull] = createSignal<string | null>(null)
   createEffect(
     on(
