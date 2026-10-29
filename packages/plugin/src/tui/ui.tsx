@@ -42,14 +42,14 @@ export function toneColor(theme: ResolvedTheme, tone: Tone): RGBA {
 }
 
 /** The theme's syntax style (OpenCode's own `generateSyntax`); each replaced style is freed with the component. */
-export function useSyntax(theme: Accessor<ResolvedTheme>): Accessor<SyntaxStyle> {
+export function useSyntax(theme: Accessor<ResolvedTheme>, owner?: unknown): Accessor<SyntaxStyle> {
   const styles: SyntaxStyle[] = []
   onCleanup(() => {
     for (const style of styles.splice(0)) style.destroy()
   })
   return createMemo(() => {
     // `@opencode/theme` types a different `@opentui/core` release; at run time both are the host's one copy.
-    const style = generateSyntax(theme()) as unknown as SyntaxStyle
+    const style = (generateSyntax as (theme: ResolvedTheme, owner?: unknown) => unknown)(theme(), owner) as SyntaxStyle
     styles.push(style)
     return style
   })

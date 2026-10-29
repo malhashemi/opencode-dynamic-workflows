@@ -27,9 +27,22 @@ const result = await Bun.build({
       // schema (~500 KiB). Its own module is small and imports only `@opentui/core` (external, the host's copy).
       name: "theme-syntax-only",
       setup(builder) {
+        const syntaxPath = path.join(path.dirname(Bun.resolveSync("@opencode/theme/tui", root)), "syntax.js")
         builder.onResolve({ filter: /^@opencode\/theme\/tui$/ }, () => ({
-          path: path.join(path.dirname(Bun.resolveSync("@opencode/theme/tui", root)), "syntax.js"),
+          path: syntaxPath,
         }))
+        builder.onLoad(
+          { filter: /[/\\]@opencode[/\\]theme[/\\]dist[/\\]tui[/\\]syntax\.js$/ },
+          async ({ path: file }) => {
+            const source = await Bun.file(file).text()
+            return {
+              contents: source
+                .replace("export function generateSyntax(theme) {", "export function generateSyntax(theme, owner) {")
+                .replace("\n    ]);\n}", "\n    ], owner);\n}"),
+              loader: "js",
+            }
+          },
+        )
       },
     },
   ],
