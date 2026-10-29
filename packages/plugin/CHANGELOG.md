@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.4.0...v0.4.1) (2026-10-29)
+
+
+### Bug fixes
+
+* **plugin:** pass renderer nativeScene to SyntaxStyle on OpenTUI 0.6 ([#19](https://github.com/malhashemi/opencode-dynamic-workflows/issues/19)) ([b7480b6](https://github.com/malhashemi/opencode-dynamic-workflows/commit/b7480b6aa35104562a4b02b13c82ac282e02e35d))
+
 ## [0.4.0](https://github.com/malhashemi/opencode-dynamic-workflows/compare/v0.3.0...v0.4.0) (2026-09-26)
 
 
